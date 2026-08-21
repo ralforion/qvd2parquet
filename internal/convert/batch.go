@@ -295,6 +295,19 @@ func newColumnConverter(rc *ResolvedColumn, src qvd.Column, opts *Options) (colu
 	default:
 		return cc, fmt.Errorf("column %q: unhandled strategy %v", rc.Name, rc.Strategy)
 	}
+
+	if emptyIsNull {
+		// An empty string symbol is absent, whatever type the column resolved
+		// to. Schema resolution reads the profile the same way, so a numeric
+		// column may legitimately contain these placeholders.
+		inner := cc.convert
+		cc.convert = func(s qvd.Symbol) (Value, error) {
+			if s.Kind == qvd.SymbolString && s.Text == "" {
+				return Value{Null: true}, nil
+			}
+			return inner(s)
+		}
+	}
 	return cc, nil
 }
 

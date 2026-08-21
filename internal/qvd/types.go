@@ -198,19 +198,22 @@ func (s Symbol) Numeric() (float64, bool) {
 // ColumnProfile counts the symbol kinds actually present in a column and is the
 // single place where mixed-type detection happens.
 type ColumnProfile struct {
-	Symbols    int64   `json:"symbols"`
-	Nulls      int64   `json:"nulls"`
-	Strings    int64   `json:"strings"`
-	Ints       int64   `json:"ints"`
-	Floats     int64   `json:"floats"`
-	DualInts   int64   `json:"dualInts"`
-	DualFloats int64   `json:"dualFloats"`
-	EmptyText  int64   `json:"emptyText"`
-	MaxTextLen int     `json:"maxTextLen"`
-	MinInt     int64   `json:"minInt"`
-	MaxInt     int64   `json:"maxInt"`
-	MinFloat   float64 `json:"minFloat"`
-	MaxFloat   float64 `json:"maxFloat"`
+	Symbols    int64 `json:"symbols"`
+	Nulls      int64 `json:"nulls"`
+	Strings    int64 `json:"strings"`
+	Ints       int64 `json:"ints"`
+	Floats     int64 `json:"floats"`
+	DualInts   int64 `json:"dualInts"`
+	DualFloats int64 `json:"dualFloats"`
+	EmptyText  int64 `json:"emptyText"`
+	// EmptyStrings counts symbols that are nothing but an empty string. Unlike
+	// EmptyText it excludes duals, whose numeric side is still a value.
+	EmptyStrings int64   `json:"emptyStrings"`
+	MaxTextLen   int     `json:"maxTextLen"`
+	MinInt       int64   `json:"minInt"`
+	MaxInt       int64   `json:"maxInt"`
+	MinFloat     float64 `json:"minFloat"`
+	MaxFloat     float64 `json:"maxFloat"`
 
 	hasInt   bool
 	hasFloat bool
@@ -236,6 +239,9 @@ func (p *ColumnProfile) Observe(s Symbol) {
 	if s.Kind.HasText() {
 		if s.Text == "" {
 			p.EmptyText++
+			if s.Kind == SymbolString {
+				p.EmptyStrings++
+			}
 		}
 		if len(s.Text) > p.MaxTextLen {
 			p.MaxTextLen = len(s.Text)
@@ -265,6 +271,23 @@ func (p *ColumnProfile) Observe(s Symbol) {
 			}
 		}
 	}
+}
+
+// WithEmptyStringsAsNulls returns a copy of the profile in which a symbol that
+// is nothing but an empty string is counted as a null instead of as text.
+//
+// Qlik treats an empty string as absent, so with that reading a numeric column
+// holding empty placeholders is not a mixed-type column. Type resolution, the
+// inspect preview and the conversion all have to agree on this, so they share
+// one adjusted profile rather than each applying the rule separately.
+func (p *ColumnProfile) WithEmptyStringsAsNulls() *ColumnProfile {
+	if p == nil || p.EmptyStrings == 0 {
+		return p
+	}
+	q := *p
+	q.Strings -= q.EmptyStrings
+	q.Nulls += q.EmptyStrings
+	return &q
 }
 
 // TextOnly counts symbols that carry only a display string.

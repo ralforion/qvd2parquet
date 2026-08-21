@@ -224,11 +224,17 @@ type DecimalExtractor struct {
 	Rounded int64
 	// NonFinite counts NaN and infinite payloads, which are written as null.
 	NonFinite int64
+	// EmptyAsNull treats a symbol that is nothing but an empty string as
+	// absent, matching how the rest of the pipeline reads it.
+	EmptyAsNull bool
 }
 
 // Scaled converts one symbol. It returns (nil, nil) for a null symbol.
 func (e *DecimalExtractor) Scaled(s qvd.Symbol) (*big.Int, error) {
 	if s.Kind == qvd.SymbolNull {
+		return nil, nil
+	}
+	if e.EmptyAsNull && s.Kind == qvd.SymbolString && s.Text == "" {
 		return nil, nil
 	}
 	// With --decimal-strict=false a value carrying more decimals than the

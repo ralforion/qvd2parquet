@@ -28,6 +28,9 @@ type InspectReport struct {
 
 	Schema *ResolvedSchema
 	File   *qvd.File
+	// Options is the configuration the report was produced under, so the
+	// rendering can reflect the same rules the conversion would apply.
+	Options *Options
 	// SchemaErr is set when the type policy rejects the file. The rest of the
 	// report is still filled in, so inspect can explain the failure instead of
 	// just returning an error.
@@ -75,6 +78,7 @@ func Inspect(inputPath string, opts *Options) (*InspectReport, error) {
 		FieldCount:     len(f.Columns),
 		Excluded:       excluded,
 		File:           f,
+		Options:        opts,
 	}
 	for _, p := range f.Profiles {
 		if p != nil {
@@ -142,9 +146,16 @@ func (r *InspectReport) writeSchema(w io.Writer) error {
 		if c.OriginalName != "" && c.OriginalName != c.Name {
 			name = fmt.Sprintf("%s (%s)", c.Name, c.OriginalName)
 		}
+		// Report the nulls the conversion will write, which includes empty
+		// strings when --empty-as-null is on. Inspect exists to predict the
+		// conversion, so it must not show a different number.
 		var nulls string
 		if prof != nil {
-			nulls = withThousands(prof.Nulls)
+			effective := prof
+			if r.Options != nil && r.Options.EmptyStringAsNull {
+				effective = prof.WithEmptyStringsAsNulls()
+			}
+			nulls = withThousands(effective.Nulls)
 		}
 		var syms string
 		if prof != nil {

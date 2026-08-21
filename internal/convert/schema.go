@@ -228,6 +228,11 @@ func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*Resol
 		prof := f.Profiles[idx]
 		syms := f.Symbols[idx]
 
+		// With --empty-as-null an empty string is absent, so the type resolver
+		// must read the profile the same way the conversion will.
+		if opts.EmptyStringAsNull {
+			prof = prof.WithEmptyStringsAsNulls()
+		}
 		cols, note, err := resolveColumn(col, prof, syms, opts, override, tsType)
 		if err != nil {
 			return nil, err
@@ -317,7 +322,7 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 	// An explicit override wins over inference, but is still validated against
 	// the symbols actually present.
 	if co, ok := override.lookup(col.Name); ok {
-		rc, err := applyOverride(base, co, col, syms, tsType, opts.Location)
+		rc, err := applyOverride(base, co, col, syms, tsType, opts.Location, opts.EmptyStringAsNull)
 		if err != nil {
 			return nil, "", err
 		}
@@ -565,11 +570,12 @@ func resolvePromotedDecimalColumn(base ResolvedColumn, col qvd.Column, prof *qvd
 	}
 
 	ex := &DecimalExtractor{
-		Scale:   scale,
-		Source:  DecimalNumeric, // the numeric side is what was profiled
-		Strict:  opts.DecimalStrict,
-		DecSep:  col.DecSep,
-		ThouSep: col.ThouSep,
+		Scale:       scale,
+		Source:      DecimalNumeric, // the numeric side is what was profiled
+		Strict:      opts.DecimalStrict,
+		DecSep:      col.DecSep,
+		ThouSep:     col.ThouSep,
+		EmptyAsNull: opts.EmptyStringAsNull,
 	}
 	spec, scaled, err := ResolveDecimalSpec(col.Name, syms, ex)
 	if err != nil {
@@ -612,11 +618,12 @@ func resolveDecimalColumn(base ResolvedColumn, col qvd.Column, syms []qvd.Symbol
 	}
 
 	ex := &DecimalExtractor{
-		Scale:   scale,
-		Source:  opts.DecimalSource,
-		Strict:  opts.DecimalStrict,
-		DecSep:  col.DecSep,
-		ThouSep: col.ThouSep,
+		Scale:       scale,
+		Source:      opts.DecimalSource,
+		Strict:      opts.DecimalStrict,
+		DecSep:      col.DecSep,
+		ThouSep:     col.ThouSep,
+		EmptyAsNull: opts.EmptyStringAsNull,
 	}
 	spec, scaled, err := ResolveDecimalSpec(col.Name, syms, ex)
 	if err != nil {
@@ -657,7 +664,7 @@ func resolveDecimalColumn(base ResolvedColumn, col qvd.Column, syms []qvd.Symbol
 // an impossible pin fails as a schema policy error before anything is written
 // rather than as a decode error mid-conversion.
 func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
-	syms []qvd.Symbol, tsType arrow.DataType, loc *time.Location) (ResolvedColumn, error) {
+	syms []qvd.Symbol, tsType arrow.DataType, loc *time.Location, emptyAsNull bool) (ResolvedColumn, error) {
 	switch strings.ToLower(co.Type) {
 	case "string":
 		base.ArrowType, base.Strategy = arrowString, StrategyString
@@ -709,11 +716,12 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 		base.ArrowType, base.Strategy = arrowTime32, StrategyTimeMillis
 	case "decimal":
 		ex := &DecimalExtractor{
-			Scale:   co.Scale,
-			Source:  DecimalAuto,
-			Strict:  true,
-			DecSep:  col.DecSep,
-			ThouSep: col.ThouSep,
+			Scale:       co.Scale,
+			Source:      DecimalAuto,
+			Strict:      true,
+			DecSep:      col.DecSep,
+			ThouSep:     col.ThouSep,
+			EmptyAsNull: emptyAsNull,
 		}
 		spec, scaled, err := ResolveDecimalSpec(col.Name, syms, ex)
 		if err != nil {
