@@ -74,6 +74,10 @@ GitHub release.
 qvd2parquet [options] input.qvd output.parquet
 
   -columns name1,name2       Convert only these columns
+  -exclude '%*,*_TMP'        Skip fields matching these wildcard patterns
+  -field-regex <re>          Rewrite field names with this regexp
+  -field-name '${name}'      Template for the new column name
+  -field-comment '${comment}'  Template for the column comment
   -mixed error               Mixed-type strategy: error|string|promote|dual-columns
   -dual numeric              Dual strategy: numeric|text|columns
   -numeric-promote decimal   Numeric widening: decimal | true (float64) | false
@@ -93,6 +97,7 @@ qvd2parquet [options] input.qvd output.parquet
   -progress 1000000          Log every N rows, 0 disables progress
   -force                     Overwrite an existing output file
   -strict                    Enable strict validation defaults
+  -version                   Print the version and exit
 ```
 
 ### Output
@@ -104,15 +109,15 @@ pipelines and shell substitutions.
 
 ```text
 $ qvd2parquet --timezone UTC --quality-gate numeric sales.qvd sales.parquet
-qvd2parquet 0.1.0  (c) RALFORION d.o.o.
+qvd2parquet 0.3.0  (c) RALFORION d.o.o.
 qvd2parquet: sales.qvd: table "products", 77 rows, 7 bytes/record, 9 of 9 columns selected
 qvd2parquet: read 412 symbols in 1ms; records start at offset 8973
-qvd2parquet: schema: Einkaufspreis: REAL with 75 double symbols, written as float64
+qvd2parquet: schema: Einkaufspreis: REAL with 75 double symbols promoted to decimal(5,2); scale 2 inferred from values
 qvd2parquet: schema: Produktname: 77 text symbols, written as utf8
-qvd2parquet: schema: Listenpreis: 25 integer and 35 double symbols promoted to float64
-qvd2parquet: converted 77/77 rows in 2ms (42445 rows/s)
+qvd2parquet: schema: Listenpreis: REAL with 25 integer and 35 double symbols promoted to decimal(5,2); scale 2 inferred from values
+qvd2parquet: converted 77/77 rows in 2ms (47934 rows/s)
 qvd2parquet: quality gate numeric finished in 1ms: passed
-qvd2parquet: wrote sales.parquet: 77 rows, 9 columns, 4.9 KiB in 12ms (6227 rows/s)
+qvd2parquet: wrote sales.parquet: 77 rows, 9 columns, 4.6 KiB in 16ms (4961 rows/s)
 ```
 
 One `schema:` line is printed per output column, explaining exactly why each

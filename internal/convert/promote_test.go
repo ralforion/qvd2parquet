@@ -160,16 +160,17 @@ func TestDefaultPromotionFallsBackToFloat64(t *testing.T) {
 
 // A value that needs more decimals than can be inferred follows
 // --decimal-strict: fail when strict, fall back to float64 when not.
-func TestPromoteDecimalFollowsDecimalStrict(t *testing.T) {
+func TestExplicitDecimalPromotionIsADemand(t *testing.T) {
 	f := qvdtest.Field{Name: "Rate", Type: "REAL",
 		Symbols: []qvd.Symbol{qvdtest.Float(1.0 / 3), qvdtest.Float(2)}, Rows: []int{0, 1}}
 
-	// Only an explicit --numeric-promote=decimal is a demand strong enough to
-	// fail the conversion.
+	// An explicit --numeric-promote=decimal is a demand, and fails on its own.
+	// This must not depend on --decimal-strict, which governs a different
+	// question: rounding a value that does not fit an established scale.
 	_, err := resolve(t, f, func(o *Options) {
 		o.NumericPromote = PromoteDecimal
 		o.NumericPromoteExplicit = true
-		o.DecimalStrict = true
+		o.DecimalStrict = false // the default; must not weaken the demand
 	})
 	if !errors.Is(err, ErrSchemaPolicy) {
 		t.Fatalf("strict mode err = %v, want ErrSchemaPolicy", err)
@@ -180,13 +181,25 @@ func TestPromoteDecimalFollowsDecimalStrict(t *testing.T) {
 		}
 	}
 
+	// Without the explicit flag the default is only a preference, so the
+	// column quietly falls back to float64.
 	rs := mustResolve(t, f, func(o *Options) {
 		o.NumericPromote = PromoteDecimal
-		o.NumericPromoteExplicit = true
-		o.DecimalStrict = false
+		o.NumericPromoteExplicit = false
 	})
 	if got := rs.Columns[0].ArrowType.String(); got != "float64" {
-		t.Errorf("non-strict fallback resolved to %s, want float64", got)
+		t.Errorf("default fallback resolved to %s, want float64", got)
+	}
+
+	// --decimal-strict=true must not turn the default preference into a
+	// failure either; explicitness alone decides.
+	rs = mustResolve(t, f, func(o *Options) {
+		o.NumericPromote = PromoteDecimal
+		o.NumericPromoteExplicit = false
+		o.DecimalStrict = true
+	})
+	if got := rs.Columns[0].ArrowType.String(); got != "float64" {
+		t.Errorf("--decimal-strict should not affect the fallback, got %s", got)
 	}
 }
 

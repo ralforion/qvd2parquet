@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"regexp"
+	"runtime/debug"
 	"strings"
 	"syscall"
 
@@ -34,12 +36,48 @@ const (
 	copyright   = "(c) RALFORION d.o.o."
 )
 
-var version = "0.1.0"
+// defaultVersion is what a plain "go build" reports. Release archives override
+// version with -ldflags, and "go install module@vX.Y.Z" supplies the tag
+// through the embedded build info, so all three paths agree.
+const defaultVersion = "0.3.0"
+
+var version = defaultVersion
+
+func init() {
+	// Only consult the build info when -ldflags did not already set a version,
+	// so an explicit release stamp always wins.
+	if version != defaultVersion {
+		return
+	}
+	if v, ok := taggedModuleVersion(); ok {
+		version = v
+	}
+}
+
+// releaseTag matches a plain semantic version. Go records "(devel)" for a
+// local build and a pseudo-version such as
+// "v0.3.1-0.20260821175410-838a20064371" for an untagged commit; neither is a
+// release, so both are ignored in favour of defaultVersion.
+var releaseTag = regexp.MustCompile(`^v(\d+\.\d+\.\d+)$`)
+
+func taggedModuleVersion() (string, bool) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "", false
+	}
+	m := releaseTag.FindStringSubmatch(info.Main.Version)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
 
 // banner is the identification line printed at startup. It goes to stderr so
 // it never contaminates piped output.
 func banner() string {
-	return fmt.Sprintf("%s %s  %s", programName, version, copyright)
+	// The release script stamps a git tag such as "v0.3.0"; render every build
+	// path identically by dropping the leading "v".
+	return fmt.Sprintf("%s %s  %s", programName, strings.TrimPrefix(version, "v"), copyright)
 }
 
 func main() {

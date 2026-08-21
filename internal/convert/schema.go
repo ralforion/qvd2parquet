@@ -438,7 +438,12 @@ func resolvePromotedDecimalColumn(base ResolvedColumn, col qvd.Column, prof *qvd
 		// floating point. Falling back is only a failure when the user asked
 		// for decimal explicitly; by default it is the correct answer, and
 		// float64 is exactly what such a column would have resolved to anyway.
-		if !opts.NumericPromoteExplicit || !opts.DecimalStrict {
+		//
+		// This is deliberately independent of --decimal-strict, which governs
+		// rounding a value that does not fit an established scale. Having no
+		// inferable scale at all is a different question: the column is simply
+		// not decimal-shaped.
+		if !opts.NumericPromoteExplicit {
 			base.ArrowType, base.Strategy = arrowF64, StrategyFloat64
 			return base, fmt.Sprintf(
 				"%s: %s carries values needing more than %d decimals, so no exact scale exists; "+
