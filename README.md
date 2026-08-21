@@ -13,6 +13,10 @@ row groups so large files never need to be materialized in memory.
 
 ## Install
 
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. Conversion
+defaults may change while the major version is `0`; every such change is listed
+under **Changed** with the flag that restores the previous behaviour.
+
 ### Prebuilt binaries
 
 Download the archive for your platform from the
@@ -532,6 +536,18 @@ go test ./...              # unit and integration tests
 go test -race ./...        # the parallel decoder is race-tested
 go vet ./...
 ```
+
+### Releasing
+
+1. Add a section to `CHANGELOG.md` for the new version. A test fails if the
+   version the CLI reports has no section, and the release workflow refuses to
+   publish without one.
+2. Bump `defaultVersion` in `cmd/qvd2parquet/main.go`.
+3. Merge via a pull request; `main` is protected and rejects direct pushes.
+4. Tag and push: `git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`.
+
+The workflow cross-compiles all 16 platforms, builds the release body from that
+version's changelog section, and publishes the archives with `SHA256SUMS`.
 
 See `testdata/README.md` for fixture setup.
 

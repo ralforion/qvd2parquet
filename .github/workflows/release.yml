@@ -36,6 +36,19 @@ jobs:
           VERSION: ${{ github.event.inputs.version || github.ref_name }}
         run: ./scripts/build-release.sh
 
+      - name: Build release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          ./scripts/changelog-section.sh "$VERSION" > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for $VERSION"
+            exit 1
+          fi
+          cat .github/release-footer.md >> notes.md
+          echo "--- release notes ---"
+          cat notes.md
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -43,5 +56,5 @@ jobs:
         run: |
           gh release create "$VERSION" \
             --title "qvd2parquet $VERSION" \
-            --generate-notes \
+            --notes-file notes.md \
             dist/*.tar.gz dist/*.zip dist/SHA256SUMS
