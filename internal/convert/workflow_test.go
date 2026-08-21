@@ -1,32 +1,19 @@
 package convert
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
 )
 
-// readRepoFile reads a file from the repository root with line endings
-// normalized, since Windows checks the tree out with CRLF.
-func readRepoFile(t *testing.T, parts ...string) string {
-	t.Helper()
-	b, err := os.ReadFile(filepath.Join(append([]string{"..", ".."}, parts...)...))
-	if err != nil {
-		t.Fatalf("read %s: %v", filepath.Join(parts...), err)
-	}
-	return strings.ReplaceAll(string(b), "\r\n", "\n")
-}
-
 // TestCIMatrixCoversEveryReleaseTarget keeps the CI build matrix and the
 // release script's platform list identical. They are declared in two files, so
 // a target added to one and not the other would either ship untested or be
 // tested but never released -- both silent.
 func TestCIMatrixCoversEveryReleaseTarget(t *testing.T) {
-	ci := readRepoFile(t, ".github", "workflows", "ci.yml")
-	script := readRepoFile(t, "scripts", "build-release.sh")
+	ci := readTextFile(t, ".github", "workflows", "ci.yml")
+	script := readTextFile(t, "scripts", "build-release.sh")
 
 	matrix := ciMatrixTargets(t, ci)
 	release := releaseScriptTargets(t, script)
@@ -79,7 +66,7 @@ func releaseScriptTargets(t *testing.T, script string) []string {
 // protection require one stable check name: the gate job must fail when any
 // matrix job does, rather than passing because it merely ran.
 func TestCIGateDependsOnTheMatrix(t *testing.T) {
-	ci := readRepoFile(t, ".github", "workflows", "ci.yml")
+	ci := readTextFile(t, ".github", "workflows", "ci.yml")
 
 	i := strings.Index(ci, "  cross-compile:")
 	if i < 0 {
