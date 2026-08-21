@@ -1,6 +1,8 @@
 package convert
 
 import (
+	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -474,5 +476,143 @@ func TestDualNoteNamesTheGeneratedColumn(t *testing.T) {
 	}
 	if strings.Contains(notes, `"A057-||-STATUS-||-Bearbeitungsstatus__text"`) {
 		t.Errorf("notes name a column that does not exist: %s", notes)
+	}
+}
+
+// Only words that genuinely belong to a rendered date may be swallowed. A
+// wrongly rejected word costs a redundant text column; a wrongly accepted one
+// drops text that carried information, so the check errs strict.
+func TestTextRendersDateRejectsExtraWords(t *testing.T) {
+	const serial = 40502 // 2010-11-20
+	rejected := []string{
+		"Due 11/20/2010",
+		"11/20/2010 invoiced",
+		"Fällig 20.11.2010",
+		"Order 11 of 2010",
+		"11/20/2010 (revised)",
+		"ship 11/20/2010 asap",
+	}
+	for _, text := range rejected {
+		if textRendersDate(text, serial, time.UTC) {
+			t.Errorf("%q carries more than the date and must not be dropped", text)
+		}
+	}
+
+	accepted := []string{
+		"11/20/2010",
+		"20.11.2010",
+		"2010-11-20",
+		"20 Nov 2010",
+		"Sat, 20 November 2010",
+		"20. Nov 2010",
+		"2010-11-20 00:00:00 UTC",
+		"20th Nov 2010",
+	}
+	for _, text := range accepted {
+		if !textRendersDate(text, serial, time.UTC) {
+			t.Errorf("%q is a plain rendering of the date and should be recognized", text)
+		}
+	}
+}
+
+// A month name that contradicts the value is not a rendering of it.
+func TestTextRendersDateChecksMonthNames(t *testing.T) {
+	const serial = 40502 // 2010-11-20, a November date
+	if !textRendersDate("20 Nov 2010", serial, time.UTC) {
+		t.Error("the correct month name should match")
+	}
+	if textRendersDate("20 Jan 2010", serial, time.UTC) {
+		t.Error("January must not match a November value")
+	}
+	if textRendersDate("20 Dez 2010", serial, time.UTC) {
+		t.Error("December must not match a November value")
+	}
+	// German for November still matches.
+	if !textRendersDate("20. November 2010", serial, time.UTC) {
+		t.Error("the German month name should match")
+	}
+}
+
+// Through the resolver: a label wrapped around a date keeps its text column.
+func TestDualAutoKeepsAnnotatedDates(t *testing.T) {
+	f := qvdtest.Field{Name: "Day", Type: "DATE", Rows: []int{0, 1},
+		Symbols: []qvd.Symbol{
+			qvdtest.DualInt(40502, "Due 11/20/2010"),
+			qvdtest.DualInt(40503, "Due 11/21/2010"),
+		}}
+	rs := mustResolve(t, f, func(o *Options) { o.Location = utc() })
+	if len(rs.Columns) != 2 {
+		var names []string
+		for _, c := range rs.Columns {
+			names = append(names, c.Name)
+		}
+		t.Fatalf("got %d columns %v, want 2: \"Due\" is not part of the date", len(rs.Columns), names)
+	}
+}
+
+// A date/time column must fail at schema resolution when a value cannot be
+// converted, whatever decided the type: the declared header, a Qlik tag, or
+// display-string inference. Failing here means --inspect predicts it and no
+// output file is started.
+func TestDateTimeColumnsValidateAtSchemaTime(t *testing.T) {
+	nan := math.NaN()
+	tests := []struct {
+		name  string
+		field qvdtest.Field
+	}{
+		{
+			"declared DATE with NaN",
+			qvdtest.Field{Name: "D", Type: "DATE", Rows: []int{0, 1},
+				Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Float(nan)}},
+		},
+		{
+			"tagged $date with NaN",
+			qvdtest.Field{Name: "D", Type: "", Tags: []string{"$numeric", "$date"}, Rows: []int{0, 1},
+				Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Float(nan)}},
+		},
+		{
+			"tagged $timestamp out of range",
+			qvdtest.Field{Name: "D", Type: "", Tags: []string{"$numeric", "$timestamp"}, Rows: []int{0, 1},
+				Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Float(1e30)}},
+		},
+		{
+			"declared TIME with infinity",
+			qvdtest.Field{Name: "T", Type: "TIME", Rows: []int{0, 1},
+				Symbols: []qvd.Symbol{qvdtest.Float(0.5), qvdtest.Float(math.Inf(1))}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := resolve(t, tc.field, func(o *Options) { o.Location = utc() })
+			if !errors.Is(err, ErrSchemaPolicy) {
+				t.Fatalf("err = %v, want ErrSchemaPolicy at schema resolution", err)
+			}
+			if !strings.Contains(err.Error(), tc.field.Name) {
+				t.Errorf("error should name the column: %v", err)
+			}
+		})
+	}
+}
+
+// Valid date/time columns must keep resolving cleanly.
+func TestValidDateTimeColumnsStillResolve(t *testing.T) {
+	tests := []struct {
+		field qvdtest.Field
+		want  string
+	}{
+		{qvdtest.Field{Name: "D", Type: "DATE", Rows: []int{0},
+			Symbols: []qvd.Symbol{qvdtest.Int(45000)}}, "date32"},
+		{qvdtest.Field{Name: "T", Type: "TIME", Rows: []int{0},
+			Symbols: []qvd.Symbol{qvdtest.Float(0.5)}}, "time32[ms]"},
+		{qvdtest.Field{Name: "S", Type: "", Tags: []string{"$timestamp"}, Rows: []int{0},
+			Symbols: []qvd.Symbol{qvdtest.Float(45000.25)}}, "timestamp[ms, tz=UTC]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.want, func(t *testing.T) {
+			rs := mustResolve(t, tc.field, func(o *Options) { o.Location = utc(); o.TimezoneName = "UTC" })
+			if got := rs.Columns[0].ArrowType.String(); got != tc.want {
+				t.Errorf("type = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }

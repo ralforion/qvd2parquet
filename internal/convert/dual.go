@@ -128,9 +128,62 @@ func textRendersNumber(text string, n float64, decSep, thouSep string) bool {
 // dateTokens matches runs of digits, which are the parts of a rendered date.
 var dateTokens = regexp.MustCompile(`\d+`)
 
-// dateLeftovers is what may remain once digits and date punctuation are
-// removed: a month abbreviation, an AM/PM marker, or a timezone suffix.
-var dateLeftovers = regexp.MustCompile(`^[\p{L}]{0,5}$`)
+// dateWords are the alphabetic tokens that may legitimately appear inside a
+// rendered date: month and weekday names, meridiem markers, ordinal suffixes
+// and timezone abbreviations. Anything else means the string says more than
+// the date does.
+//
+// The list errs on the side of being short. A word wrongly rejected only costs
+// a redundant text column, whereas a word wrongly accepted drops text that
+// carried information -- "Due 11/20/2010" must not read as pure formatting.
+var dateWords = map[string]bool{}
+
+// monthWords maps a recognized month name onto its number, so a month that
+// contradicts the value is rejected rather than merely tolerated.
+var monthWords = map[string]int{}
+
+func init() {
+	// English and German month names, long and abbreviated. German QVDs are
+	// the common case for this converter.
+	months := [][]string{
+		{"jan", "january", "januar", "jän", "jaen", "jänner"},
+		{"feb", "february", "februar"},
+		{"mar", "march", "mär", "maer", "märz", "maerz", "mrz"},
+		{"apr", "april"},
+		{"may", "mai"},
+		{"jun", "june", "juni"},
+		{"jul", "july", "juli"},
+		{"aug", "august"},
+		{"sep", "sept", "september"},
+		{"oct", "october", "okt", "oktober"},
+		{"nov", "november"},
+		{"dec", "december", "dez", "dezember"},
+	}
+	for i, names := range months {
+		for _, n := range names {
+			monthWords[n] = i + 1
+			dateWords[n] = true
+		}
+	}
+	others := []string{
+		// Weekday names, English and German.
+		"mon", "monday", "montag", "tue", "tues", "tuesday", "dienstag",
+		"wed", "wednesday", "mittwoch", "thu", "thur", "thurs", "thursday", "donnerstag",
+		"fri", "friday", "freitag", "sat", "saturday", "samstag", "sonnabend",
+		"sun", "sunday", "sonntag",
+		// Meridiem markers and ordinal suffixes.
+		"am", "pm", "a", "p", "st", "nd", "rd", "th",
+		// Timezone abbreviations.
+		"utc", "gmt", "z", "cet", "cest", "mez", "mesz", "est", "edt",
+		"cst", "cdt", "mst", "mdt", "pst", "pdt", "bst", "wet", "west",
+	}
+	for _, w := range others {
+		dateWords[w] = true
+	}
+}
+
+// alphaRuns extracts the maximal alphabetic tokens from a string.
+var alphaRuns = regexp.MustCompile(`[\p{L}]+`)
 
 // textRendersDate reports whether text is a rendering of the Qlik serial value
 // n as a date or time, without assuming any particular format.
@@ -174,7 +227,7 @@ func textRendersDate(text string, n float64, loc *time.Location) bool {
 	// Real data needs this: the serial 40377.958333 is 2010-07-18 23:00 UTC
 	// but was written out as "07/19/2010" by a UTC+1 producer.
 	for _, d := range []time.Time{ts, ts.AddDate(0, 0, -1), ts.AddDate(0, 0, 1)} {
-		if tokensMatchDate(tokens, d, ts) {
+		if tokensMatchDate(tokens, d, ts) && monthWordMatches(t, int(d.Month())) {
 			return true
 		}
 	}
@@ -208,15 +261,33 @@ func tokensMatchDate(tokens []int, d, ts time.Time) bool {
 	return sawDay
 }
 
-// dateTextRemainderOK reports whether what is left after removing the digits
-// is plausible date punctuation, optionally with a short word such as a month
-// abbreviation or "AM". This is what rejects "Order 11 of 2010".
+// dateTextRemainderOK reports whether everything in t that is not a digit
+// belongs to a rendered date: separators, and only words drawn from dateWords.
+// This is what rejects "Order 11 of 2010" and "Due 11/20/2010".
 func dateTextRemainderOK(t string) bool {
-	rest := strings.TrimSpace(dateTokens.ReplaceAllString(t, " "))
-	for _, sep := range []string{"/", ".", "-", ":", ",", " ", "'"} {
+	for _, w := range alphaRuns.FindAllString(t, -1) {
+		if !dateWords[strings.ToLower(w)] {
+			return false
+		}
+	}
+	// Whatever remains once digits and words are gone must be punctuation.
+	rest := dateTokens.ReplaceAllString(t, " ")
+	rest = alphaRuns.ReplaceAllString(rest, " ")
+	for _, sep := range []string{"/", ".", "-", ":", ",", " ", "'", "+"} {
 		rest = strings.ReplaceAll(rest, sep, "")
 	}
-	return dateLeftovers.MatchString(rest)
+	return strings.TrimSpace(rest) == ""
+}
+
+// monthWordMatches reports whether every month name in t names the month m.
+// A string that says "Jan" beside a November value is not a rendering of it.
+func monthWordMatches(t string, m int) bool {
+	for _, w := range alphaRuns.FindAllString(t, -1) {
+		if got, ok := monthWords[strings.ToLower(w)]; ok && got != m {
+			return false
+		}
+	}
+	return true
 }
 
 // textRendersTime reports whether text renders the fraction-of-a-day value n

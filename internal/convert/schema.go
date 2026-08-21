@@ -160,8 +160,10 @@ func (so *SchemaOverride) lookup(name string) (ColumnOverride, bool) {
 // symbol kind would let NaN, an out-of-range serial day or an oversized
 // timestamp through schema resolution and fail mid-conversion instead.
 func requireConvertibleDateTime(col qvd.Column, syms []qvd.Symbol, pinned string, loc *time.Location) error {
+	// The type may come from the header, a Qlik tag, inference or --schema, so
+	// state what was resolved rather than assuming an override.
 	reject := func(i int, s qvd.Symbol, why string) error {
-		return fmt.Errorf("%w: schema override pins %q to %s, but symbol %d (%v %q) %s",
+		return fmt.Errorf("%w: column %q resolves to %s, but symbol %d (%v %q) %s",
 			ErrSchemaPolicy, col.Name, pinned, i, s.Kind, s.Text, why)
 	}
 	for i, s := range syms {
@@ -423,15 +425,24 @@ func resolveNumericColumn(base ResolvedColumn, col qvd.Column, prof *qvd.ColumnP
 
 	switch qlikType {
 	case qvd.QlikDate:
+		if err := requireConvertibleDateTime(col, syms, "date32", opts.Location); err != nil {
+			return ResolvedColumn{}, "", err
+		}
 		base.ArrowType, base.Strategy = arrowDate32, StrategyDate32
 		return base, withInferNote(fmt.Sprintf("%s: DATE, written as date32 (days since epoch)", col.Name), inferNote), nil
 
 	case qvd.QlikTimestamp:
+		if err := requireConvertibleDateTime(col, syms, "timestamp", opts.Location); err != nil {
+			return ResolvedColumn{}, "", err
+		}
 		base.ArrowType, base.Strategy = tsType, StrategyTimestampMillis
 		return base, withInferNote(fmt.Sprintf("%s: TIMESTAMP, written as timestamp[ms, tz=%s]",
 			col.Name, tsType.(*arrow.TimestampType).TimeZone), inferNote), nil
 
 	case qvd.QlikTime:
+		if err := requireConvertibleDateTime(col, syms, "time", opts.Location); err != nil {
+			return ResolvedColumn{}, "", err
+		}
 		base.ArrowType, base.Strategy = arrowTime32, StrategyTimeMillis
 		return base, withInferNote(fmt.Sprintf("%s: TIME, written as time32[ms] (milliseconds since midnight)", col.Name), inferNote), nil
 

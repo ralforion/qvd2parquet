@@ -43,6 +43,12 @@ previous behaviour.
   dual display strings, which no amount of text inspection could identify, and
   it is what Qlik Sense writes. A declared type still wins over a tag.
 
+- A date or timestamp column is now validated when the schema is resolved,
+  whatever decided its type -- the declared header, a Qlik tag, or display-string
+  inference. A value that cannot be converted fails as a schema policy error
+  naming the column and the value, so `--inspect` predicts it and no output file
+  is started, instead of the conversion failing part-way through.
+
 - `--infer-dates` (on by default) is the fallback for files that carry no tags:
   a column with no declared type is read as a date or timestamp when every
   display string renders its Excel-style serial value as one. The check is
@@ -51,6 +57,14 @@ previous behaviour.
   calendar date. Serials outside roughly 1900 to 2200 are never read as dates,
   blank display strings are not evidence, and a column mixing dates with
   anything else is left alone.
+
+  Only words that belong to a rendered date -- month and weekday names in
+  English and German, meridiem markers, ordinal suffixes and timezone
+  abbreviations -- may appear alongside the digits, and a month name that
+  contradicts the value is rejected. So `"Due 11/20/2010"` and `"20 Jan 2010"`
+  beside a November value both keep their text column. The list errs short: a
+  word wrongly rejected costs a redundant column, whereas one wrongly accepted
+  drops text that carried information.
 
 ## [0.3.1] - 2026-08-21
 
