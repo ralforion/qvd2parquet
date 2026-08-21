@@ -76,6 +76,7 @@ GitHub release.
 
 ```text
 qvd2parquet [options] input.qvd output.parquet
+qvd2parquet --inspect [options] input.qvd
 
   -columns name1,name2       Convert only these columns
   -exclude '%*,*_TMP'        Skip fields matching these wildcard patterns
@@ -99,6 +100,7 @@ qvd2parquet [options] input.qvd output.parquet
   -quality-tolerance 1e-9    Relative tolerance for floating-point quality checks
   -quality-abs-tolerance 0   Absolute tolerance for floating-point quality checks
   -progress 1000000          Log every N rows, 0 disables progress
+  -inspect                   Read only the header and symbol tables, print the schema, and exit
   -force                     Overwrite an existing output file
   -strict                    Enable strict validation defaults
   -version                   Print the version and exit
@@ -173,6 +175,67 @@ Verify the output with an external reader:
 duckdb -c "describe select * from read_parquet('sales.parquet')"
 duckdb -c "select count(*) as n from read_parquet('sales.parquet')"
 ```
+
+## Inspecting a file
+
+`--inspect` reads the XML header and the symbol tables, prints the schema a
+conversion would produce, and exits. It never touches the record area, so the
+cost is independent of row count — on a 29 MiB, 5-million-row file it reads
+7.9 KiB and finishes in 0.01s, against 1.58s for the full conversion.
+
+```sh
+qvd2parquet --inspect products.qvd
+```
+
+```text
+File            products.qvd
+Table           products
+Rows            77
+Record size     7 bytes
+Symbols read    412 in 2ms (3.2 KiB)
+Records skipped 539 B not read
+Fields          9 of 9 selected
+
+COLUMN           QVD TYPE  SYMBOLS  NULLS  PARQUET TYPE   NOTES
+Einkaufspreis    REAL      75       0      decimal(5, 2)  REAL with 75 double symbols promoted to decimal(5,2); scale 2 inferred from values
+KategorieNr      INTEGER   8        0      int64          INTEGER with 8 integer symbols, written as int64
+Produktname      UNKNOWN   77       0      utf8           77 text symbols, written as utf8
+Listenpreis      REAL      60       0      decimal(5, 2)  REAL with 25 integer and 35 double symbols promoted to decimal(5,2); scale 2 inferred from values
+```
+
+The report is written to **stdout**, so it can be piped; the banner and any
+diagnostics stay on stderr. All type policy flags apply, so what you see is what
+a conversion would write — including `--exclude` and `--field-regex`:
+
+```sh
+qvd2parquet --inspect \
+  --exclude '%*' \
+  --field-regex '^[^-]*-\|\|-(?P<name>[^-]*)-\|\|-(?P<comment>.*)$' \
+  A057.qvd
+```
+
+```text
+Fields          4 of 6 selected (2 excluded: %A057_PKEY, %SYS_TS)
+
+COLUMN                                    QVD TYPE  SYMBOLS  NULLS  PARQUET TYPE   NOTES
+DATBI (A057-||-DATBI-||-Ende Gültigkeit)  INTEGER   2        0      int64          Ende Gültigkeit
+KBETR (A057-||-KBETR-||-Betrag)           REAL      2        0      decimal(4, 2)  Betrag
+```
+
+When the type policy rejects a column, `--inspect` prints the reason and falls
+back to the raw symbol profiles that explain it, then exits `3`:
+
+```text
+Schema could not be resolved:
+  schema/type policy error: mixed type column "CustomerID": symbols contain 1 numeric values and 1 strings; use --mixed=string ...
+
+COLUMN      QVD TYPE  SYMBOLS  NULLS  INTS  FLOATS  STRINGS  DUALS
+CustomerID  ASCII     2        0      1     0       1        0
+```
+
+That makes it a cheap pre-flight check in a pipeline: inspect first, and only
+convert once the schema is what you expect. `--schema-report` works in inspect
+mode too, for the same information as JSON.
 
 ## Selecting and renaming fields
 
