@@ -71,7 +71,19 @@ for platform in $PLATFORMS; do
     printf '  %-28s %s\n' "$platform" "$(ls -lh "$DIST/$name".* | awk '{print $5}')"
 done
 
-(cd "$DIST" && shasum -a 256 ./*.tar.gz ./*.zip 2>/dev/null | sed 's|\./||' > SHA256SUMS)
+# Collect the archives explicitly. Globbing both patterns directly would fail
+# under `set -e` when only one matches, which is what happens whenever a single
+# platform is built, e.g. PLATFORMS="linux/amd64".
+(
+    cd "$DIST"
+    shopt -s nullglob
+    archives=(*.tar.gz *.zip)
+    if [ ${#archives[@]} -eq 0 ]; then
+        echo "no archives were produced" >&2
+        exit 1
+    fi
+    shasum -a 256 "${archives[@]}" > SHA256SUMS
+)
 
 echo
 echo "artifacts in $DIST/:"
