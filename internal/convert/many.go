@@ -80,12 +80,25 @@ func rank(code int) int {
 	}
 }
 
+// InputProblem is a path that could not be examined. It is reported as a
+// failed file rather than aborting the run, so one bad argument does not stop
+// the inputs beside it from converting.
+type InputProblem struct {
+	Path string
+	Err  error
+}
+
 // FindInputs expands the command line into a sorted list of .qvd files. A
 // directory contributes the QVD files it contains, recursively when asked; any
 // other path is taken literally, so an oddly named file can still be converted.
-func FindInputs(paths []string, recursive bool) ([]string, error) {
+//
+// A path that cannot be examined is returned as a problem, not an error: the
+// batch guarantee is that every input is attempted, and aborting here would
+// discard the valid inputs listed beside a mistyped one.
+func FindInputs(paths []string, recursive bool) ([]string, []InputProblem) {
 	seen := make(map[string]bool)
 	var out []string
+	var problems []InputProblem
 	add := func(p string) {
 		if abs, err := filepath.Abs(p); err == nil {
 			if seen[abs] {
@@ -99,18 +112,20 @@ func FindInputs(paths []string, recursive bool) ([]string, error) {
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInput, err)
+			problems = append(problems, InputProblem{Path: p, Err: fmt.Errorf("%w: %v", ErrInput, err)})
+			continue
 		}
 		if !info.IsDir() {
 			add(p)
 			continue
 		}
 		if err := walkQVDs(p, recursive, add); err != nil {
-			return nil, err
+			problems = append(problems, InputProblem{Path: p, Err: err})
 		}
 	}
 	sort.Strings(out)
-	return out, nil
+	sort.Slice(problems, func(i, j int) bool { return problems[i].Path < problems[j].Path })
+	return out, problems
 }
 
 func walkQVDs(dir string, recursive bool, add func(string)) error {
@@ -153,6 +168,9 @@ type ManyOptions struct {
 	Recursive bool
 	// Log receives one structured record per file. May be nil.
 	Log *LogWriter
+	// Problems are inputs that could not even be examined. They are reported
+	// as failures alongside the files that did convert.
+	Problems []InputProblem
 }
 
 // RunMany converts every input, continuing past a failure so one bad file does
@@ -214,6 +232,12 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		}(i, in)
 	}
 	wg.Wait()
+
+	// An unreadable input is a failure of that input, not of the run.
+	for _, p := range many.Problems {
+		results = append(results, FileResult{Input: p.Path, Err: p.Err, Started: start})
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Input < results[j].Input })
 
 	b := &BatchResult{Results: results, Elapsed: time.Since(start)}
 	for _, r := range results {

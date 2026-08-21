@@ -203,8 +203,10 @@ FAILED (1):
   qvds/truncated.qvd           no XML header terminator (0x00) found: not a QVD file?
 ```
 
-**A failing file does not stop the run.** Every input is attempted, failures are
-listed at the end, and the exit code reports the most actionable one — a schema
+**A failing file does not stop the run.** Every input is attempted — including
+a path that does not exist, which is reported as a failed file rather than
+aborting the inputs beside it. Failures are listed at the end, and the exit
+code reports the most actionable one — a schema
 policy error you can fix outranks a generic read error. Add `--recursive` to
 descend into subdirectories.
 

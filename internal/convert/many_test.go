@@ -48,18 +48,15 @@ func folderFixture(t *testing.T, withNested, withBroken bool) string {
 func TestFindInputs(t *testing.T) {
 	src := folderFixture(t, true, false)
 
-	flat, err := FindInputs([]string{src}, false)
-	if err != nil {
-		t.Fatal(err)
+	flat, problems := FindInputs([]string{src}, false)
+	if len(problems) != 0 {
+		t.Fatalf("unexpected problems: %v", problems)
 	}
 	if len(flat) != 2 {
 		t.Errorf("non-recursive found %d files, want 2 (and no notes.txt): %v", len(flat), flat)
 	}
 
-	deep, err := FindInputs([]string{src}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	deep, _ := FindInputs([]string{src}, true)
 	if len(deep) != 3 {
 		t.Errorf("recursive found %d files, want 3: %v", len(deep), deep)
 	}
@@ -69,19 +66,25 @@ func TestFindInputs(t *testing.T) {
 	if _, err := qvdtest.Build(other, sampleTable(5)); err != nil {
 		t.Fatal(err)
 	}
-	got, err := FindInputs([]string{other}, false)
-	if err != nil || len(got) != 1 {
-		t.Errorf("explicit file: %v, %v", got, err)
+	got, _ := FindInputs([]string{other}, false)
+	if len(got) != 1 {
+		t.Errorf("explicit file: %v", got)
 	}
 
 	// The same file named twice is converted once.
-	dup, err := FindInputs([]string{other, other}, false)
-	if err != nil || len(dup) != 1 {
-		t.Errorf("duplicate inputs: %v, %v", dup, err)
+	dup, _ := FindInputs([]string{other, other}, false)
+	if len(dup) != 1 {
+		t.Errorf("duplicate inputs: %v", dup)
 	}
 
-	if _, err := FindInputs([]string{filepath.Join(src, "nope")}, false); err == nil {
-		t.Error("a missing path should be an error")
+	// A missing path is a reported problem, not an abort: the inputs beside it
+	// must still convert.
+	found, problems := FindInputs([]string{filepath.Join(src, "nope")}, false)
+	if len(found) != 0 || len(problems) != 1 {
+		t.Errorf("missing path gave %v, %v", found, problems)
+	}
+	if !errors.Is(problems[0].Err, ErrInput) {
+		t.Errorf("problem err = %v, want ErrInput", problems[0].Err)
 	}
 }
 
@@ -102,10 +105,7 @@ func TestRunManyContinuesPastAFailure(t *testing.T) {
 	src := folderFixture(t, false, true)
 	outDir := filepath.Join(t.TempDir(), "out")
 
-	inputs, err := FindInputs([]string{src}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	inputs, _ := FindInputs([]string{src}, false)
 	opts := testOptions()
 	b, err := RunMany(context.Background(), inputs, &opts, &ManyOptions{OutDir: outDir}, nil)
 	if err != nil {
@@ -174,15 +174,12 @@ func TestRunManyRejectsOutputCollisions(t *testing.T) {
 	if _, err := qvdtest.Build(filepath.Join(src, "nested.qvd"), sampleTable(5)); err != nil {
 		t.Fatal(err)
 	}
-	inputs, err := FindInputs([]string{src}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	inputs, _ := FindInputs([]string{src}, true)
 	outDir := filepath.Join(t.TempDir(), "out")
 
 	opts := testOptions()
 	opts.Force = true // must not paper over the collision
-	_, err = RunMany(context.Background(), inputs, &opts, &ManyOptions{OutDir: outDir}, nil)
+	_, err := RunMany(context.Background(), inputs, &opts, &ManyOptions{OutDir: outDir}, nil)
 	if !errors.Is(err, parquetwrite.ErrOutput) {
 		t.Fatalf("err = %v, want ErrOutput", err)
 	}
@@ -223,10 +220,7 @@ func TestSplitWorkerBudget(t *testing.T) {
 // Files convert correctly when several run at once.
 func TestRunManyConcurrent(t *testing.T) {
 	src := folderFixture(t, true, false)
-	inputs, err := FindInputs([]string{src}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	inputs, _ := FindInputs([]string{src}, true)
 	outDir := filepath.Join(t.TempDir(), "out")
 	opts := testOptions()
 	opts.Quality = QualityFull
@@ -256,10 +250,7 @@ func TestLogWriterRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputs, err := FindInputs([]string{src}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	inputs, _ := FindInputs([]string{src}, false)
 	opts := testOptions()
 	opts.Quality = QualityNumeric
 	if _, err := RunMany(context.Background(), inputs, &opts,
@@ -344,10 +335,7 @@ func TestLogSchemaIsStableOnACleanRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputs, err := FindInputs([]string{src}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	inputs, _ := FindInputs([]string{src}, false)
 	opts := testOptions()
 	opts.Quality = QualityNumeric
 	if _, err := RunMany(context.Background(), inputs, &opts,
@@ -384,5 +372,53 @@ func TestLogSchemaIsStableOnACleanRun(t *testing.T) {
 					"selecting it would not bind on a clean run:\n%s", k, line)
 			}
 		}
+	}
+}
+
+// A path that cannot be examined must be reported as a failed file, not abort
+// the run: the batch guarantee is that every input is attempted.
+func TestRunManyReportsUnreadableInputs(t *testing.T) {
+	src := folderFixture(t, false, false)
+	outDir := filepath.Join(t.TempDir(), "out")
+
+	good, problems := FindInputs([]string{src, filepath.Join(src, "nope.qvd")}, false)
+	if len(good) != 2 || len(problems) != 1 {
+		t.Fatalf("found %v with problems %v", good, problems)
+	}
+
+	opts := testOptions()
+	b, err := RunMany(context.Background(), good, &opts,
+		&ManyOptions{OutDir: outDir, Problems: problems}, nil)
+	if err != nil {
+		t.Fatalf("RunMany: %v", err)
+	}
+	if b.Converted != 2 {
+		t.Errorf("converted = %d, want 2: a bad argument must not stop the good ones", b.Converted)
+	}
+	if b.Failed != 1 {
+		t.Errorf("failed = %d, want 1", b.Failed)
+	}
+	if !strings.Contains(b.Summary(), "nope.qvd") {
+		t.Errorf("the summary should name the unreadable input:\n%s", b.Summary())
+	}
+	// It must also appear in the log, so a batch audit sees it.
+	if len(b.Results) != 3 {
+		t.Errorf("got %d results, want 3", len(b.Results))
+	}
+}
+
+// The log commonly sits inside --out-dir, which may not exist yet.
+func TestNewLogWriterCreatesItsDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does", "not", "exist", "run.jsonl")
+	log, err := NewLogWriter(path)
+	if err != nil {
+		t.Fatalf("NewLogWriter should create the parent directory: %v", err)
+	}
+	log.Summary(&BatchResult{})
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("log not written: %v", err)
 	}
 }

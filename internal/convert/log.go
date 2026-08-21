@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -21,6 +22,12 @@ type LogWriter struct {
 
 // NewLogWriter creates or truncates the log file.
 func NewLogWriter(path string) (*LogWriter, error) {
+	// The log commonly sits inside --out-dir, which may not exist yet.
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create log directory %s: %w", dir, err)
+		}
+	}
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, fmt.Errorf("create log %s: %w", path, err)

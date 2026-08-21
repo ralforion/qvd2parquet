@@ -273,19 +273,23 @@ func run() int {
 func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	outDir string, fileWorkers int, recursive bool, logPath string, logf convert.Logf) int {
 
-	inputs, err := convert.FindInputs(paths, recursive)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
-		return exitCodeFor(err)
-	}
-	if len(inputs) == 0 {
+	inputs, problems := convert.FindInputs(paths, recursive)
+	if len(inputs) == 0 && len(problems) == 0 {
 		fmt.Fprintf(os.Stderr, "%s: no .qvd files found in %s\n",
 			programName, strings.Join(paths, ", "))
 		return exitUsage
 	}
 
+	// The output directory has to exist before the log, which commonly lives
+	// inside it.
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: create output directory %s: %v\n", programName, outDir, err)
+		return exitOutput
+	}
+
 	var log *convert.LogWriter
 	if logPath != "" {
+		var err error
 		if log, err = convert.NewLogWriter(logPath); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
 			return exitOutput
@@ -298,6 +302,7 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		FileWorkers: fileWorkers,
 		Recursive:   recursive,
 		Log:         log,
+		Problems:    problems,
 	}, logf)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
