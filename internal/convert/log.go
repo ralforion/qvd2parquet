@@ -45,27 +45,34 @@ func (w *LogWriter) Path() string {
 }
 
 // fileRecord is one converted input.
+//
+// Every field is emitted on every record, including the empty ones. Omitting
+// them would make the column absent whenever no record happened to carry it,
+// so `where status='failed'` would fail to bind on a run with no failures --
+// the monitoring query breaking exactly when everything worked. A stable
+// schema is the point of writing a machine-readable log.
 type fileRecord struct {
 	Type      string `json:"type"`
 	Time      string `json:"time"`
 	Input     string `json:"input"`
-	Output    string `json:"output,omitempty"`
+	Output    string `json:"output"`
 	Status    string `json:"status"`
-	Error     string `json:"error,omitempty"`
+	Error     string `json:"error"`
 	ElapsedMs int64  `json:"elapsedMs"`
 
-	Table       string `json:"table,omitempty"`
-	Rows        int64  `json:"rows,omitempty"`
-	Columns     int    `json:"columns,omitempty"`
-	OutputBytes int64  `json:"outputBytes,omitempty"`
-	SymbolsRead int64  `json:"symbolsRead,omitempty"`
-	RowsPerSec  int64  `json:"rowsPerSecond,omitempty"`
+	Table       string `json:"table"`
+	Rows        int64  `json:"rows"`
+	Columns     int    `json:"columns"`
+	OutputBytes int64  `json:"outputBytes"`
+	SymbolsRead int64  `json:"symbolsRead"`
+	RowsPerSec  int64  `json:"rowsPerSecond"`
 
 	// Quality carries the gate's verdict when one ran, so a batch can be
-	// audited without opening every per-file report.
-	QualityMode   string   `json:"qualityMode,omitempty"`
-	QualityPassed *bool    `json:"qualityPassed,omitempty"`
-	QualityErrors []string `json:"qualityErrors,omitempty"`
+	// audited without opening every per-file report. QualityPassed is null
+	// when no gate ran, which is distinct from a gate that failed.
+	QualityMode   string   `json:"qualityMode"`
+	QualityPassed *bool    `json:"qualityPassed"`
+	QualityErrors []string `json:"qualityErrors"`
 }
 
 // File appends a record for one input.
@@ -74,12 +81,13 @@ func (w *LogWriter) File(r FileResult) {
 		return
 	}
 	rec := fileRecord{
-		Type:      "file",
-		Time:      r.Started.UTC().Format(time.RFC3339Nano),
-		Input:     r.Input,
-		Output:    r.Output,
-		Status:    "ok",
-		ElapsedMs: r.Elapsed.Milliseconds(),
+		Type:          "file",
+		QualityErrors: []string{},
+		Time:          r.Started.UTC().Format(time.RFC3339Nano),
+		Input:         r.Input,
+		Output:        r.Output,
+		Status:        "ok",
+		ElapsedMs:     r.Elapsed.Milliseconds(),
 	}
 	switch {
 	case r.Err != nil:

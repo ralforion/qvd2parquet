@@ -329,3 +329,60 @@ func TestPerFileReportPaths(t *testing.T) {
 		t.Errorf("no report configured should stay empty, got %q", got)
 	}
 }
+
+// Every record must carry every field, including the empty ones. If a field
+// were omitted when empty, its column would be absent from a run where no
+// record happened to carry it -- so `where status='failed'` would fail to bind
+// on a run with no failures, breaking the monitoring query exactly when
+// everything worked.
+func TestLogSchemaIsStableOnACleanRun(t *testing.T) {
+	src := folderFixture(t, false, false) // no broken file: nothing fails
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "run.jsonl")
+
+	log, err := NewLogWriter(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, err := FindInputs([]string{src}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.Quality = QualityNumeric
+	if _, err := RunMany(context.Background(), inputs, &opts,
+		&ManyOptions{OutDir: filepath.Join(dir, "out"), Log: log}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"type", "time", "input", "output", "status", "error", "elapsedMs",
+		"rows", "columns", "outputBytes", "symbolsRead", "rowsPerSecond",
+		"qualityMode", "qualityPassed", "qualityErrors",
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatal(err)
+		}
+		if rec["type"] != "file" {
+			continue
+		}
+		if rec["status"] != "ok" {
+			t.Fatalf("fixture assumption wrong: %v", rec)
+		}
+		for _, k := range want {
+			if _, ok := rec[k]; !ok {
+				t.Errorf("field %q is missing from a successful record; a query "+
+					"selecting it would not bind on a clean run:\n%s", k, line)
+			}
+		}
+	}
+}
