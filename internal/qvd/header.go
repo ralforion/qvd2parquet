@@ -45,6 +45,11 @@ type FieldHeader struct {
 	Offset       int64        `xml:"Offset"`
 	Length       int64        `xml:"Length"`
 	Comment      string       `xml:"Comment"`
+	// Tags carries Qlik's semantic field tags, such as $numeric, $integer,
+	// $text, $date, $timestamp and $time. Qlik Sense and newer QlikView
+	// versions populate these even when NumberFormat/Type is left empty, so
+	// they are often the only reliable statement of a field's meaning.
+	Tags []string `xml:"Tags>String"`
 }
 
 // NumberFormat mirrors the field's declared display/number format.
@@ -188,9 +193,21 @@ func (h *TableHeader) Columns() []Column {
 			DecSep:      decodeSeparator(f.NumberFormat.Dec),
 			ThouSep:     decodeSeparator(f.NumberFormat.Thou),
 			Fmt:         f.NumberFormat.Fmt,
+			Tags:        normalizeTags(f.Tags),
 		}
 	}
 	return cols
+}
+
+// normalizeTags lower-cases and trims the field's tags, dropping blanks.
+func normalizeTags(tags []string) []string {
+	var out []string
+	for _, t := range tags {
+		if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // decodeSeparator normalizes a NumberFormat separator, which Qlik may store

@@ -78,7 +78,12 @@ func TestClassifyDualFormattingVsInformative(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ClassifyDual(tc.col, tc.syms, tc.strategy, time.UTC)
+			rc := &ResolvedColumn{
+				Strategy: tc.strategy,
+				DecSep:   tc.col.DecSep,
+				ThouSep:  tc.col.ThouSep,
+			}
+			got := ClassifyDual(tc.col, tc.syms, rc, time.UTC)
 			if got.Kind != tc.want {
 				t.Errorf("kind = %v, want %v (informative=%d of %d, example %q)",
 					got.Kind, tc.want, got.Informative, got.Duals, got.Example)
@@ -224,5 +229,133 @@ func TestParseLocalizedNumber(t *testing.T) {
 		if ok && got != tc.want {
 			t.Errorf("parseLocalizedNumber(%q) = %v, want %v", tc.s, got, tc.want)
 		}
+	}
+}
+
+// A blank display string is no evidence of anything, so it must not support
+// reading an untyped numeric column as a date.
+func TestInferDateRejectsBlankDisplayStrings(t *testing.T) {
+	col := qvd.Column{QlikType: qvd.QlikUnknown}
+	syms := []qvd.Symbol{
+		qvdtest.DualInt(40502, ""),
+		qvdtest.DualInt(40503, ""),
+	}
+	if inf, ok := InferDateTimeFromDuals(col, syms, time.UTC); ok {
+		t.Errorf("blank display strings should not infer %v", inf.Type)
+	}
+	// One blank among real dates is also not enough.
+	syms = []qvd.Symbol{
+		qvdtest.DualInt(40502, "11/20/2010"),
+		qvdtest.DualInt(40503, ""),
+	}
+	if _, ok := InferDateTimeFromDuals(col, syms, time.UTC); ok {
+		t.Error("a blank display string should block inference")
+	}
+}
+
+// A TIME column's display string has no calendar day, so it must not be
+// treated as informative just because textRendersDate wants one.
+func TestTimeDualsAreFormatting(t *testing.T) {
+	f := qvdtest.Field{Name: "Clock", Type: "TIME", Rows: []int{0, 1},
+		Symbols: []qvd.Symbol{
+			qvdtest.DualFloat(0.5, "12:00:00"),
+			qvdtest.DualFloat(0.25, "06:00:00"),
+		}}
+	rs := mustResolve(t, f, nil) // --dual defaults to auto
+	if len(rs.Columns) != 1 {
+		var names []string
+		for _, c := range rs.Columns {
+			names = append(names, c.Name)
+		}
+		t.Fatalf("got %d columns %v, want 1: a rendered time adds nothing to a time32 column",
+			len(rs.Columns), names)
+	}
+	if rs.Columns[0].Strategy != StrategyTimeMillis {
+		t.Errorf("strategy = %v, want StrategyTimeMillis", rs.Columns[0].Strategy)
+	}
+}
+
+func TestTextRendersTime(t *testing.T) {
+	// 0.5 of a day is 12:00:00.
+	for _, s := range []string{"12:00:00", "12:00", "12:00:00 PM"} {
+		if !textRendersTime(s, 0.5) {
+			t.Errorf("%q should render 0.5 of a day", s)
+		}
+	}
+	for _, s := range []string{"06:30:00", "Open"} {
+		if textRendersTime(s, 0.5) {
+			t.Errorf("%q should not render 0.5 of a day", s)
+		}
+	}
+}
+
+// A decimal column may be written from the display string or from a rounded
+// payload, so redundancy must be judged against the written value.
+func TestDecimalDualComparesAgainstWrittenValue(t *testing.T) {
+	// The payload carries more precision than the declared scale, so the
+	// written value is the rounded 1.23 that the display string already shows.
+	f := qvdtest.Field{Name: "Amount", Type: "MONEY", NDec: 2, Dec: ".", Rows: []int{0, 1},
+		Symbols: []qvd.Symbol{
+			qvdtest.DualFloat(1.234, "1.23"),
+			qvdtest.DualFloat(9.876, "9.88"),
+		}}
+	rs := mustResolve(t, f, nil)
+	if len(rs.Columns) != 1 {
+		var names []string
+		for _, c := range rs.Columns {
+			names = append(names, c.Name)
+		}
+		t.Fatalf("got %d columns %v, want 1: the text matches the written decimal",
+			len(rs.Columns), names)
+	}
+	if got := rs.Columns[0].Scaled[0].String(); got != "123" {
+		t.Errorf("scaled = %s, want 123", got)
+	}
+
+	// A genuine label beside a decimal is still kept.
+	f2 := qvdtest.Field{Name: "Amount", Type: "MONEY", NDec: 2, Dec: ".", Rows: []int{0},
+		Symbols: []qvd.Symbol{qvdtest.DualFloat(1.23, "billed")}}
+	if rs := mustResolve(t, f2, nil); len(rs.Columns) != 2 {
+		t.Errorf("a label beside a decimal should be kept, got %d columns", len(rs.Columns))
+	}
+}
+
+// The Qlik $date/$timestamp tags identify a date column with no duals at all,
+// which the display-string heuristic cannot do.
+func TestTaggedTypeIdentifiesPlainNumericDates(t *testing.T) {
+	tests := []struct {
+		name string
+		tags []string
+		syms []qvd.Symbol
+		want string
+	}{
+		{"$date", []string{"$numeric", "$date"},
+			[]qvd.Symbol{qvdtest.Int(45000), qvdtest.Int(45001)}, "date32"},
+		{"$timestamp", []string{"$numeric", "$timestamp"},
+			[]qvd.Symbol{qvdtest.Float(45000.25), qvdtest.Float(45001.5)}, "timestamp[ms, tz=UTC]"},
+		{"$integer stays numeric", []string{"$numeric", "$integer"},
+			[]qvd.Symbol{qvdtest.Int(45000), qvdtest.Int(45001)}, "int64"},
+		{"no tags stay numeric", nil,
+			[]qvd.Symbol{qvdtest.Int(45000), qvdtest.Int(45001)}, "int64"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := qvdtest.Field{Name: "V", Type: "", Rows: []int{0, 1}, Tags: tc.tags, Symbols: tc.syms}
+			rs := mustResolve(t, f, func(o *Options) { o.Location = utc(); o.TimezoneName = "UTC" })
+			if got := rs.Columns[0].ArrowType.String(); got != tc.want {
+				t.Errorf("type = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// A declared type still wins over a tag, since it is the more specific
+// statement.
+func TestDeclaredTypeBeatsTag(t *testing.T) {
+	f := qvdtest.Field{Name: "V", Type: "INTEGER", Rows: []int{0},
+		Tags: []string{"$date"}, Symbols: []qvd.Symbol{qvdtest.Int(45000)}}
+	rs := mustResolve(t, f, nil)
+	if got := rs.Columns[0].ArrowType.String(); got != "int64" {
+		t.Errorf("type = %s, want int64: a declared INTEGER outranks a $date tag", got)
 	}
 }

@@ -10,6 +10,48 @@ previous behaviour.
 
 ## [Unreleased]
 
+### Changed
+
+- **`--dual` now defaults to `auto`.** A Qlik dual's display string is written
+  as a `${name}__text` column only when it carries something the numeric column
+  does not. A localized number such as `1.234,56`, or a date rendered beside a
+  column that already encodes it, is redundant and dropped; a label such as
+  `Open` beside `1` is kept, and the reason is reported. One informative string
+  is enough to keep the column, so the default errs towards preserving data.
+  `--dual=numeric`, `text` and `columns` still force a choice.
+
+  Redundancy is judged against the value that will actually be written, not the
+  raw payload, so a `MONEY` field carrying `1.234` and displaying `1.23` at
+  scale 2 does not produce a text column.
+
+- The banner now carries the year: `(c) 2026, RALFORION d.o.o.`
+
+### Added
+
+- `--inspect` reads the XML header and the symbol tables, prints the schema a
+  conversion would produce, and exits without touching the record area. The
+  cost is independent of row count: on a 29 MiB, 5-million-row file it reads
+  7.9 KiB and finishes in 0.01s, against 1.58s for the full conversion. All
+  type policy flags apply, so the report shows what a conversion would write.
+  A file the type policy rejects prints the reason plus the raw symbol profiles
+  that explain it and exits `3`, which makes it a cheap pre-flight check. The
+  report goes to stdout; `--schema-report` also works in inspect mode.
+
+- Qlik's semantic field tags are now read. A field declaring no
+  `NumberFormat/Type` but tagged `$date`, `$timestamp`, `$time` or `$interval`
+  is resolved to that type. This works for plain numeric fields carrying no
+  dual display strings, which no amount of text inspection could identify, and
+  it is what Qlik Sense writes. A declared type still wins over a tag.
+
+- `--infer-dates` (on by default) is the fallback for files that carry no tags:
+  a column with no declared type is read as a date or timestamp when every
+  display string renders its Excel-style serial value as one. The check is
+  format-agnostic and accepts a neighbouring day, since the string was rendered
+  in whatever timezone wrote the file and a whole-hour offset can move the
+  calendar date. Serials outside roughly 1900 to 2200 are never read as dates,
+  blank display strings are not evidence, and a column mixing dates with
+  anything else is left alone.
+
 ## [0.3.1] - 2026-08-21
 
 ### Fixed

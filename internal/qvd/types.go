@@ -3,7 +3,10 @@
 // dependency.
 package qvd
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // QlikType is the declared NumberFormat/Type of a QVD field.
 type QlikType int
@@ -99,6 +102,39 @@ type Column struct {
 	ThouSep string
 	// Fmt is the declared display format string.
 	Fmt string
+	// Tags holds the field's Qlik semantic tags, lower-cased: $numeric,
+	// $integer, $text, $date, $timestamp and so on. Qlik Sense and newer
+	// QlikView versions populate these even when NumberFormat/Type is left
+	// empty, so they are often the only reliable statement of a field's
+	// meaning.
+	Tags []string
+}
+
+// HasTag reports whether the column carries the given Qlik tag, which may be
+// written with or without the leading "$".
+func (c Column) HasTag(tag string) bool {
+	tag = strings.ToLower(strings.TrimPrefix(tag, "$"))
+	for _, t := range c.Tags {
+		if strings.TrimPrefix(t, "$") == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// TaggedType maps Qlik's date/time tags onto a QlikType, which is how a field
+// declaring no NumberFormat/Type can still state that it holds dates. It
+// reports false when the column carries no such tag.
+func (c Column) TaggedType() (QlikType, bool) {
+	switch {
+	case c.HasTag("timestamp"):
+		return QlikTimestamp, true
+	case c.HasTag("date"):
+		return QlikDate, true
+	case c.HasTag("time"), c.HasTag("interval"):
+		return QlikTime, true
+	}
+	return QlikUnknown, false
 }
 
 // SymbolKind describes which sides of a decoded symbol carry a value.

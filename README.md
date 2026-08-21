@@ -377,13 +377,27 @@ Whether a rendered date counts as redundant depends on the type it sits beside.
 `11/20/2010` next to a `date32` column adds nothing, but next to a bare
 `float64` serial it is the only human-readable form, so it is kept.
 
+### Identifying dates without a declared type
+
+Qlik writes semantic tags alongside each field. A field declaring no
+`NumberFormat/Type` but tagged `$date`, `$timestamp`, `$time` or `$interval` is
+resolved to that type:
+
+```text
+schema: OrderDate: DATE, written as date32 (days since epoch); no declared type, but tagged $date
+schema: Created: TIMESTAMP, written as timestamp[ms, tz=UTC]; no declared type, but tagged $timestamp
+```
+
+This is the most reliable signal, and the only one that works for a **plain
+numeric field carrying no display strings** — a bare Excel serial that no
+amount of text inspection could identify. A declared type still wins over a
+tag, since it is the more specific statement.
+
 ### Inferring dates from display strings
 
-QVDs written by tools other than QlikView often leave `NumberFormat/Type` empty.
-A date column then looks like a bare Excel serial that no reader can interpret.
-With `--infer-dates` (on by default), a column with no declared type is read as
-a date or timestamp when **every** display string renders its serial value as
-one:
+Older files carry no tags at all. `--infer-dates` (on by default) is the
+fallback: a column with no declared type is read as a date or timestamp when
+**every** display string renders its Excel-style serial value as one:
 
 ```text
 schema: Date: TIMESTAMP, written as timestamp[ms, tz=UTC]; no declared type, but all 18 display strings render their value as a timestamp (e.g. "11/20/2010"), so it is read as one
@@ -394,14 +408,15 @@ every number in the string to be one of that date's components, with the day
 itself present. A neighbouring day is accepted, because the string was rendered
 in whatever timezone wrote the file and a whole-hour offset can move the
 calendar date — real QVDs contain exactly this. Serials outside roughly 1900 to
-2200 are never read as dates, and a column mixing dates with anything else is
-left alone. Pass `--infer-dates=false` to disable it.
+2200 are never read as dates, blank display strings are not evidence, and a
+column mixing dates with anything else is left alone. Pass `--infer-dates=false`
+to disable it.
 
 Output column names must be unique. If a generated `${name}__text` column would
 collide with a real source column of that name, the conversion fails with a
 schema policy error rather than writing an ambiguous Parquet schema.
 
-The defaults — `--mixed=error --numeric-promote=decimal --dual=numeric
+The defaults — `--mixed=error --numeric-promote=decimal --dual=auto
 --mixed-string-fallback=false` — stop an ETL job on unexpected schema drift
 while still handling the common `int + float` and dual-numeric cases.
 

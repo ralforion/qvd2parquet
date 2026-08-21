@@ -57,18 +57,35 @@ type DualClassification struct {
 // The strategy matters: a serial such as 40502 shown as "11/20/2010" is
 // redundant beside a date32 column, but not beside a float64 one, where the
 // reader has no way to know the number is a date at all.
-func ClassifyDual(col qvd.Column, syms []qvd.Symbol, strategy ValueStrategy, loc *time.Location) DualClassification {
+func ClassifyDual(col qvd.Column, syms []qvd.Symbol, rc *ResolvedColumn, loc *time.Location) DualClassification {
 	var c DualClassification
-	dateTyped := strategy == StrategyDate32 || strategy == StrategyTimestampMillis ||
-		strategy == StrategyTimeMillis
-	for _, s := range syms {
+	strategy := rc.Strategy
+	for i, s := range syms {
 		if s.Kind != qvd.SymbolDualIntString && s.Kind != qvd.SymbolDualFloatString {
 			continue
 		}
 		c.Duals++
 		n, _ := s.Numeric()
-		if textRendersNumber(s.Text, n, col.DecSep, col.ThouSep) ||
-			(dateTyped && textRendersDate(s.Text, n, loc)) {
+
+		redundant := false
+		switch strategy {
+		case StrategyDecimal:
+			// The decimal column may be written from the display string itself,
+			// or from a rounded payload, so compare against what will actually
+			// be written rather than the raw double.
+			redundant = textRendersDecimal(s.Text, i, rc)
+		case StrategyDate32, StrategyTimestampMillis:
+			redundant = textRendersDate(s.Text, n, loc)
+		case StrategyTimeMillis:
+			redundant = textRendersTime(s.Text, n)
+		default:
+			redundant = textRendersNumber(s.Text, n, col.DecSep, col.ThouSep)
+		}
+		// A display string that is simply the number is always redundant.
+		if !redundant {
+			redundant = textRendersNumber(s.Text, n, col.DecSep, col.ThouSep)
+		}
+		if redundant {
 			continue
 		}
 		c.Informative++
@@ -202,6 +219,70 @@ func dateTextRemainderOK(t string) bool {
 	return dateLeftovers.MatchString(rest)
 }
 
+// textRendersTime reports whether text renders the fraction-of-a-day value n
+// as a clock time. A TIME column carries no calendar date, so the day-token
+// requirement that textRendersDate applies would reject "12:30:00" outright.
+func textRendersTime(text string, n float64) bool {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return true
+	}
+	if !dateTextRemainderOK(t) {
+		return false
+	}
+	ms, ok := qvd.QlikFractionToTimeMillis(n)
+	if !ok {
+		return false
+	}
+	total := int(ms)
+	h, m := total/3600000, total/60000%60
+	sec, milli := total/1000%60, total%1000
+
+	allowed := map[int]bool{h: true, m: true, sec: true, milli: true}
+	if h%12 == 0 {
+		allowed[12] = true
+	} else {
+		allowed[h%12] = true
+	}
+	nums := dateTokens.FindAllString(t, -1)
+	if len(nums) < 2 {
+		return false
+	}
+	for _, tok := range nums {
+		v, err := strconv.Atoi(tok)
+		if err != nil || !allowed[v] {
+			return false
+		}
+	}
+	return true
+}
+
+// textRendersDecimal reports whether text is a rendering of the exact decimal
+// that will be written for symbol index i.
+func textRendersDecimal(text string, i int, rc *ResolvedColumn) bool {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return true
+	}
+	if i < 0 || i >= len(rc.Scaled) || rc.Scaled[i] == nil {
+		return false
+	}
+	// FormatScaled renders with "." as the separator, so compare the parsed
+	// values rather than the strings.
+	want, err := strconv.ParseFloat(FormatScaled(rc.Scaled[i], rc.Decimal.Scale), 64)
+	if err != nil {
+		return false
+	}
+	got, ok := parseLocalizedNumber(t, decSepOr(rc), thouSepOr(rc))
+	if !ok {
+		return false
+	}
+	// Both sides carry at most Scale decimals, so half a unit in the last
+	// place is the right tolerance.
+	eps := math.Pow(10, -float64(rc.Decimal.Scale)) / 2
+	return math.Abs(want-got) <= eps
+}
+
 // parseLocalizedNumber parses a display string using the field's declared
 // separators, tolerating a leading sign, grouping, and a trailing percent or
 // currency-free suffix-less form.
@@ -292,6 +373,11 @@ func InferDateTimeFromDuals(col qvd.Column, syms []qvd.Symbol, loc *time.Locatio
 		if s.Kind != qvd.SymbolDualIntString && s.Kind != qvd.SymbolDualFloatString {
 			return DateInference{}, false
 		}
+		// A blank display string says nothing about the value, so it cannot
+		// support reading the column as a date.
+		if strings.TrimSpace(s.Text) == "" {
+			return DateInference{}, false
+		}
 		n, _ := s.Numeric()
 		if n < minDateSerial || n > maxDateSerial {
 			return DateInference{}, false
@@ -328,3 +414,14 @@ func (d DateInference) Note() string {
 	return fmt.Sprintf("no declared type, but all %d display strings render their value as a %s (e.g. %q), so it is read as one",
 		d.Checked, strings.ToLower(d.Type.String()), d.Example)
 }
+
+// decSepOr and thouSepOr fall back to the conventional separators when the
+// column's header declared none.
+func decSepOr(rc *ResolvedColumn) string {
+	if rc.DecSep == "" {
+		return "."
+	}
+	return rc.DecSep
+}
+
+func thouSepOr(rc *ResolvedColumn) string { return rc.ThouSep }

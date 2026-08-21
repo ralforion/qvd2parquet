@@ -23,6 +23,8 @@ type Field struct {
 	Thou    string // thousands separator, literal
 	Symbols []qvd.Symbol
 	Rows    []int
+	// Tags are Qlik semantic field tags such as "$numeric", "$date".
+	Tags []string
 }
 
 // Table is a synthetic QVD.
@@ -194,6 +196,11 @@ func buildHeader(t Table, layouts []layout, offsets, lengths []int64,
 		fmt.Fprintf(&b, "      <NoOfSymbols>%d</NoOfSymbols>\n", len(f.Symbols))
 		fmt.Fprintf(&b, "      <Offset>%d</Offset>\n", offsets[i])
 		fmt.Fprintf(&b, "      <Length>%d</Length>\n", lengths[i])
+		b.WriteString("      <Tags>\n")
+		for _, t := range f.Tags {
+			fmt.Fprintf(&b, "        <String>%s</String>\n", t)
+		}
+		b.WriteString("      </Tags>\n")
 		b.WriteString("    </QvdFieldHeader>\n")
 	}
 	b.WriteString("  </Fields>\n")

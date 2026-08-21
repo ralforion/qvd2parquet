@@ -82,6 +82,10 @@ type ResolvedColumn struct {
 	// DecimalRounded counts values that did not fit the declared scale and
 	// were rounded to it. Non-zero only when --decimal-strict is false.
 	DecimalRounded int64
+	// DecSep and ThouSep carry the source field's declared separators, so a
+	// display string can be compared against the written value.
+	DecSep  string
+	ThouSep string
 }
 
 // ResolvedSchema is the full output schema plus the reasoning behind it.
@@ -360,7 +364,7 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 	if effectiveDual == DualAuto {
 		effectiveDual = DualNumeric
 		if dual {
-			cl := ClassifyDual(col, syms, numeric.Strategy, opts.Location)
+			cl := ClassifyDual(col, syms, &numeric, opts.Location)
 			dualNote = cl.Note(col.Name, col.Name+"__text")
 			if cl.Kind == DualInformative {
 				effectiveDual = DualColumns
@@ -399,10 +403,17 @@ func resolveNumericColumn(base ResolvedColumn, col qvd.Column, prof *qvd.ColumnP
 	// A QVD written by something other than QlikView often leaves
 	// NumberFormat/Type empty. Without this, a date column would be written as
 	// a bare Excel serial that no reader can interpret.
-	if opts.InferDates && qlikType == qvd.QlikUnknown {
-		if inf, ok := InferDateTimeFromDuals(col, syms, opts.Location); ok {
-			qlikType = inf.Type
-			inferNote = inf.Note()
+	if qlikType == qvd.QlikUnknown {
+		// Qlik's own semantic tags are authoritative and, unlike the display
+		// strings, are present on plain numeric fields that carry no duals.
+		if tagged, ok := col.TaggedType(); ok {
+			qlikType = tagged
+			inferNote = fmt.Sprintf("no declared type, but tagged $%s", strings.ToLower(tagged.String()))
+		} else if opts.InferDates {
+			if inf, ok := InferDateTimeFromDuals(col, syms, opts.Location); ok {
+				qlikType = inf.Type
+				inferNote = inf.Note()
+			}
 		}
 	}
 
