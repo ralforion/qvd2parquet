@@ -10,6 +10,27 @@ previous behaviour.
 
 ## [Unreleased]
 
+### Added
+
+- `--out-dir` converts a whole folder: pass files or directories, and each
+  `.qvd` becomes a `.parquet` of the same name. A failing file does not stop
+  the run; every input is attempted, failures are listed at the end, and the
+  exit code reports the most actionable one. `--recursive` descends into
+  subdirectories. Two inputs that would produce the same output file are
+  refused before anything is written, since `--force` would otherwise silently
+  overwrite the first result.
+
+- `--file-workers` converts several files at once and divides the decode
+  workers between them, so the total stays near one per CPU. This is why folder
+  conversion is built in rather than left to a shell loop: separate processes
+  would each start `NumCPU` workers and oversubscribe the machine.
+
+- `--log` writes JSON Lines, one record per file plus a summary, so a finished
+  run can be queried with DuckDB or jq rather than read. Each record carries
+  row and column counts, output size, elapsed time, throughput, and the quality
+  gate's verdict. In batch mode `--schema-report` and `--quality-report` write
+  one document per input, named after it.
+
 ### Changed
 
 - **`--dual` now defaults to `auto`.** A Qlik dual's display string is written

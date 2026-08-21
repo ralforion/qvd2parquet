@@ -91,6 +91,7 @@ func run() int {
 		fmt.Fprintf(out, "%s\n", banner())
 		fmt.Fprintf(out, "Convert Qlik QVD files to Parquet.\n\n")
 		fmt.Fprintf(out, "Usage:\n  qvd2parquet [options] input.qvd output.parquet\n")
+		fmt.Fprintf(out, "  qvd2parquet --out-dir DIR [options] <file-or-directory>...\n")
 		fmt.Fprintf(out, "  qvd2parquet --inspect [options] input.qvd\n\n")
 		fmt.Fprintf(out, "Options:\n")
 		fs.PrintDefaults()
@@ -132,6 +133,10 @@ func run() int {
 		strict        = fs.Bool("strict", false, "Enable strict validation defaults")
 		emptyAsNull   = fs.Bool("empty-as-null", def.EmptyStringAsNull, "Write an empty string symbol as null, as Qlik treats it")
 		inferDates    = fs.Bool("infer-dates", def.InferDates, "Read an untyped column as a date/timestamp when its display strings render its serial value as one")
+		outDir        = fs.String("out-dir", "", "Convert every input into this directory, one .parquet per .qvd")
+		fileWorkers   = fs.Int("file-workers", 1, "Files to convert at once; decode workers are divided between them")
+		recursive     = fs.Bool("recursive", false, "With --out-dir, descend into subdirectories")
+		logPath       = fs.String("log", "", "Append a JSON Lines record per file to this path")
 		inspect       = fs.Bool("inspect", false, "Read only the header and symbol tables, print the schema, and exit")
 		showVersion   = fs.Bool("version", false, "Print the version and exit")
 	)
@@ -146,25 +151,34 @@ func run() int {
 		fmt.Println(banner())
 		return exitOK
 	}
-	// --inspect never writes an output file, so it takes only an input path.
-	wantArgs := 2
-	if *inspect {
-		wantArgs = 1
-	}
-	if fs.NArg() != wantArgs {
-		what := "an input and an output path"
-		if *inspect {
-			what = "an input path"
-		}
-		fmt.Fprintf(os.Stderr, "%s: expected %s, got %d argument(s)\n\n",
-			programName, what, fs.NArg())
+	// Three shapes: a 1:1 conversion, an inspect, and a batch into --out-dir.
+	batch := *outDir != ""
+	switch {
+	case batch && fs.NArg() < 1:
+		fmt.Fprintf(os.Stderr, "%s: --out-dir needs at least one input file or directory\n\n", programName)
+		fs.Usage()
+		return exitUsage
+	case batch && *inspect:
+		fmt.Fprintf(os.Stderr, "%s: --inspect and --out-dir cannot be combined; "+
+			"inspect one file at a time\n", programName)
+		return exitUsage
+	case !batch && *inspect && fs.NArg() != 1:
+		fmt.Fprintf(os.Stderr, "%s: --inspect expects an input path, got %d argument(s)\n\n",
+			programName, fs.NArg())
+		fs.Usage()
+		return exitUsage
+	case !batch && !*inspect && fs.NArg() != 2:
+		fmt.Fprintf(os.Stderr, "%s: expected an input and an output path, got %d argument(s); "+
+			"use --out-dir to convert several files\n\n", programName, fs.NArg())
 		fs.Usage()
 		return exitUsage
 	}
-	inputPath := fs.Arg(0)
-	var outputPath string
-	if !*inspect {
-		outputPath = fs.Arg(1)
+	var inputPath, outputPath string
+	if !batch {
+		inputPath = fs.Arg(0)
+		if !*inspect {
+			outputPath = fs.Arg(1)
+		}
 	}
 
 	var err error
@@ -231,12 +245,15 @@ func run() int {
 
 	fmt.Fprintln(os.Stderr, banner())
 
+	logf := func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, programName+": "+format+"\n", args...)
+	}
+
 	if *inspect {
 		return runInspect(inputPath, &opts)
 	}
-
-	logf := func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, programName+": "+format+"\n", args...)
+	if batch {
+		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, *recursive, *logPath, logf)
 	}
 
 	stats, _, err := convert.Run(ctx, inputPath, outputPath, &opts, logf)
@@ -249,6 +266,49 @@ func run() int {
 		outputPath, stats.Rows, stats.Columns, humanBytes(stats.OutputBytes),
 		stats.Elapsed.Round(1e6), stats.RowsPerSecond())
 	return exitOK
+}
+
+// runBatch converts every input into --out-dir, continuing past a failure so
+// one bad file does not hide the state of the rest.
+func runBatch(ctx context.Context, paths []string, opts *convert.Options,
+	outDir string, fileWorkers int, recursive bool, logPath string, logf convert.Logf) int {
+
+	inputs, err := convert.FindInputs(paths, recursive)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		return exitCodeFor(err)
+	}
+	if len(inputs) == 0 {
+		fmt.Fprintf(os.Stderr, "%s: no .qvd files found in %s\n",
+			programName, strings.Join(paths, ", "))
+		return exitUsage
+	}
+
+	var log *convert.LogWriter
+	if logPath != "" {
+		if log, err = convert.NewLogWriter(logPath); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+			return exitOutput
+		}
+		defer log.Close()
+	}
+
+	result, err := convert.RunMany(ctx, inputs, opts, &convert.ManyOptions{
+		OutDir:      outDir,
+		FileWorkers: fileWorkers,
+		Recursive:   recursive,
+		Log:         log,
+	}, logf)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		return exitCodeFor(err)
+	}
+
+	fmt.Fprintln(os.Stderr, result.Summary())
+	if logPath != "" {
+		fmt.Fprintf(os.Stderr, "%s: wrote %s\n", programName, logPath)
+	}
+	return result.ExitCode(exitCodeFor)
 }
 
 // runInspect reads the header and symbol tables only, then prints the schema a

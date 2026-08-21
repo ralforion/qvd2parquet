@@ -78,6 +78,10 @@ GitHub release.
 qvd2parquet [options] input.qvd output.parquet
 qvd2parquet --inspect [options] input.qvd
 
+  -out-dir DIR               Convert every input into this directory
+  -file-workers 1            Files to convert at once; decode workers are divided
+  -recursive                 With --out-dir, descend into subdirectories
+  -log path.jsonl            Append a JSON Lines record per file
   -columns name1,name2       Convert only these columns
   -exclude '%*,*_TMP'        Skip fields matching these wildcard patterns
   -field-regex <re>          Rewrite field names with this regexp
@@ -177,6 +181,69 @@ Verify the output with an external reader:
 duckdb -c "describe select * from read_parquet('sales.parquet')"
 duckdb -c "select count(*) as n from read_parquet('sales.parquet')"
 ```
+
+## Converting a folder
+
+Pass `--out-dir` with one or more files or directories. Each `.qvd` becomes a
+`.parquet` of the same name:
+
+```sh
+qvd2parquet --out-dir ./parquet --quality-gate numeric --log run.jsonl ./qvds
+```
+
+```text
+qvd2parquet: converting 4 file(s)
+qvd2parquet: ok   qvds/products.qvd -> parquet/products.parquet (77 rows, 9 columns, 4.6 KiB)
+qvd2parquet: ok   qvds/sales.qvd -> parquet/sales.parquet (1,000 rows, 7 columns, 7.7 KiB)
+qvd2parquet: FAIL qvds/truncated.qvd: no XML header terminator (0x00) found: not a QVD file?
+qvd2parquet: ok   qvds/stock.qvd -> parquet/stock.parquet (120 rows, 19 columns, 7.3 KiB)
+converted 3/4 file(s) in 34ms: 1,197 rows, 19.6 KiB
+
+FAILED (1):
+  qvds/truncated.qvd           no XML header terminator (0x00) found: not a QVD file?
+```
+
+**A failing file does not stop the run.** Every input is attempted, failures are
+listed at the end, and the exit code reports the most actionable one — a schema
+policy error you can fix outranks a generic read error. Add `--recursive` to
+descend into subdirectories.
+
+Two inputs whose names would produce the same output file are refused **before
+anything is written**, since `--force` would otherwise silently overwrite the
+first result.
+
+### Parallelism
+
+`--file-workers` converts several files at once and **divides the decode
+workers between them**, so the total stays near one per CPU:
+
+```text
+$ qvd2parquet --out-dir out --file-workers 4 ./qvds
+qvd2parquet: converting 50 file(s), 4 at a time, 4 decode worker(s) each
+```
+
+The default is `1`: one file at a time, using every core to decode it. Raise it
+for many small files, where per-file parallelism beats per-chunk. This is the
+main reason folder conversion is built in rather than left to a shell loop —
+four separate processes would each start `NumCPU` workers, oversubscribing the
+machine fourfold.
+
+### The log
+
+`--log` writes JSON Lines: one record per file, then a summary. That format is
+chosen so a finished run can be queried rather than read:
+
+```sh
+duckdb -c "select status, count(*), sum(rows) from read_json_auto('run.jsonl')
+           where type='file' group by 1"
+duckdb -c "select input, error from read_json_auto('run.jsonl') where status='failed'"
+```
+
+Each file record carries the row and column counts, output size, elapsed time,
+throughput, and the quality gate's verdict with any errors — so a batch can be
+audited without opening every per-file report. `--schema-report` and
+`--quality-report` also work in batch mode; each file gets its own document,
+named after the input.
 
 ## Inspecting a file
 
