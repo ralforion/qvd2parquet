@@ -33,7 +33,7 @@ const (
 // -ldflags "-X main.version=..."; scripts/build-release.sh does this.
 const (
 	programName = "qvd2parquet"
-	copyright   = "(c) RALFORION d.o.o."
+	copyright   = "(c) 2026, RALFORION d.o.o."
 )
 
 // defaultVersion is what a plain "go build" reports. Release archives override
@@ -112,7 +112,7 @@ func run() int {
 		fieldName     = fs.String("field-name", "", "Template for the new column name (default \"${name}\")")
 		fieldComment  = fs.String("field-comment", "", "Template for the column comment (default \"${comment}\")")
 		mixed         = fs.String("mixed", def.Mixed.String(), "Mixed-type strategy: error|string|promote|dual-columns")
-		dual          = fs.String("dual", def.Dual.String(), "Dual strategy: numeric|text|columns")
+		dual          = fs.String("dual", def.Dual.String(), "Dual strategy: auto|numeric|text|columns")
 		promote       = fs.String("numeric-promote", def.NumericPromote.String(), "Numeric widening: decimal (exact, scale inferred from values) | true (float64) | false")
 		strFallback   = fs.Bool("mixed-string-fallback", def.MixedStringFallback, "Convert otherwise-invalid mixed columns to string")
 		decSource     = fs.String("decimal-source", def.DecimalSource.String(), "Decimal extraction: auto|text|numeric")
@@ -130,6 +130,7 @@ func run() int {
 		progress      = fs.Int64("progress", def.ProgressEvery, "Log every N rows, 0 disables progress")
 		force         = fs.Bool("force", false, "Overwrite an existing output file")
 		strict        = fs.Bool("strict", false, "Enable strict validation defaults")
+		inferDates    = fs.Bool("infer-dates", def.InferDates, "Read an untyped column as a date/timestamp when its display strings render its serial value as one")
 		inspect       = fs.Bool("inspect", false, "Read only the header and symbol tables, print the schema, and exit")
 		showVersion   = fs.Bool("version", false, "Print the version and exit")
 	)
@@ -169,6 +170,7 @@ func run() int {
 	opts := def
 	opts.MixedStringFallback = *strFallback
 	opts.DecimalStrict = *decStrict
+	opts.InferDates = *inferDates
 	opts.Compression = *compression
 	opts.BatchRows = *batchRows
 	opts.Workers = *workers

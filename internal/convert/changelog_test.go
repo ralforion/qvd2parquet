@@ -56,3 +56,35 @@ func TestChangelogSectionsAreOrdered(t *testing.T) {
 		}
 	}
 }
+
+// TestReadmeBannerMatchesCode keeps the banner shown in the README in step
+// with the constants the CLI actually prints.
+func TestReadmeBannerMatchesCode(t *testing.T) {
+	root := filepath.Join("..", "..")
+	main, err := os.ReadFile(filepath.Join(root, "cmd", "qvd2parquet", "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(name string) string {
+		m := regexp.MustCompile(name + `\s+= "([^"]+)"`).FindSubmatch(main)
+		if m == nil {
+			t.Fatalf("could not find %s in main.go", name)
+		}
+		return string(m[1])
+	}
+	version, copyright := get("defaultVersion"), get("copyright")
+	want := "qvd2parquet " + version + "  " + copyright
+
+	for _, line := range strings.Split(string(readme), "\n") {
+		if strings.HasPrefix(line, "qvd2parquet ") && strings.Contains(line, "RALFORION") {
+			if line != want {
+				t.Errorf("README banner line %q does not match the code's %q", line, want)
+			}
+		}
+	}
+}

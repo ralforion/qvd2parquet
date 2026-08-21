@@ -46,8 +46,11 @@ func (m MixedStrategy) String() string {
 type DualStrategy int
 
 const (
-	// DualNumeric writes the numeric side. Default.
-	DualNumeric DualStrategy = iota
+	// DualAuto writes both sides only when the display strings carry
+	// information the number does not. Default.
+	DualAuto DualStrategy = iota
+	// DualNumeric writes the numeric side.
+	DualNumeric
 	// DualText writes the display string.
 	DualText
 	// DualColumns writes both, in two Parquet columns.
@@ -57,6 +60,8 @@ const (
 // ParseDualStrategy maps the --dual flag value.
 func ParseDualStrategy(s string) (DualStrategy, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "auto":
+		return DualAuto, nil
 	case "numeric":
 		return DualNumeric, nil
 	case "text":
@@ -64,11 +69,11 @@ func ParseDualStrategy(s string) (DualStrategy, error) {
 	case "columns":
 		return DualColumns, nil
 	}
-	return 0, fmt.Errorf("invalid --dual %q: want numeric|text|columns", s)
+	return 0, fmt.Errorf("invalid --dual %q: want auto|numeric|text|columns", s)
 }
 
 func (d DualStrategy) String() string {
-	return [...]string{"numeric", "text", "columns"}[d]
+	return [...]string{"auto", "numeric", "text", "columns"}[d]
 }
 
 // DecimalSource selects where exact decimal digits are taken from.
@@ -187,31 +192,36 @@ type Options struct {
 	// exact scale exists. The default is only a preference, so it falls back
 	// to float64 instead of failing an otherwise-valid conversion.
 	NumericPromoteExplicit bool
-	MixedStringFallback    bool
-	DecimalSource          DecimalSource
-	DecimalStrict          bool
-	Compression            string
-	BatchRows              int
-	Workers                int
-	Location               *time.Location
-	TimezoneName           string
-	SchemaOverridePath     string
-	SchemaReportPath       string
-	Quality                QualityMode
-	QualityReportPath      string
-	QualityRelTolerance    float64
-	QualityAbsTolerance    float64
-	ProgressEvery          int64
-	Force                  bool
-	Strict                 bool
+	// InferDates lets a column whose header declares no type be read as a
+	// date or timestamp when every display string renders its Excel-style
+	// serial value as one.
+	InferDates          bool
+	MixedStringFallback bool
+	DecimalSource       DecimalSource
+	DecimalStrict       bool
+	Compression         string
+	BatchRows           int
+	Workers             int
+	Location            *time.Location
+	TimezoneName        string
+	SchemaOverridePath  string
+	SchemaReportPath    string
+	Quality             QualityMode
+	QualityReportPath   string
+	QualityRelTolerance float64
+	QualityAbsTolerance float64
+	ProgressEvery       int64
+	Force               bool
+	Strict              bool
 }
 
 // DefaultOptions returns the documented defaults.
 func DefaultOptions() Options {
 	return Options{
 		Mixed:               MixedError,
-		Dual:                DualNumeric,
+		Dual:                DualAuto,
 		NumericPromote:      PromoteDecimal,
+		InferDates:          true,
 		DecimalSource:       DecimalAuto,
 		DecimalStrict:       false,
 		Compression:         "zstd",

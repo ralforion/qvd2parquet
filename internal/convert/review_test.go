@@ -207,20 +207,30 @@ func TestDualTextColumnNameCollisionIsRejected(t *testing.T) {
 	}
 }
 
-// Without --dual=columns the same table converts fine, since no companion
-// column is generated.
-func TestDualTextNameIsFineWithoutDualColumns(t *testing.T) {
+// The default --dual=auto generates a companion column for an informative
+// dual, so it collides here just as --dual=columns does. --dual=numeric drops
+// the display side and converts cleanly.
+func TestDualTextNameCollidesUnderAutoButNotNumeric(t *testing.T) {
 	tbl := qvdtest.Table{Name: "T", Fields: []qvdtest.Field{
 		{Name: "Qty", Type: "INTEGER", Rows: []int{0},
-			Symbols: []qvd.Symbol{qvdtest.DualInt(1, "one")}},
+			Symbols: []qvd.Symbol{qvdtest.DualInt(1, "one")}}, // "one" is informative
 		{Name: "Qty__text", Type: "ASCII", Rows: []int{0},
-			Symbols: []qvd.Symbol{qvdtest.Str("no collision")}},
+			Symbols: []qvd.Symbol{qvdtest.Str("collides")}},
 	}}
 	in := buildFixture(t, tbl)
-	out := filepath.Join(t.TempDir(), "out.parquet")
-	opts := testOptions()
-	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
-		t.Fatalf("Run: %v", err)
+
+	opts := testOptions() // --dual=auto
+	_, _, err := Run(context.Background(), in, filepath.Join(t.TempDir(), "a.parquet"), &opts, nil)
+	if !errors.Is(err, ErrSchemaPolicy) {
+		t.Fatalf("auto err = %v, want ErrSchemaPolicy for the duplicate name", err)
+	}
+	if !strings.Contains(err.Error(), "--dual=numeric") {
+		t.Errorf("error should offer the flag that resolves it: %v", err)
+	}
+
+	opts.Dual = DualNumeric
+	if _, _, err := Run(context.Background(), in, filepath.Join(t.TempDir(), "b.parquet"), &opts, nil); err != nil {
+		t.Fatalf("--dual=numeric should convert cleanly: %v", err)
 	}
 }
 
