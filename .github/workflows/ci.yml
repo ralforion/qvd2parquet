@@ -37,13 +37,69 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: go test -race ./...
 
-  cross-compile:
+  # One job per release target, so the 16 builds run in parallel instead of
+  # taking ~21 minutes end to end. Each target compiles its own copy of the
+  # Arrow dependency tree, which is what makes the sequential form slow.
+  build:
+    name: build
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - darwin/amd64
+          - darwin/arm64
+          - linux/amd64
+          - linux/arm64
+          - linux/386
+          - linux/arm
+          - linux/ppc64le
+          - linux/s390x
+          - linux/riscv64
+          - windows/amd64
+          - windows/arm64
+          - windows/386
+          - freebsd/amd64
+          - freebsd/arm64
+          - netbsd/amd64
+          - openbsd/amd64
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: '1.27'
           cache: true
-      - name: Build every release target
+
+      - name: Cache the build output for this target
+        uses: actions/cache@v4
+        with:
+          # The Go build cache is per GOOS/GOARCH, so key it by target.
+          path: ~/.cache/go-build
+          key: gobuild-${{ matrix.target }}-${{ hashFiles('go.sum') }}-${{ hashFiles('**/*.go') }}
+          restore-keys: |
+            gobuild-${{ matrix.target }}-${{ hashFiles('go.sum') }}-
+            gobuild-${{ matrix.target }}-
+
+      - name: Build ${{ matrix.target }}
+        env:
+          PLATFORMS: ${{ matrix.target }}
+          VERSION: ci
         run: ./scripts/build-release.sh
+
+  # A single gate so branch protection has one stable check to require, rather
+  # than sixteen that change whenever the target list does.
+  cross-compile:
+    name: cross-compile
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every target built
+        env:
+          RESULT: ${{ needs.build.result }}
+        run: |
+          echo "matrix result: $RESULT"
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::at least one release target failed to build"
+            exit 1
+          fi
