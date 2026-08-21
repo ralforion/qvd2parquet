@@ -3,6 +3,7 @@ package convert
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -295,5 +296,92 @@ func TestEmptyPlaceholderWithSchemaOverride(t *testing.T) {
 	}
 	if got := report.Columns[0].Source.Nulls; got != 1 {
 		t.Errorf("nulls = %d, want 1", got)
+	}
+}
+
+// Every schema-time validator must read an empty string the same way the
+// conversion does, or it rejects a placeholder that was about to become null.
+func TestEmptyPlaceholderPassesEveryValidator(t *testing.T) {
+	tests := []struct {
+		name     string
+		field    qvdtest.Field
+		override string
+		want     string
+	}{
+		{"DATE", qvdtest.Field{Name: "D", Type: "DATE", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Str("")}}, "", "date32"},
+		{"TIMESTAMP", qvdtest.Field{Name: "D", Type: "TIMESTAMP", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Float(45000.5), qvdtest.Str("")}}, "", "timestamp[ms, tz=UTC]"},
+		{"TIME", qvdtest.Field{Name: "D", Type: "TIME", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Float(0.5), qvdtest.Str("")}}, "", "time32[ms]"},
+		{"tagged $date", qvdtest.Field{Name: "D", Type: "", Tags: []string{"$date"}, Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Str("")}}, "", "date32"},
+		{"int64 override", qvdtest.Field{Name: "D", Type: "INTEGER", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Int(7), qvdtest.Str("")}}, "int64", "int64"},
+		{"float64 override", qvdtest.Field{Name: "D", Type: "REAL", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Float(1.5), qvdtest.Str("")}}, "float64", "float64"},
+		{"date32 override", qvdtest.Field{Name: "D", Type: "INTEGER", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Str("")}}, "date32", "date32"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := mustResolve(t, tc.field, func(o *Options) {
+				o.Location, o.TimezoneName = utc(), "UTC"
+				if tc.override != "" {
+					o.SchemaOverridePath = writeOverride(t, tc.field.Name, tc.override)
+				}
+			})
+			if got := rs.Columns[0].ArrowType.String(); got != tc.want {
+				t.Errorf("type = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// writeOverride writes a one-column --schema document and returns its path.
+func writeOverride(t *testing.T, column, typ string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "schema.json")
+	body := fmt.Sprintf(`{"columns":{%q:{"type":%q}}}`, column, typ)
+	if typ == "decimal" {
+		body = fmt.Sprintf(`{"columns":{%q:{"type":"decimal","precision":18,"scale":2}}}`, column)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// The substitution must be reported whatever the column resolved to, which is
+// what the README promises.
+func TestEmptyStringNoteCoversNonStringColumns(t *testing.T) {
+	tests := []struct {
+		name  string
+		field qvdtest.Field
+	}{
+		{"integer", qvdtest.Field{Name: "Qty", Type: "INTEGER", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Int(7), qvdtest.Str("")}}},
+		{"date", qvdtest.Field{Name: "D", Type: "DATE", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Str("")}}},
+		{"decimal", qvdtest.Field{Name: "A", Type: "MONEY", NDec: 2, Dec: ".", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Float(1.5), qvdtest.Str("")}}},
+		{"string", qvdtest.Field{Name: "S", Type: "ASCII", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Str("a"), qvdtest.Str("")}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			in := buildFixture(t, qvdtest.Table{Name: "T", Fields: []qvdtest.Field{tc.field}})
+			var log strings.Builder
+			opts := testOptions()
+			opts.Location, opts.TimezoneName = utc(), "UTC"
+			_, _, err := Run(context.Background(), in, filepath.Join(t.TempDir(), "o.parquet"), &opts,
+				func(f string, a ...any) { log.WriteString(fmt.Sprintf(f, a...) + "\n") })
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !strings.Contains(log.String(), "1 empty string symbol(s) written as null") {
+				t.Errorf("the substitution should be reported:\n%s", log.String())
+			}
+		})
 	}
 }

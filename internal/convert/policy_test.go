@@ -33,7 +33,16 @@ func resolve(t *testing.T, f qvdtest.Field, mutate func(*Options)) (*ResolvedSch
 	if err := opts.Validate(); err != nil {
 		t.Fatalf("validate options: %v", err)
 	}
-	return ResolveSchema(qf, &opts, nil)
+	// Honour --schema when the test sets it; otherwise a test that configures
+	// an override would silently exercise plain inference instead.
+	var override *SchemaOverride
+	if opts.SchemaOverridePath != "" {
+		var err error
+		if override, err = LoadSchemaOverride(opts.SchemaOverridePath); err != nil {
+			t.Fatalf("load schema override: %v", err)
+		}
+	}
+	return ResolveSchema(qf, &opts, override)
 }
 
 func mustResolve(t *testing.T, f qvdtest.Field, mutate func(*Options)) *ResolvedSchema {

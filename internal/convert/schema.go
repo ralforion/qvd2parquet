@@ -163,7 +163,8 @@ func (so *SchemaOverride) lookup(name string) (ColumnOverride, bool) {
 // conversion the decode workers will run, on every symbol. Checking only the
 // symbol kind would let NaN, an out-of-range serial day or an oversized
 // timestamp through schema resolution and fail mid-conversion instead.
-func requireConvertibleDateTime(col qvd.Column, syms []qvd.Symbol, pinned string, loc *time.Location) (int64, error) {
+func requireConvertibleDateTime(col qvd.Column, syms []qvd.Symbol, pinned string,
+	loc *time.Location, emptyAsNull bool) (int64, error) {
 	// The type may come from the header, a Qlik tag, inference or --schema, so
 	// state what was resolved rather than assuming an override.
 	reject := func(i int, s qvd.Symbol, why string) error {
@@ -172,7 +173,7 @@ func requireConvertibleDateTime(col qvd.Column, syms []qvd.Symbol, pinned string
 	}
 	var nonFinite int64
 	for i, s := range syms {
-		if s.Kind == qvd.SymbolNull {
+		if symbolIsAbsent(s, emptyAsNull) {
 			continue
 		}
 		n, ok := s.Numeric()
@@ -203,6 +204,16 @@ func requireConvertibleDateTime(col qvd.Column, syms []qvd.Symbol, pinned string
 		}
 	}
 	return nonFinite, nil
+}
+
+// symbolIsAbsent reports whether a symbol carries no value for conversion
+// purposes. Every schema-time validator has to use this, or it will reject a
+// placeholder the conversion is about to write as null.
+func symbolIsAbsent(s qvd.Symbol, emptyAsNull bool) bool {
+	if s.Kind == qvd.SymbolNull {
+		return true
+	}
+	return emptyAsNull && s.Kind == qvd.SymbolString && s.Text == ""
 }
 
 // isNonFinite reports whether f is NaN or infinite, neither of which any of the
@@ -447,7 +458,7 @@ func resolveNumericColumn(base ResolvedColumn, col qvd.Column, prof *qvd.ColumnP
 
 	switch qlikType {
 	case qvd.QlikDate:
-		nonFinite, err := requireConvertibleDateTime(col, syms, "date32", opts.Location)
+		nonFinite, err := requireConvertibleDateTime(col, syms, "date32", opts.Location, opts.EmptyStringAsNull)
 		if err != nil {
 			return ResolvedColumn{}, "", err
 		}
@@ -457,7 +468,7 @@ func resolveNumericColumn(base ResolvedColumn, col qvd.Column, prof *qvd.ColumnP
 			fmt.Sprintf("%s: DATE, written as date32 (days since epoch)", col.Name), inferNote), nonFinite), nil
 
 	case qvd.QlikTimestamp:
-		nonFinite, err := requireConvertibleDateTime(col, syms, "timestamp", opts.Location)
+		nonFinite, err := requireConvertibleDateTime(col, syms, "timestamp", opts.Location, opts.EmptyStringAsNull)
 		if err != nil {
 			return ResolvedColumn{}, "", err
 		}
@@ -467,7 +478,7 @@ func resolveNumericColumn(base ResolvedColumn, col qvd.Column, prof *qvd.ColumnP
 			col.Name, tsType.(*arrow.TimestampType).TimeZone), inferNote), nonFinite), nil
 
 	case qvd.QlikTime:
-		nonFinite, err := requireConvertibleDateTime(col, syms, "time", opts.Location)
+		nonFinite, err := requireConvertibleDateTime(col, syms, "time", opts.Location, opts.EmptyStringAsNull)
 		if err != nil {
 			return ResolvedColumn{}, "", err
 		}
@@ -670,7 +681,7 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 		base.ArrowType, base.Strategy = arrowString, StrategyString
 	case "int64":
 		for i, s := range syms {
-			if s.Kind == qvd.SymbolNull {
+			if symbolIsAbsent(s, emptyAsNull) {
 				continue
 			}
 			if s.Kind == qvd.SymbolFloat || s.Kind == qvd.SymbolDualFloatString {
@@ -685,6 +696,9 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 		base.ArrowType, base.Strategy = arrowInt64, StrategyInt64
 	case "float64":
 		for i, s := range syms {
+			if symbolIsAbsent(s, emptyAsNull) {
+				continue
+			}
 			if s.Kind == qvd.SymbolString {
 				return base, fmt.Errorf("%w: schema override pins %q to float64, but symbol %d is the string %q",
 					ErrSchemaPolicy, col.Name, i, s.Text)
@@ -692,14 +706,14 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 		}
 		base.ArrowType, base.Strategy = arrowF64, StrategyFloat64
 	case "date32":
-		nonFinite, err := requireConvertibleDateTime(col, syms, "date32", loc)
+		nonFinite, err := requireConvertibleDateTime(col, syms, "date32", loc, emptyAsNull)
 		if err != nil {
 			return base, err
 		}
 		base.NonFiniteNulls = nonFinite
 		base.ArrowType, base.Strategy = arrowDate32, StrategyDate32
 	case "timestamp":
-		nonFinite, err := requireConvertibleDateTime(col, syms, "timestamp", loc)
+		nonFinite, err := requireConvertibleDateTime(col, syms, "timestamp", loc, emptyAsNull)
 		if err != nil {
 			return base, err
 		}
@@ -708,7 +722,7 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 		// the values are actually converted.
 		base.ArrowType, base.Strategy = tsType, StrategyTimestampMillis
 	case "time":
-		nonFinite, err := requireConvertibleDateTime(col, syms, "time", loc)
+		nonFinite, err := requireConvertibleDateTime(col, syms, "time", loc, emptyAsNull)
 		if err != nil {
 			return base, err
 		}
