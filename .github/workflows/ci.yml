@@ -40,6 +40,12 @@ jobs:
   # One job per release target, so the 16 builds run in parallel instead of
   # taking ~21 minutes end to end. Each target compiles its own copy of the
   # Arrow dependency tree, which is what makes the sequential form slow.
+  # No build cache here on purpose. The Go build cache is keyed by the source,
+  # so it would miss on every commit while still paying 16 parallel ~210 MB
+  # saves per run -- which pushed the repository past its 10 GB cache limit and
+  # left "Post Cache" steps hanging until they were cancelled, failing the job
+  # after the build itself had succeeded in seconds. setup-go still caches
+  # modules, which is the part that actually repeats.
   build:
     name: build
     runs-on: ubuntu-latest
@@ -69,16 +75,6 @@ jobs:
         with:
           go-version: '1.27'
           cache: true
-
-      - name: Cache the build output for this target
-        uses: actions/cache@v4
-        with:
-          # The Go build cache is per GOOS/GOARCH, so key it by target.
-          path: ~/.cache/go-build
-          key: gobuild-${{ matrix.target }}-${{ hashFiles('go.sum') }}-${{ hashFiles('**/*.go') }}
-          restore-keys: |
-            gobuild-${{ matrix.target }}-${{ hashFiles('go.sum') }}-
-            gobuild-${{ matrix.target }}-
 
       - name: Build ${{ matrix.target }}
         env:
