@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
@@ -50,6 +51,13 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	if err := f.SelectColumns(opts.Columns); err != nil {
 		return nil, nil, err
 	}
+	dropped, err := f.ExcludeColumns(opts.Exclude)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(dropped) > 0 {
+		logf("excluded %d column(s) by pattern: %s", len(dropped), strings.Join(dropped, ", "))
+	}
 	logf("%s: table %q, %d rows, %d bytes/record, %d of %d columns selected",
 		inputPath, f.Header.TableName, f.NoOfRecords, f.RecordByteSize,
 		len(f.SelectedColumns()), len(f.Columns))
@@ -80,6 +88,14 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	}
 	for _, n := range rs.Notes {
 		logf("schema: %s", n)
+	}
+	var rounded int64
+	for _, c := range rs.Columns {
+		rounded += c.DecimalRounded
+	}
+	if rounded > 0 {
+		logf("note: %d decimal value(s) were rounded to their column's scale; "+
+			"pass --decimal-strict to fail instead", rounded)
 	}
 
 	if opts.SchemaReportPath != "" {
@@ -184,6 +200,7 @@ type SchemaReport struct {
 type SchemaReportColumn struct {
 	Name         string             `json:"name"`
 	SourceColumn string             `json:"sourceColumn"`
+	Comment      string             `json:"comment,omitempty"`
 	QlikType     string             `json:"qlikType"`
 	BitOffset    int                `json:"bitOffset"`
 	BitWidth     int                `json:"bitWidth"`
@@ -203,6 +220,8 @@ type DecimalReport struct {
 	Scale       int32 `json:"scale"`
 	FromText    bool  `json:"fromDisplayStrings"`
 	FromNumeric bool  `json:"fromNumericPayloads"`
+	// Rounded counts values that did not fit the scale and were rounded to it.
+	Rounded int64 `json:"roundedValues,omitempty"`
 }
 
 // WriteSchemaReport saves the inferred schema and profiles as JSON.
@@ -233,6 +252,7 @@ func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema) 
 		rc := SchemaReportColumn{
 			Name:         c.Name,
 			SourceColumn: src.Name,
+			Comment:      c.Comment,
 			QlikType:     src.QlikType.String(),
 			BitOffset:    src.BitOffset,
 			BitWidth:     src.BitWidth,
@@ -250,6 +270,7 @@ func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema) 
 				Scale:       c.Decimal.Scale,
 				FromText:    c.DecimalFromText,
 				FromNumeric: c.DecimalFromNumeric,
+				Rounded:     c.DecimalRounded,
 			}
 		}
 		rep.Columns = append(rep.Columns, rc)

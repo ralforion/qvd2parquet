@@ -63,8 +63,16 @@ func TestResolvePureTypes(t *testing.T) {
 			"int64", StrategyInt64,
 		},
 		{
+			// Under the default --numeric-promote=decimal a REAL column with
+			// a representable scale becomes an exact decimal.
 			"pure real", qvdtest.Field{Name: "R", Type: "REAL",
 				Symbols: []qvd.Symbol{qvdtest.Float(1.5), qvdtest.Float(2.5)}, Rows: []int{0, 1}},
+			"decimal(2, 1)", StrategyDecimal,
+		},
+		{
+			// A REAL column with no representable scale stays float64.
+			"unrepresentable real", qvdtest.Field{Name: "R", Type: "REAL",
+				Symbols: []qvd.Symbol{qvdtest.Float(1.0 / 3), qvdtest.Float(2.5)}, Rows: []int{0, 1}},
 			"float64", StrategyFloat64,
 		},
 		{
@@ -116,12 +124,19 @@ func TestIntPlusFloatPromotes(t *testing.T) {
 	f := qvdtest.Field{Name: "M", Type: "REAL",
 		Symbols: []qvd.Symbol{qvdtest.Int(1), qvdtest.Float(2.5)}, Rows: []int{0, 1}}
 
-	rs := mustResolve(t, f, nil) // --numeric-promote defaults to true
+	// The default is --numeric-promote=decimal, so an int+float column with a
+	// representable scale becomes an exact decimal.
+	rs := mustResolve(t, f, nil)
+	if rs.Columns[0].Strategy != StrategyDecimal {
+		t.Errorf("strategy = %v, want StrategyDecimal", rs.Columns[0].Strategy)
+	}
+	// --numeric-promote=true still selects the float64 widening.
+	rs = mustResolve(t, f, func(o *Options) { o.NumericPromote = PromoteFloat64 })
 	if rs.Columns[0].Strategy != StrategyFloat64 {
-		t.Errorf("strategy = %v, want StrategyFloat64", rs.Columns[0].Strategy)
+		t.Errorf("--numeric-promote=true strategy = %v, want StrategyFloat64", rs.Columns[0].Strategy)
 	}
 
-	_, err := resolve(t, f, func(o *Options) { o.NumericPromote = false })
+	_, err := resolve(t, f, func(o *Options) { o.NumericPromote = PromoteNone })
 	if !errors.Is(err, ErrSchemaPolicy) {
 		t.Fatalf("err = %v, want ErrSchemaPolicy", err)
 	}
@@ -246,12 +261,49 @@ func TestMoneyNeverBecomesFloat(t *testing.T) {
 func TestMoneyInexactFailsUnderStrict(t *testing.T) {
 	f := qvdtest.Field{Name: "Amount", Type: "MONEY", NDec: 2,
 		Symbols: []qvd.Symbol{qvdtest.Float(1.0 / 3)}, Rows: []int{0}}
-	_, err := resolve(t, f, nil)
+	_, err := resolve(t, f, func(o *Options) { o.DecimalStrict = true })
 	if !errors.Is(err, ErrSchemaPolicy) {
 		t.Fatalf("err = %v, want ErrSchemaPolicy", err)
 	}
 	if !strings.Contains(err.Error(), "--decimal-strict") {
 		t.Errorf("error should suggest --decimal-strict=false: %v", err)
+	}
+}
+
+// Rounding to the declared scale is the default, matching what Qlik itself
+// displays for a MONEY field with nDec decimals.
+func TestMoneyInexactRoundsByDefault(t *testing.T) {
+	f := qvdtest.Field{Name: "Amount", Type: "MONEY", NDec: 2,
+		Symbols: []qvd.Symbol{qvdtest.Float(1.0 / 3), qvdtest.Float(2.0 / 3)},
+		Rows:    []int{0, 1}}
+	rs := mustResolve(t, f, nil)
+	c := rs.Columns[0]
+	if c.Strategy != StrategyDecimal {
+		t.Fatalf("strategy = %v, want StrategyDecimal", c.Strategy)
+	}
+	if got := c.Scaled[0].String(); got != "33" {
+		t.Errorf("1/3 scaled = %s, want 33", got)
+	}
+	if got := c.Scaled[1].String(); got != "67" {
+		t.Errorf("2/3 scaled = %s, want 67", got)
+	}
+	// Rounding must be counted, so it can be reported rather than hidden.
+	if c.DecimalRounded != 2 {
+		t.Errorf("DecimalRounded = %d, want 2", c.DecimalRounded)
+	}
+	joined := strings.Join(rs.Notes, " ")
+	if !strings.Contains(joined, "rounded") {
+		t.Errorf("the schema note should mention rounding: %q", joined)
+	}
+}
+
+func TestDefaultsAreDecimalAndRounding(t *testing.T) {
+	d := DefaultOptions()
+	if d.NumericPromote != PromoteDecimal {
+		t.Errorf("NumericPromote = %v, want PromoteDecimal", d.NumericPromote)
+	}
+	if d.DecimalStrict {
+		t.Error("DecimalStrict should default to false, so values round to their scale")
 	}
 }
 

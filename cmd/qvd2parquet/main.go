@@ -68,12 +68,16 @@ func run() int {
 	def := convert.DefaultOptions()
 	var (
 		columns       = fs.String("columns", "", "Convert only these comma-separated columns")
+		exclude       = fs.String("exclude", "", "Skip fields matching these comma-separated wildcard patterns, e.g. '%*'")
+		fieldRegex    = fs.String("field-regex", "", "Rewrite field names with this regexp; use (?P<name>...) and optional (?P<comment>...)")
+		fieldName     = fs.String("field-name", "", "Template for the new column name (default \"${name}\")")
+		fieldComment  = fs.String("field-comment", "", "Template for the column comment (default \"${comment}\")")
 		mixed         = fs.String("mixed", def.Mixed.String(), "Mixed-type strategy: error|string|promote|dual-columns")
 		dual          = fs.String("dual", def.Dual.String(), "Dual strategy: numeric|text|columns")
-		promote       = fs.Bool("numeric-promote", def.NumericPromote, "Allow int+float promotion to float64")
+		promote       = fs.String("numeric-promote", def.NumericPromote.String(), "Numeric widening: decimal (exact, scale inferred from values) | true (float64) | false")
 		strFallback   = fs.Bool("mixed-string-fallback", def.MixedStringFallback, "Convert otherwise-invalid mixed columns to string")
 		decSource     = fs.String("decimal-source", def.DecimalSource.String(), "Decimal extraction: auto|text|numeric")
-		decStrict     = fs.Bool("decimal-strict", def.DecimalStrict, "Fail if exact decimal conversion cannot be proven")
+		decStrict     = fs.Bool("decimal-strict", def.DecimalStrict, "Fail instead of rounding when a decimal value does not fit its scale")
 		compression   = fs.String("compression", def.Compression, "Parquet compression: zstd|snappy|gzip|uncompressed")
 		batchRows     = fs.Int("batch-rows", def.BatchRows, "Rows per Arrow batch and Parquet row group")
 		workers       = fs.Int("workers", def.Workers, "Decode workers, 0 means runtime.NumCPU()")
@@ -108,8 +112,8 @@ func run() int {
 	}
 	inputPath, outputPath := fs.Arg(0), fs.Arg(1)
 
+	var err error
 	opts := def
-	opts.NumericPromote = *promote
 	opts.MixedStringFallback = *strFallback
 	opts.DecimalStrict = *decStrict
 	opts.Compression = *compression
@@ -124,15 +128,17 @@ func run() int {
 	opts.Force = *force
 	opts.Strict = *strict
 
-	if *columns != "" {
-		for _, c := range strings.Split(*columns, ",") {
-			if c = strings.TrimSpace(c); c != "" {
-				opts.Columns = append(opts.Columns, c)
-			}
-		}
+	opts.Columns = splitList(*columns)
+	opts.Exclude = splitList(*exclude)
+
+	if opts.Renamer, err = convert.NewFieldRenamer(*fieldRegex, *fieldName, *fieldComment); err != nil {
+		return usageErr(err)
 	}
 
-	var err error
+	if opts.NumericPromote, err = convert.ParseNumericPromote(*promote); err != nil {
+		return usageErr(err)
+	}
+	opts.NumericPromoteExplicit = fsSet(fs, "numeric-promote")
 	if opts.Mixed, err = convert.ParseMixedStrategy(*mixed); err != nil {
 		return usageErr(err)
 	}
@@ -156,7 +162,7 @@ func run() int {
 		// Strict mode refuses any silent type widening or lossy decimal.
 		opts.DecimalStrict = true
 		if !fsSet(fs, "numeric-promote") {
-			opts.NumericPromote = false
+			opts.NumericPromote = convert.PromoteNone
 		}
 	}
 	if err := opts.Validate(); err != nil {
@@ -182,6 +188,17 @@ func run() int {
 		outputPath, stats.Rows, stats.Columns, humanBytes(stats.OutputBytes),
 		stats.Elapsed.Round(1e6), stats.RowsPerSecond())
 	return exitOK
+}
+
+// splitList parses a comma-separated flag value, dropping blank entries.
+func splitList(v string) []string {
+	var out []string
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // fsSet reports whether the named flag was given explicitly.

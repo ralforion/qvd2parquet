@@ -108,7 +108,7 @@ func TestRunEndToEnd(t *testing.T) {
 	schema, records := readParquet(t, out)
 	wantTypes := map[string]string{
 		"Id": "int64", "Name": "utf8", "Amount": "decimal(6, 2)",
-		"Day": "date32", "Ratio": "float64",
+		"Day": "date32", "Ratio": "decimal(3, 2)", // decimal by default
 	}
 	for name, want := range wantTypes {
 		idxs := schema.FieldIndices(name)
@@ -369,6 +369,10 @@ func TestQualityGateDetectsChangedAggregates(t *testing.T) {
 	in := buildFixture(t, sampleTable(300))
 	out := filepath.Join(t.TempDir(), "out.parquet")
 	opts := testOptions()
+	// Pin float64 so Ratio exercises the floating-point comparison path.
+	// Amount is declared MONEY and stays decimal either way, so both the
+	// tolerance-based and the exact comparison are covered.
+	opts.NumericPromote = PromoteFloat64
 	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -431,6 +435,9 @@ func TestFloatSumWithinTolerancePasses(t *testing.T) {
 	in := buildFixture(t, sampleTable(300))
 	out := filepath.Join(t.TempDir(), "out.parquet")
 	opts := testOptions()
+	// Pin float64 so this exercises the floating-point tolerance path rather
+	// than the exact decimal comparison.
+	opts.NumericPromote = PromoteFloat64
 	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -438,6 +445,9 @@ func TestFloatSumWithinTolerancePasses(t *testing.T) {
 	defer qf.Close()
 
 	c := columnMetrics(metrics, "Ratio")
+	if c.Strategy != StrategyFloat64 {
+		t.Fatalf("Ratio strategy = %v, want StrategyFloat64 for this test", c.Strategy)
+	}
 	c.floatSum += math.Abs(c.floatSum) * 1e-12 // well inside the default 1e-9
 
 	opts.Quality = QualityNumeric

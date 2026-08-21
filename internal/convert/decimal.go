@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/ralforion/qvd2parquet/internal/qvd"
@@ -328,6 +329,57 @@ func InferScaleFromSymbols(symbols []qvd.Symbol, decSep string) (int32, bool) {
 		}
 	}
 	return maxScale, seen
+}
+
+// MaxInferredDecimalScale bounds the scale that InferScaleFromValues will
+// derive. Business data rarely needs more, and a large inferred scale would
+// consume the decimal128 precision budget for no benefit. A column needing
+// more must be pinned with --schema.
+const MaxInferredDecimalScale = 9
+
+// InferScaleFromValues derives the smallest scale at which every numeric
+// symbol is exactly representable, by inspecting each value's shortest
+// round-tripping decimal form. It reports false when no scale up to
+// MaxInferredDecimalScale suffices, or when the column has no numeric values.
+//
+// This is used for --numeric-promote=decimal, where the QVD declares a plain
+// REAL and so carries no trustworthy NumberFormat/nDec.
+func InferScaleFromValues(symbols []qvd.Symbol) (int32, bool) {
+	var maxScale int32
+	seen := false
+	for _, s := range symbols {
+		v, ok := s.Numeric()
+		if !ok {
+			continue
+		}
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0, false
+		}
+		seen = true
+		n, ok := decimalsNeeded(v)
+		if !ok || n > MaxInferredDecimalScale {
+			return 0, false
+		}
+		if n > maxScale {
+			maxScale = n
+		}
+	}
+	return maxScale, seen
+}
+
+// decimalsNeeded returns how many decimal places the shortest representation
+// of v uses. Exponent forms are rejected, since they indicate a magnitude that
+// a fixed scale should not be guessed for.
+func decimalsNeeded(v float64) (int32, bool) {
+	str := strconv.FormatFloat(v, 'f', -1, 64)
+	if strings.ContainsAny(str, "eE") {
+		return 0, false
+	}
+	i := strings.IndexByte(str, '.')
+	if i < 0 {
+		return 0, true
+	}
+	return int32(len(str) - i - 1), true
 }
 
 // ResolveDecimalSpec scales every symbol of a column to derive the precision

@@ -104,6 +104,40 @@ func (qf *File) SelectColumns(names []string) error {
 	return nil
 }
 
+// ExcludeColumns deselects every column whose name matches one of the given
+// shell-style wildcard patterns ('*' and '?', case-insensitive). Patterns are
+// matched against the field's original QVD name, before any renaming, so they
+// describe what is visible in the source file.
+//
+// It returns the names that were excluded, in header order. Excluding every
+// column is an error, since the output would have no columns.
+func (qf *File) ExcludeColumns(patterns []string) ([]string, error) {
+	var pats []string
+	for _, p := range patterns {
+		if p = strings.TrimSpace(p); p != "" {
+			pats = append(pats, p)
+		}
+	}
+	if len(pats) == 0 {
+		return nil, nil
+	}
+	var dropped []string
+	for i := range qf.Columns {
+		if !qf.Columns[i].Selected {
+			continue
+		}
+		if MatchesAnyGlob(pats, qf.Columns[i].Name) {
+			qf.Columns[i].Selected = false
+			dropped = append(dropped, qf.Columns[i].Name)
+		}
+	}
+	if len(qf.SelectedColumns()) == 0 {
+		return nil, fmt.Errorf("--exclude %s removed every column from %s",
+			strings.Join(pats, ", "), qf.Path)
+	}
+	return dropped, nil
+}
+
 // ColumnNames returns every field name in header order.
 func (qf *File) ColumnNames() []string {
 	out := make([]string, len(qf.Columns))

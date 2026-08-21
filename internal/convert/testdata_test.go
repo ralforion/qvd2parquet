@@ -49,7 +49,7 @@ func TestCommittedFixtures(t *testing.T) {
 				"Name":   "utf8",
 				"Amount": "decimal(7, 2)",
 				"Day":    "date32",
-				"Ratio":  "float64",
+				"Ratio":  "decimal(3, 1)", // decimal by default
 				"Clock":  "time32[ms]",
 			}
 			got := map[string]string{}
