@@ -10,6 +10,8 @@ previous behaviour.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-22
+
 ### Added
 
 - `--out-dir` converts a whole folder: pass files or directories, and each
@@ -30,24 +32,6 @@ previous behaviour.
   row and column counts, output size, elapsed time, throughput, and the quality
   gate's verdict. In batch mode `--schema-report` and `--quality-report` write
   one document per input, named after it.
-
-### Changed
-
-- **`--dual` now defaults to `auto`.** A Qlik dual's display string is written
-  as a `${name}__text` column only when it carries something the numeric column
-  does not. A localized number such as `1.234,56`, or a date rendered beside a
-  column that already encodes it, is redundant and dropped; a label such as
-  `Open` beside `1` is kept, and the reason is reported. One informative string
-  is enough to keep the column, so the default errs towards preserving data.
-  `--dual=numeric`, `text` and `columns` still force a choice.
-
-  Redundancy is judged against the value that will actually be written, not the
-  raw payload, so a `MONEY` field carrying `1.234` and displaying `1.23` at
-  scale 2 does not produce a text column.
-
-- The banner now carries the year: `(c) 2026, RALFORION d.o.o.`
-
-### Added
 
 - `--inspect` reads the XML header and the symbol tables, prints the schema a
   conversion would produce, and exits without touching the record area. The
@@ -101,6 +85,22 @@ previous behaviour.
   beside a November value both keep their text column. The list errs short: a
   word wrongly rejected costs a redundant column, whereas one wrongly accepted
   drops text that carried information.
+
+### Changed
+
+- **`--dual` now defaults to `auto`.** A Qlik dual's display string is written
+  as a `${name}__text` column only when it carries something the numeric column
+  does not. A localized number such as `1.234,56`, or a date rendered beside a
+  column that already encodes it, is redundant and dropped; a label such as
+  `Open` beside `1` is kept, and the reason is reported. One informative string
+  is enough to keep the column, so the default errs towards preserving data.
+  `--dual=numeric`, `text` and `columns` still force a choice.
+
+  Redundancy is judged against the value that will actually be written, not the
+  raw payload, so a `MONEY` field carrying `1.234` and displaying `1.23` at
+  scale 2 does not produce a text column.
+
+- The banner now carries the year: `(c) 2026, RALFORION d.o.o.`
 
 ## [0.3.1] - 2026-08-21
 
@@ -229,7 +229,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ralforion/qvd2parquet/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/ralforion/qvd2parquet/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ralforion/qvd2parquet/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ralforion/qvd2parquet/compare/v0.1.0...v0.2.0
