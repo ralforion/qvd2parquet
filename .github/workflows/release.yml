@@ -1,24 +1,46 @@
 name: Release
 
-# Publishes cross-compiled binaries for every supported platform when a
-# version tag is pushed:
+# Publishes cross-compiled binaries when a version tag is pushed:
 #
-#   git tag v0.1.0 && git push origin v0.1.0
+#   git tag v0.4.0 && git push origin v0.4.0
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to build (e.g. v0.1.0)'
+        description: 'Version to build (e.g. v0.4.0)'
         required: true
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  test:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          cache: true
+      - run: go test ./...
+
+  # One job per platform, so the release builds in parallel rather than looping
+  # through every target in a single job.
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - darwin/amd64
+          - darwin/arm64
+          - linux/amd64
+          - linux/arm64
+          - windows/amd64
+          - windows/arm64
     steps:
       - uses: actions/checkout@v7
         with:
@@ -29,12 +51,51 @@ jobs:
           go-version: '1.27'
           cache: true
 
-      - run: go test ./...
-
-      - name: Build release artifacts
+      - name: Build ${{ matrix.target }}
         env:
+          PLATFORMS: ${{ matrix.target }}
           VERSION: ${{ github.event.inputs.version || github.ref_name }}
         run: ./scripts/build-release.sh
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@v4
+        with:
+          # Artifact names cannot contain a slash.
+          name: dist-${{ strategy.job-index }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Collect every archive
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
+      # Each build job produced a checksum file for its own archive only, so
+      # they were deliberately not uploaded; one is written here over the whole
+      # set.
+      - name: Checksum the release
+        run: |
+          cd dist
+          shopt -s nullglob
+          archives=(*.tar.gz *.zip)
+          if [ ${#archives[@]} -eq 0 ]; then
+            echo "::error::no archives were produced"
+            exit 1
+          fi
+          shasum -a 256 "${archives[@]}" > SHA256SUMS
+          echo "collected ${#archives[@]} archive(s):"
+          cat SHA256SUMS
 
       - name: Build release notes from CHANGELOG.md
         env:
@@ -46,8 +107,6 @@ jobs:
             exit 1
           fi
           cat .github/release-footer.md >> notes.md
-          echo "--- release notes ---"
-          cat notes.md
 
       - name: Publish GitHub release
         env:

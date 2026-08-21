@@ -19,24 +19,15 @@ DIST=${DIST:-dist}
 # Prefer an exact tag, then a tag-derived description, then the baseline.
 VERSION=${VERSION:-$(git describe --tags --dirty 2>/dev/null || echo v0.1.0)}
 
-# Every platform verified to compile. All are pure Go.
+# The platforms actually shipped. All are pure Go, so adding one back is
+# only a matter of listing it here and in the CI and release matrices.
 DEFAULT_PLATFORMS="
 darwin/amd64
 darwin/arm64
 linux/amd64
 linux/arm64
-linux/386
-linux/arm
-linux/ppc64le
-linux/s390x
-linux/riscv64
 windows/amd64
 windows/arm64
-windows/386
-freebsd/amd64
-freebsd/arm64
-netbsd/amd64
-openbsd/amd64
 "
 PLATFORMS=${PLATFORMS:-$DEFAULT_PLATFORMS}
 

@@ -57,18 +57,8 @@ jobs:
           - darwin/arm64
           - linux/amd64
           - linux/arm64
-          - linux/386
-          - linux/arm
-          - linux/ppc64le
-          - linux/s390x
-          - linux/riscv64
           - windows/amd64
           - windows/arm64
-          - windows/386
-          - freebsd/amd64
-          - freebsd/arm64
-          - netbsd/amd64
-          - openbsd/amd64
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

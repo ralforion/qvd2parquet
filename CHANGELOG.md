@@ -10,6 +10,18 @@ previous behaviour.
 
 ## [Unreleased]
 
+### Changed
+
+- Releases now ship Linux, Windows and macOS on `amd64` and `arm64` only. The
+  32-bit, `arm`, `ppc64le`, `s390x`, `riscv64` and BSD targets were building
+  and shipping without being asked for. Another target is a matter of listing
+  it in `scripts/build-release.sh` and the two workflow matrices, which a test
+  keeps identical.
+
+- The release workflow builds its targets in parallel, one job each, instead of
+  looping through them in a single job. Together with the trimmed list that
+  takes a release from about twenty minutes to a couple.
+
 ## [0.4.0] - 2026-08-22
 
 ### Added

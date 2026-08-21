@@ -33,11 +33,13 @@ runtime dependencies. Supported platforms:
 
 | OS | Architectures |
 | --- | --- |
-| Linux | `amd64`, `arm64`, `386`, `arm`, `ppc64le`, `s390x`, `riscv64` |
-| Windows | `amd64`, `arm64`, `386` |
+| Linux | `amd64`, `arm64` |
+| Windows | `amd64`, `arm64` |
 | macOS | `amd64` (Intel), `arm64` (Apple silicon) |
-| FreeBSD | `amd64`, `arm64` |
-| NetBSD / OpenBSD | `amd64` |
+
+Every target is pure Go, so another one is a matter of listing it in
+`scripts/build-release.sh` and the two workflow matrices; a test keeps the
+three lists identical.
 
 On Windows, run `qvd2parquet.exe` from PowerShell or `cmd`. macOS may quarantine
 a downloaded binary; clear it with

@@ -12,19 +12,22 @@ import (
 // a target added to one and not the other would either ship untested or be
 // tested but never released -- both silent.
 func TestCIMatrixCoversEveryReleaseTarget(t *testing.T) {
-	ci := readTextFile(t, ".github", "workflows", "ci.yml")
-	script := readTextFile(t, "scripts", "build-release.sh")
+	ci := ciMatrixTargets(t, readTextFile(t, ".github", "workflows", "ci.yml"))
+	rel := ciMatrixTargets(t, readTextFile(t, ".github", "workflows", "release.yml"))
+	script := releaseScriptTargets(t, readTextFile(t, "scripts", "build-release.sh"))
 
-	matrix := ciMatrixTargets(t, ci)
-	release := releaseScriptTargets(t, script)
-
-	if len(matrix) == 0 || len(release) == 0 {
-		t.Fatalf("parsed %d matrix and %d release targets; the parsing is wrong",
-			len(matrix), len(release))
+	if len(ci) == 0 || len(rel) == 0 || len(script) == 0 {
+		t.Fatalf("parsed %d ci, %d release and %d script targets; the parsing is wrong",
+			len(ci), len(rel), len(script))
 	}
-	if strings.Join(matrix, ",") != strings.Join(release, ",") {
-		t.Errorf("CI matrix and release targets differ:\n  ci:      %v\n  release: %v",
-			matrix, release)
+	for _, other := range []struct {
+		name    string
+		targets []string
+	}{{"release workflow", rel}, {"build-release.sh", script}} {
+		if strings.Join(ci, ",") != strings.Join(other.targets, ",") {
+			t.Errorf("CI matrix and %s list different targets:\n  ci:  %v\n  %s: %v",
+				other.name, ci, other.name, other.targets)
+		}
 	}
 }
 

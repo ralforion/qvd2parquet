@@ -9,6 +9,5 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
 Binaries are pure Go and statically linked, so they need no runtime
-dependencies: Linux (amd64, arm64, 386, arm, ppc64le, s390x, riscv64),
-Windows (amd64, arm64, 386), macOS (amd64, arm64), FreeBSD (amd64, arm64),
-NetBSD and OpenBSD (amd64).
+dependencies: Linux (amd64, arm64), Windows (amd64, arm64) and macOS (amd64,
+arm64).
