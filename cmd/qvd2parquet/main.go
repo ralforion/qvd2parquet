@@ -130,6 +130,7 @@ func run() int {
 		progress      = fs.Int64("progress", def.ProgressEvery, "Log every N rows, 0 disables progress")
 		force         = fs.Bool("force", false, "Overwrite an existing output file")
 		strict        = fs.Bool("strict", false, "Enable strict validation defaults")
+		emptyAsNull   = fs.Bool("empty-as-null", def.EmptyStringAsNull, "Write an empty string symbol as null, as Qlik treats it")
 		inferDates    = fs.Bool("infer-dates", def.InferDates, "Read an untyped column as a date/timestamp when its display strings render its serial value as one")
 		inspect       = fs.Bool("inspect", false, "Read only the header and symbol tables, print the schema, and exit")
 		showVersion   = fs.Bool("version", false, "Print the version and exit")
@@ -171,6 +172,7 @@ func run() int {
 	opts.MixedStringFallback = *strFallback
 	opts.DecimalStrict = *decStrict
 	opts.InferDates = *inferDates
+	opts.EmptyStringAsNull = *emptyAsNull
 	opts.Compression = *compression
 	opts.BatchRows = *batchRows
 	opts.Workers = *workers

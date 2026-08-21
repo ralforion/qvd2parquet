@@ -114,6 +114,9 @@ func (b *Batch) Release() { b.rec.Release() }
 func newColumnConverter(rc *ResolvedColumn, src qvd.Column, opts *Options) (columnConverter, error) {
 	cc := columnConverter{col: rc, srcCol: src}
 	loc := opts.Location
+	// Qlik treats an empty string as absent, so by default it is written as
+	// null rather than as a zero-length string.
+	emptyIsNull := opts.EmptyStringAsNull
 
 	switch rc.Strategy {
 	case StrategyNull:
@@ -125,13 +128,20 @@ func newColumnConverter(rc *ResolvedColumn, src qvd.Column, opts *Options) (colu
 			if s.Kind == qvd.SymbolNull {
 				return Value{Null: true}, nil
 			}
-			return Value{Str: symbolToString(s)}, nil
+			str := symbolToString(s)
+			if str == "" && emptyIsNull {
+				return Value{Null: true}, nil
+			}
+			return Value{Str: str}, nil
 		}
 		cc.appendTo = appendString
 
 	case StrategyDualText:
 		cc.convert = func(s qvd.Symbol) (Value, error) {
 			if s.Kind == qvd.SymbolNull || !s.Kind.HasText() {
+				return Value{Null: true}, nil
+			}
+			if s.Text == "" && emptyIsNull {
 				return Value{Null: true}, nil
 			}
 			return Value{Str: s.Text}, nil

@@ -195,7 +195,10 @@ type Options struct {
 	// InferDates lets a column whose header declares no type be read as a
 	// date or timestamp when every display string renders its Excel-style
 	// serial value as one.
-	InferDates          bool
+	InferDates bool
+	// EmptyStringAsNull writes an empty string symbol as null, which is how
+	// Qlik treats it. Disable to keep "" distinct from null.
+	EmptyStringAsNull   bool
 	MixedStringFallback bool
 	DecimalSource       DecimalSource
 	DecimalStrict       bool
@@ -222,6 +225,7 @@ func DefaultOptions() Options {
 		Dual:                DualAuto,
 		NumericPromote:      PromoteDecimal,
 		InferDates:          true,
+		EmptyStringAsNull:   true,
 		DecimalSource:       DecimalAuto,
 		DecimalStrict:       false,
 		Compression:         "zstd",

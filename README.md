@@ -86,6 +86,7 @@ qvd2parquet --inspect [options] input.qvd
   -mixed error               Mixed-type strategy: error|string|promote|dual-columns
   -dual auto                 Dual strategy: auto|numeric|text|columns
   -infer-dates               Read an untyped column as a date/timestamp when its text says so
+  -empty-as-null             Write an empty string symbol as null, as Qlik treats it
   -numeric-promote decimal   Numeric widening: decimal | true (float64) | false
   -mixed-string-fallback     Convert otherwise-invalid mixed columns to string
   -decimal-source auto       Decimal extraction: auto|text|numeric
@@ -324,6 +325,23 @@ producing an unstable schema that depends on which rows were seen first.
 | all-null column | nullable `utf8` |
 
 Every output column is nullable.
+
+### What becomes null
+
+- A record whose biased symbol index is negative. This is how QVD encodes a
+  missing value, and it is by far the common case.
+- A symbol carrying the `0x00` tag.
+- An empty string symbol, since Qlik treats it as absent. Pass
+  `--empty-as-null=false` to keep `""` distinct from null.
+- A NaN or infinite value in a column whose type cannot represent one — date,
+  timestamp, time, integer or decimal. A `float64` column keeps them. This is
+  defensive: no QVD written by QlikView has been observed to store NaN, but a
+  file produced by another writer might.
+
+Each substitution beyond the first two is counted and reported on stderr, so
+none of them is silent. A *finite* value that simply does not fit its column is
+an error rather than a null, because discarding real data silently is the one
+thing the converter should not do.
 
 ### Mixed-type columns
 

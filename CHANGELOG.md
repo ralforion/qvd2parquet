@@ -43,6 +43,10 @@ previous behaviour.
   dual display strings, which no amount of text inspection could identify, and
   it is what Qlik Sense writes. A declared type still wins over a tag.
 
+- An empty string symbol is written as **null**, which is how Qlik treats it.
+  The substitution is counted and reported. Pass `--empty-as-null=false` to
+  keep `""` distinct from null.
+
 - A NaN or infinite value in a date, timestamp, time, integer or decimal
   column is written as **null** rather than failing the conversion. Such a
   value is not something those types can hold, and nothing is lost by nulling
