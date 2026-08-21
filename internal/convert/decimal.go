@@ -18,6 +18,10 @@ const maxDecimal128Precision = 38
 // column's declared scale.
 var ErrDecimalInexact = errors.New("value is not exact at the declared decimal scale")
 
+// errNonFinite marks a NaN or infinite payload, which becomes a null rather
+// than failing the column.
+var errNonFinite = errors.New("value is not finite")
+
 // DecimalSpec is a resolved Parquet decimal type.
 type DecimalSpec struct {
 	Precision int32 `json:"precision"`
@@ -218,6 +222,8 @@ type DecimalExtractor struct {
 	// Rounded counts values that had to be rounded to the declared scale,
 	// which is only possible when Strict is false.
 	Rounded int64
+	// NonFinite counts NaN and infinite payloads, which are written as null.
+	NonFinite int64
 }
 
 // Scaled converts one symbol. It returns (nil, nil) for a null symbol.
@@ -248,6 +254,11 @@ func (e *DecimalExtractor) Scaled(s qvd.Symbol) (*big.Int, error) {
 		n, ok := s.Numeric()
 		if !ok {
 			return nil, fmt.Errorf("symbol has no numeric payload")
+		}
+		if math.IsNaN(n) || math.IsInf(n, 0) {
+			// Not a value a decimal can hold, and nothing is lost by writing
+			// null. errNonFinite is recognized by ResolveDecimalSpec.
+			return nil, errNonFinite
 		}
 		if s.Kind == qvd.SymbolInt || s.Kind == qvd.SymbolDualIntString {
 			return new(big.Int).Mul(big.NewInt(s.Int), pow10(e.Scale)), nil
@@ -389,6 +400,10 @@ func ResolveDecimalSpec(colName string, symbols []qvd.Symbol, ex *DecimalExtract
 	var maxDigits int32 = 1
 	for i, s := range symbols {
 		v, err := ex.Scaled(s)
+		if errors.Is(err, errNonFinite) {
+			ex.NonFinite++
+			continue // leaves scaled[i] nil, which is written as null
+		}
 		if err != nil {
 			return DecimalSpec{}, nil, fmt.Errorf(
 				"column %q symbol %d (%v %q): %w; relax with --decimal-strict=false to round to the declared scale, or pin the column with --schema",

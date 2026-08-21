@@ -3,7 +3,6 @@ package convert
 import (
 	"context"
 	"errors"
-	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -261,12 +260,11 @@ func TestDateTimeOverridesRejectUnconvertibleNumerics(t *testing.T) {
 		pinned string
 		sym    qvd.Symbol
 	}{
-		{"NaN date", "date32", qvdtest.Float(math.NaN())},
-		{"NaN timestamp", "timestamp", qvdtest.Float(math.NaN())},
-		{"NaN time", "time", qvdtest.Float(math.NaN())},
+		// NaN and infinity are written as null instead, so they are not
+		// listed here; see TestNonFiniteValuesBecomeNull.
 		{"huge serial day", "date32", qvdtest.Float(1e30)},
 		{"huge timestamp", "timestamp", qvdtest.Float(1e30)},
-		{"infinite time", "time", qvdtest.Float(math.Inf(1))},
+		{"text beside a date", "date32", qvdtest.Str("tomorrow")},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

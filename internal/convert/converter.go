@@ -89,13 +89,17 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	for _, n := range rs.Notes {
 		logf("schema: %s", n)
 	}
-	var rounded int64
+	var rounded, nonFinite int64
 	for _, c := range rs.Columns {
 		rounded += c.DecimalRounded
+		nonFinite += c.NonFiniteNulls
 	}
 	if rounded > 0 {
 		logf("note: %d decimal value(s) were rounded to their column's scale; "+
 			"pass --decimal-strict to fail instead", rounded)
+	}
+	if nonFinite > 0 {
+		logf("note: %d value(s) are NaN or infinite and were written as null", nonFinite)
 	}
 
 	if opts.SchemaReportPath != "" {
@@ -222,6 +226,8 @@ type DecimalReport struct {
 	FromNumeric bool  `json:"fromNumericPayloads"`
 	// Rounded counts values that did not fit the scale and were rounded to it.
 	Rounded int64 `json:"roundedValues,omitempty"`
+	// NonFinite counts NaN and infinite values written as null.
+	NonFinite int64 `json:"nonFiniteNulls,omitempty"`
 }
 
 // WriteSchemaReport saves the inferred schema and profiles as JSON.
@@ -271,6 +277,7 @@ func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema) 
 				FromText:    c.DecimalFromText,
 				FromNumeric: c.DecimalFromNumeric,
 				Rounded:     c.DecimalRounded,
+				NonFinite:   c.NonFiniteNulls,
 			}
 		}
 		rep.Columns = append(rep.Columns, rc)

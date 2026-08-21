@@ -138,9 +138,17 @@ var dateTokens = regexp.MustCompile(`\d+`)
 // carried information -- "Due 11/20/2010" must not read as pure formatting.
 var dateWords = map[string]bool{}
 
-// monthWords maps a recognized month name onto its number, so a month that
-// contradicts the value is rejected rather than merely tolerated.
+// monthWords maps a recognized month name onto its number, and weekdayWords
+// onto its weekday, so a name that contradicts the value is rejected rather
+// than merely tolerated. Allowing a word without checking it would let
+// "Mon, 20 Nov 2010" pass for a Saturday.
 var monthWords = map[string]int{}
+var weekdayWords = map[string]time.Weekday{}
+
+// timeWords are the only alphabetic tokens allowed beside a clock time. A TIME
+// value carries no calendar date, so month and weekday names are not part of
+// rendering one.
+var timeWords = map[string]bool{}
 
 func init() {
 	// English and German month names, long and abbreviated. German QVDs are
@@ -165,21 +173,73 @@ func init() {
 			dateWords[n] = true
 		}
 	}
-	others := []string{
-		// Weekday names, English and German.
-		"mon", "monday", "montag", "tue", "tues", "tuesday", "dienstag",
-		"wed", "wednesday", "mittwoch", "thu", "thur", "thurs", "thursday", "donnerstag",
-		"fri", "friday", "freitag", "sat", "saturday", "samstag", "sonnabend",
-		"sun", "sunday", "sonntag",
-		// Meridiem markers and ordinal suffixes.
-		"am", "pm", "a", "p", "st", "nd", "rd", "th",
-		// Timezone abbreviations.
+	weekdays := [][]string{
+		{"sun", "sunday", "son", "sonntag"},
+		{"mon", "monday", "montag"},
+		{"tue", "tues", "tuesday", "die", "dienstag"},
+		{"wed", "wednesday", "mit", "mittwoch"},
+		{"thu", "thur", "thurs", "thursday", "don", "donnerstag"},
+		{"fri", "friday", "fre", "freitag"},
+		{"sat", "saturday", "sam", "samstag", "sonnabend"},
+	}
+	for i, names := range weekdays {
+		for _, n := range names {
+			weekdayWords[n] = time.Weekday(i)
+			dateWords[n] = true
+		}
+	}
+
+	// Meridiem markers, ordinal suffixes and timezone abbreviations. The ISO
+	// 8601 "T" separator is handled before tokenizing, not here.
+	shared := []string{
+		"am", "pm", "a", "p",
 		"utc", "gmt", "z", "cet", "cest", "mez", "mesz", "est", "edt",
 		"cst", "cdt", "mst", "mdt", "pst", "pdt", "bst", "wet", "west",
 	}
-	for _, w := range others {
+	for _, w := range shared {
+		dateWords[w] = true
+		timeWords[w] = true
+	}
+	// Ordinal suffixes belong to a date ("20th"), never to a clock time.
+	for _, w := range []string{"st", "nd", "rd", "th"} {
 		dateWords[w] = true
 	}
+}
+
+// isoSeparator matches the "T" that ISO 8601 puts between a date and a time,
+// so it can be treated as punctuation rather than an unknown word.
+var isoSeparator = regexp.MustCompile(`(\d)[Tt](\d)`)
+
+// stripISOSeparator replaces the ISO 8601 date/time separator with a space.
+func stripISOSeparator(t string) string {
+	return isoSeparator.ReplaceAllString(t, "$1 $2")
+}
+
+// weekdayWordMatches reports whether every weekday name in t names d's weekday.
+func weekdayWordMatches(t string, d time.Weekday) bool {
+	for _, w := range alphaRuns.FindAllString(t, -1) {
+		if got, ok := weekdayWords[strings.ToLower(w)]; ok && got != d {
+			return false
+		}
+	}
+	return true
+}
+
+// timeTextRemainderOK is the clock-time counterpart of dateTextRemainderOK. It
+// allows only the words that belong beside a time, so a month or weekday name
+// -- which a time32 value cannot encode -- keeps its text column.
+func timeTextRemainderOK(t string) bool {
+	for _, w := range alphaRuns.FindAllString(t, -1) {
+		if !timeWords[strings.ToLower(w)] {
+			return false
+		}
+	}
+	rest := dateTokens.ReplaceAllString(t, " ")
+	rest = alphaRuns.ReplaceAllString(rest, " ")
+	for _, sep := range []string{":", ".", ",", " ", "+", "-"} {
+		rest = strings.ReplaceAll(rest, sep, "")
+	}
+	return strings.TrimSpace(rest) == ""
 }
 
 // alphaRuns extracts the maximal alphabetic tokens from a string.
@@ -198,6 +258,7 @@ func textRendersDate(text string, n float64, loc *time.Location) bool {
 	if t == "" {
 		return true
 	}
+	t = stripISOSeparator(t)
 	if !dateTextRemainderOK(t) {
 		return false
 	}
@@ -227,7 +288,8 @@ func textRendersDate(text string, n float64, loc *time.Location) bool {
 	// Real data needs this: the serial 40377.958333 is 2010-07-18 23:00 UTC
 	// but was written out as "07/19/2010" by a UTC+1 producer.
 	for _, d := range []time.Time{ts, ts.AddDate(0, 0, -1), ts.AddDate(0, 0, 1)} {
-		if tokensMatchDate(tokens, d, ts) && monthWordMatches(t, int(d.Month())) {
+		if tokensMatchDate(tokens, d, ts) &&
+			monthWordMatches(t, int(d.Month())) && weekdayWordMatches(t, d.Weekday()) {
 			return true
 		}
 	}
@@ -298,7 +360,7 @@ func textRendersTime(text string, n float64) bool {
 	if t == "" {
 		return true
 	}
-	if !dateTextRemainderOK(t) {
+	if !timeTextRemainderOK(t) {
 		return false
 	}
 	ms, ok := qvd.QlikFractionToTimeMillis(n)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"strings"
@@ -82,6 +83,9 @@ type ResolvedColumn struct {
 	// DecimalRounded counts values that did not fit the declared scale and
 	// were rounded to it. Non-zero only when --decimal-strict is false.
 	DecimalRounded int64
+	// NonFiniteNulls counts symbols written as null because they are NaN or
+	// infinite and so cannot be represented in this column's type.
+	NonFiniteNulls int64
 	// DecSep and ThouSep carry the source field's declared separators, so a
 	// display string can be compared against the written value.
 	DecSep  string
@@ -159,38 +163,51 @@ func (so *SchemaOverride) lookup(name string) (ColumnOverride, bool) {
 // conversion the decode workers will run, on every symbol. Checking only the
 // symbol kind would let NaN, an out-of-range serial day or an oversized
 // timestamp through schema resolution and fail mid-conversion instead.
-func requireConvertibleDateTime(col qvd.Column, syms []qvd.Symbol, pinned string, loc *time.Location) error {
+func requireConvertibleDateTime(col qvd.Column, syms []qvd.Symbol, pinned string, loc *time.Location) (int64, error) {
 	// The type may come from the header, a Qlik tag, inference or --schema, so
 	// state what was resolved rather than assuming an override.
 	reject := func(i int, s qvd.Symbol, why string) error {
 		return fmt.Errorf("%w: column %q resolves to %s, but symbol %d (%v %q) %s",
 			ErrSchemaPolicy, col.Name, pinned, i, s.Kind, s.Text, why)
 	}
+	var nonFinite int64
 	for i, s := range syms {
 		if s.Kind == qvd.SymbolNull {
 			continue
 		}
 		n, ok := s.Numeric()
 		if !ok {
-			return reject(i, s, "carries no numeric value")
+			return 0, reject(i, s, "carries no numeric value")
+		}
+		// NaN and infinity are not values that a date can hold, and nothing is
+		// lost by writing them as null. A finite value that simply does not fit
+		// is different: nulling it would discard real data, so that still
+		// fails.
+		if isNonFinite(n) {
+			nonFinite++
+			continue
 		}
 		switch pinned {
 		case "date32":
 			if _, ok := qvd.QlikDaysToDate32(n); !ok {
-				return reject(i, s, fmt.Sprintf("has serial day %v, which is out of range for date32", n))
+				return 0, reject(i, s, fmt.Sprintf("has serial day %v, which is out of range for date32", n))
 			}
 		case "timestamp":
 			if _, ok := qvd.QlikDaysToTimestampMillis(n, loc); !ok {
-				return reject(i, s, fmt.Sprintf("has serial timestamp %v, which is out of range", n))
+				return 0, reject(i, s, fmt.Sprintf("has serial timestamp %v, which is out of range", n))
 			}
 		case "time":
 			if _, ok := qvd.QlikFractionToTimeMillis(n); !ok {
-				return reject(i, s, fmt.Sprintf("has time value %v, which is out of range", n))
+				return 0, reject(i, s, fmt.Sprintf("has time value %v, which is out of range", n))
 			}
 		}
 	}
-	return nil
+	return nonFinite, nil
 }
+
+// isNonFinite reports whether f is NaN or infinite, neither of which any of the
+// typed output columns can represent.
+func isNonFinite(f float64) bool { return math.IsNaN(f) || math.IsInf(f, 0) }
 
 // Arrow type constructors used by the resolver.
 var (
@@ -425,26 +442,34 @@ func resolveNumericColumn(base ResolvedColumn, col qvd.Column, prof *qvd.ColumnP
 
 	switch qlikType {
 	case qvd.QlikDate:
-		if err := requireConvertibleDateTime(col, syms, "date32", opts.Location); err != nil {
+		nonFinite, err := requireConvertibleDateTime(col, syms, "date32", opts.Location)
+		if err != nil {
 			return ResolvedColumn{}, "", err
 		}
+		base.NonFiniteNulls = nonFinite
 		base.ArrowType, base.Strategy = arrowDate32, StrategyDate32
-		return base, withInferNote(fmt.Sprintf("%s: DATE, written as date32 (days since epoch)", col.Name), inferNote), nil
+		return base, withNonFiniteNote(withInferNote(
+			fmt.Sprintf("%s: DATE, written as date32 (days since epoch)", col.Name), inferNote), nonFinite), nil
 
 	case qvd.QlikTimestamp:
-		if err := requireConvertibleDateTime(col, syms, "timestamp", opts.Location); err != nil {
+		nonFinite, err := requireConvertibleDateTime(col, syms, "timestamp", opts.Location)
+		if err != nil {
 			return ResolvedColumn{}, "", err
 		}
+		base.NonFiniteNulls = nonFinite
 		base.ArrowType, base.Strategy = tsType, StrategyTimestampMillis
-		return base, withInferNote(fmt.Sprintf("%s: TIMESTAMP, written as timestamp[ms, tz=%s]",
-			col.Name, tsType.(*arrow.TimestampType).TimeZone), inferNote), nil
+		return base, withNonFiniteNote(withInferNote(fmt.Sprintf("%s: TIMESTAMP, written as timestamp[ms, tz=%s]",
+			col.Name, tsType.(*arrow.TimestampType).TimeZone), inferNote), nonFinite), nil
 
 	case qvd.QlikTime:
-		if err := requireConvertibleDateTime(col, syms, "time", opts.Location); err != nil {
+		nonFinite, err := requireConvertibleDateTime(col, syms, "time", opts.Location)
+		if err != nil {
 			return ResolvedColumn{}, "", err
 		}
+		base.NonFiniteNulls = nonFinite
 		base.ArrowType, base.Strategy = arrowTime32, StrategyTimeMillis
-		return base, withInferNote(fmt.Sprintf("%s: TIME, written as time32[ms] (milliseconds since midnight)", col.Name), inferNote), nil
+		return base, withNonFiniteNote(withInferNote(
+			fmt.Sprintf("%s: TIME, written as time32[ms] (milliseconds since midnight)", col.Name), inferNote), nonFinite), nil
 
 	case qvd.QlikFix, qvd.QlikMoney:
 		return resolveDecimalColumn(base, col, syms, opts)
@@ -498,6 +523,15 @@ func withInferNote(note, infer string) string {
 	return note + "; " + infer
 }
 
+// withNonFiniteNote records values written as null because they are NaN or
+// infinite, so the substitution is reported rather than silent.
+func withNonFiniteNote(note string, n int64) string {
+	if n == 0 {
+		return note
+	}
+	return note + fmt.Sprintf("; %d non-finite value(s) written as null", n)
+}
+
 // resolvePromotedDecimalColumn resolves a REAL-ish column to an exact decimal
 // under --numeric-promote=decimal. The declared NumberFormat/nDec is not
 // trustworthy here (Qlik writes a filler value for REAL), so the scale is
@@ -546,6 +580,7 @@ func resolvePromotedDecimalColumn(base ResolvedColumn, col qvd.Column, prof *qvd
 	base.Strategy, base.Decimal, base.Scaled = StrategyDecimal, spec, scaled
 	base.DecimalFromNumeric = true
 	base.DecimalRounded = ex.Rounded
+	base.NonFiniteNulls = ex.NonFinite
 
 	mix := fmt.Sprintf("%d double symbols", prof.FloatLike())
 	if prof.IntLike() > 0 {
@@ -595,6 +630,7 @@ func resolveDecimalColumn(base ResolvedColumn, col qvd.Column, syms []qvd.Symbol
 	base.DecimalFromText = ex.UsedText
 	base.DecimalFromNumeric = ex.UsedNumeric
 	base.DecimalRounded = ex.Rounded
+	base.NonFiniteNulls = ex.NonFinite
 
 	src := "no values"
 	switch {
@@ -607,6 +643,9 @@ func resolveDecimalColumn(base ResolvedColumn, col qvd.Column, syms []qvd.Symbol
 	}
 	note := fmt.Sprintf("%s: %s, written as %s; scale from %s, digits from %s",
 		col.Name, col.QlikType, spec, scaleSource, src)
+	if ex.NonFinite > 0 {
+		note += fmt.Sprintf("; %d non-finite value(s) written as null", ex.NonFinite)
+	}
 	if ex.Rounded > 0 {
 		note += fmt.Sprintf("; %d value(s) rounded to scale %d (--decimal-strict=false)",
 			ex.Rounded, spec.Scale)
@@ -646,21 +685,27 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 		}
 		base.ArrowType, base.Strategy = arrowF64, StrategyFloat64
 	case "date32":
-		if err := requireConvertibleDateTime(col, syms, "date32", loc); err != nil {
+		nonFinite, err := requireConvertibleDateTime(col, syms, "date32", loc)
+		if err != nil {
 			return base, err
 		}
+		base.NonFiniteNulls = nonFinite
 		base.ArrowType, base.Strategy = arrowDate32, StrategyDate32
 	case "timestamp":
-		if err := requireConvertibleDateTime(col, syms, "timestamp", loc); err != nil {
+		nonFinite, err := requireConvertibleDateTime(col, syms, "timestamp", loc)
+		if err != nil {
 			return base, err
 		}
+		base.NonFiniteNulls = nonFinite
 		// Use the run's configured timezone, so the type metadata matches how
 		// the values are actually converted.
 		base.ArrowType, base.Strategy = tsType, StrategyTimestampMillis
 	case "time":
-		if err := requireConvertibleDateTime(col, syms, "time", loc); err != nil {
+		nonFinite, err := requireConvertibleDateTime(col, syms, "time", loc)
+		if err != nil {
 			return base, err
 		}
+		base.NonFiniteNulls = nonFinite
 		base.ArrowType, base.Strategy = arrowTime32, StrategyTimeMillis
 	case "decimal":
 		ex := &DecimalExtractor{

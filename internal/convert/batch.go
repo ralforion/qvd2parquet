@@ -147,6 +147,9 @@ func newColumnConverter(rc *ResolvedColumn, src qvd.Column, opts *Options) (colu
 			case qvd.SymbolInt, qvd.SymbolDualIntString:
 				return Value{Int: s.Int}, nil
 			case qvd.SymbolFloat, qvd.SymbolDualFloatString:
+				if isNonFinite(s.Float) {
+					return Value{Null: true}, nil
+				}
 				if s.Float == math.Trunc(s.Float) && math.Abs(s.Float) <= math.MaxInt64 {
 					return Value{Int: int64(s.Float)}, nil
 				}
@@ -192,6 +195,9 @@ func newColumnConverter(rc *ResolvedColumn, src qvd.Column, opts *Options) (colu
 			if !ok {
 				return Value{}, fmt.Errorf("column %q: DATE symbol %q has no numeric value", rc.Name, s.Text)
 			}
+			if isNonFinite(n) {
+				return Value{Null: true}, nil
+			}
 			d, ok := qvd.QlikDaysToDate32(n)
 			if !ok {
 				return Value{}, fmt.Errorf("column %q: serial day %v is out of range for date32", rc.Name, n)
@@ -216,6 +222,9 @@ func newColumnConverter(rc *ResolvedColumn, src qvd.Column, opts *Options) (colu
 			if !ok {
 				return Value{}, fmt.Errorf("column %q: TIMESTAMP symbol %q has no numeric value", rc.Name, s.Text)
 			}
+			if isNonFinite(n) {
+				return Value{Null: true}, nil
+			}
 			ms, ok := qvd.QlikDaysToTimestampMillis(n, loc)
 			if !ok {
 				return Value{}, fmt.Errorf("column %q: serial timestamp %v is out of range", rc.Name, n)
@@ -239,6 +248,9 @@ func newColumnConverter(rc *ResolvedColumn, src qvd.Column, opts *Options) (colu
 			n, ok := s.Numeric()
 			if !ok {
 				return Value{}, fmt.Errorf("column %q: TIME symbol %q has no numeric value", rc.Name, s.Text)
+			}
+			if isNonFinite(n) {
+				return Value{Null: true}, nil
 			}
 			ms, ok := qvd.QlikFractionToTimeMillis(n)
 			if !ok {

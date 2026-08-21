@@ -554,21 +554,19 @@ func TestDualAutoKeepsAnnotatedDates(t *testing.T) {
 // converted, whatever decided the type: the declared header, a Qlik tag, or
 // display-string inference. Failing here means --inspect predicts it and no
 // output file is started.
+//
+// NaN and infinity are the exception: they are not values a date can hold, and
+// writing them as null loses nothing. A finite value that simply does not fit
+// is different, because nulling it would discard real data.
 func TestDateTimeColumnsValidateAtSchemaTime(t *testing.T) {
-	nan := math.NaN()
 	tests := []struct {
 		name  string
 		field qvdtest.Field
 	}{
 		{
-			"declared DATE with NaN",
+			"declared DATE far out of range",
 			qvdtest.Field{Name: "D", Type: "DATE", Rows: []int{0, 1},
-				Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Float(nan)}},
-		},
-		{
-			"tagged $date with NaN",
-			qvdtest.Field{Name: "D", Type: "", Tags: []string{"$numeric", "$date"}, Rows: []int{0, 1},
-				Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Float(nan)}},
+				Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Float(1e30)}},
 		},
 		{
 			"tagged $timestamp out of range",
@@ -576,9 +574,9 @@ func TestDateTimeColumnsValidateAtSchemaTime(t *testing.T) {
 				Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Float(1e30)}},
 		},
 		{
-			"declared TIME with infinity",
-			qvdtest.Field{Name: "T", Type: "TIME", Rows: []int{0, 1},
-				Symbols: []qvd.Symbol{qvdtest.Float(0.5), qvdtest.Float(math.Inf(1))}},
+			"declared DATE with a text symbol",
+			qvdtest.Field{Name: "D", Type: "DATE", Rows: []int{0, 1},
+				Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Str("tomorrow")}},
 		},
 	}
 	for _, tc := range tests {
@@ -589,6 +587,42 @@ func TestDateTimeColumnsValidateAtSchemaTime(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.field.Name) {
 				t.Errorf("error should name the column: %v", err)
+			}
+		})
+	}
+}
+
+// NaN and infinity become null rather than failing the conversion, and the
+// substitution is counted so it can be reported.
+func TestNonFiniteValuesBecomeNull(t *testing.T) {
+	nan, inf := math.NaN(), math.Inf(1)
+	tests := []struct {
+		name  string
+		field qvdtest.Field
+		want  string
+	}{
+		{"DATE with NaN", qvdtest.Field{Name: "D", Type: "DATE", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Float(nan)}}, "date32"},
+		{"tagged $date with NaN", qvdtest.Field{Name: "D", Type: "", Tags: []string{"$date"},
+			Rows:    []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Float(nan)}}, "date32"},
+		{"TIMESTAMP with infinity", qvdtest.Field{Name: "D", Type: "TIMESTAMP", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Float(45000.5), qvdtest.Float(inf)}}, "timestamp[ms, tz=UTC]"},
+		{"TIME with NaN", qvdtest.Field{Name: "T", Type: "TIME", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Float(0.5), qvdtest.Float(nan)}}, "time32[ms]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := mustResolve(t, tc.field, func(o *Options) { o.Location = utc(); o.TimezoneName = "UTC" })
+			c := rs.Columns[0]
+			if got := c.ArrowType.String(); got != tc.want {
+				t.Fatalf("type = %s, want %s", got, tc.want)
+			}
+			if c.NonFiniteNulls != 1 {
+				t.Errorf("NonFiniteNulls = %d, want 1", c.NonFiniteNulls)
+			}
+			if !strings.Contains(strings.Join(rs.Notes, " "), "written as null") {
+				t.Errorf("the substitution should be reported: %v", rs.Notes)
 			}
 		})
 	}
@@ -614,5 +648,82 @@ func TestValidDateTimeColumnsStillResolve(t *testing.T) {
 				t.Errorf("type = %s, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+// A clock time carries no calendar date, so a month or weekday name beside it
+// says something a time32 value cannot encode and must keep its text column.
+func TestTextRendersTimeRejectsCalendarWords(t *testing.T) {
+	const noon = 0.5
+	for _, s := range []string{"Mon 12:00", "May 12:00", "12:00 Tuesday", "12:00 Nov"} {
+		if textRendersTime(s, noon) {
+			t.Errorf("%q names a day or month, which a time value cannot encode", s)
+		}
+	}
+	for _, s := range []string{"12:00", "12:00:00", "12:00 PM", "12:00:00 UTC"} {
+		if !textRendersTime(s, noon) {
+			t.Errorf("%q is a plain rendering of noon", s)
+		}
+	}
+}
+
+// A weekday name is a claim about the date, so it must agree with it.
+func TestTextRendersDateChecksWeekdayNames(t *testing.T) {
+	// Serial 40502 is Saturday, 20 November 2010.
+	const serial = 40502
+	if got := time.UnixMilli(func() int64 {
+		ms, _ := qvd.QlikDaysToTimestampMillis(serial, time.UTC)
+		return ms
+	}()).UTC().Weekday(); got != time.Saturday {
+		t.Fatalf("fixture assumption wrong: serial %d is a %s", serial, got)
+	}
+
+	if !textRendersDate("Sat, 20 Nov 2010", serial, time.UTC) {
+		t.Error("the correct weekday should match")
+	}
+	if !textRendersDate("Samstag, 20. November 2010", serial, time.UTC) {
+		t.Error("the German weekday should match")
+	}
+	if textRendersDate("Mon, 20 Nov 2010", serial, time.UTC) {
+		t.Error("Monday must not match a Saturday")
+	}
+	if textRendersDate("Freitag, 20. November 2010", serial, time.UTC) {
+		t.Error("Friday must not match a Saturday")
+	}
+}
+
+// ISO 8601 puts a "T" between the date and the time; it is punctuation, not a
+// word, and must not block recognition.
+func TestTextRendersDateAcceptsISO8601(t *testing.T) {
+	const serial = 40502
+	for _, s := range []string{
+		"2010-11-20T00:00:00Z",
+		"2010-11-20T00:00:00",
+		"2010-11-20t00:00:00z",
+		"2010-11-20 00:00:00",
+	} {
+		if !textRendersDate(s, serial, time.UTC) {
+			t.Errorf("%q should be recognized as an ISO rendering", s)
+		}
+	}
+	// A stray T that is not between digits is still an unknown word.
+	if textRendersDate("T 11/20/2010", serial, time.UTC) {
+		t.Error("a leading \"T\" is not the ISO separator")
+	}
+}
+
+// ISO-formatted duals must still support reading an untyped column as a date.
+func TestInferDatesFromISOStrings(t *testing.T) {
+	col := qvd.Column{QlikType: qvd.QlikUnknown}
+	syms := []qvd.Symbol{
+		qvdtest.DualInt(40502, "2010-11-20T00:00:00Z"),
+		qvdtest.DualInt(40503, "2010-11-21T00:00:00Z"),
+	}
+	inf, ok := InferDateTimeFromDuals(col, syms, time.UTC)
+	if !ok {
+		t.Fatal("ISO display strings should support date inference")
+	}
+	if inf.Type != qvd.QlikTimestamp {
+		t.Errorf("inferred %v, want QlikTimestamp (the strings carry a clock)", inf.Type)
 	}
 }
