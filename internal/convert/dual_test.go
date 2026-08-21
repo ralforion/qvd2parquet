@@ -359,3 +359,120 @@ func TestDeclaredTypeBeatsTag(t *testing.T) {
 		t.Errorf("type = %s, want int64: a declared INTEGER outranks a $date tag", got)
 	}
 }
+
+// The resolved column must carry the source field's separators, or a
+// localized decimal is compared against "." and misjudged as informative.
+func TestResolvedColumnCarriesSeparators(t *testing.T) {
+	f := qvdtest.Field{Name: "Amount", Type: "MONEY", NDec: 2, Dec: ",", Thou: ".", Rows: []int{0},
+		Symbols: []qvd.Symbol{qvdtest.DualFloat(1234.56, "1.234,56")}}
+	rs := mustResolve(t, f, nil)
+	c := rs.Columns[0]
+	if c.DecSep != "," || c.ThouSep != "." {
+		t.Errorf("separators = %q / %q, want , / .", c.DecSep, c.ThouSep)
+	}
+}
+
+// A German-localized MONEY column whose payload rounds to what the display
+// string already shows must not produce a redundant text column.
+func TestLocalizedDecimalDualIsRedundant(t *testing.T) {
+	tests := []struct {
+		name    string
+		dec     string
+		thou    string
+		symbols []qvd.Symbol
+		want    int
+	}{
+		{"comma decimal, rounded payload", ",", ".",
+			[]qvd.Symbol{qvdtest.DualFloat(1.234, "1,23"), qvdtest.DualFloat(9.876, "9,88")}, 1},
+		{"comma decimal with grouping", ",", ".",
+			[]qvd.Symbol{qvdtest.DualFloat(1234.56, "1.234,56")}, 1},
+		{"dot decimal", ".", ",",
+			[]qvd.Symbol{qvdtest.DualFloat(1.234, "1.23")}, 1},
+		{"a genuine label is still kept", ",", ".",
+			[]qvd.Symbol{qvdtest.DualFloat(1.23, "storniert")}, 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := make([]int, len(tc.symbols))
+			for i := range rows {
+				rows[i] = i
+			}
+			f := qvdtest.Field{Name: "Amount", Type: "MONEY", NDec: 2,
+				Dec: tc.dec, Thou: tc.thou, Symbols: tc.symbols, Rows: rows}
+			rs := mustResolve(t, f, nil)
+			if len(rs.Columns) != tc.want {
+				var names []string
+				for _, c := range rs.Columns {
+					names = append(names, c.Name)
+				}
+				t.Errorf("got %d columns %v, want %d", len(rs.Columns), names, tc.want)
+			}
+		})
+	}
+}
+
+// A meridiem marker is a claim about the value: "12:00 PM" is noon, not
+// midnight, so it must not be accepted as a rendering of 0.0.
+func TestTextRendersTimeHonoursMeridiem(t *testing.T) {
+	const midnight, noon = 0.0, 0.5
+	tests := []struct {
+		text string
+		v    float64
+		want bool
+	}{
+		{"12:00 AM", midnight, true},
+		{"12:00 PM", midnight, false}, // noon claimed for midnight
+		{"12:00 PM", noon, true},
+		{"12:00 AM", noon, false}, // midnight claimed for noon
+		{"12:00", noon, true},     // no marker, so no claim
+		{"12:00", midnight, true},
+		{"11:00 PM", 23.0 / 24, true},
+		{"11:00 AM", 23.0 / 24, false},
+	}
+	for _, tc := range tests {
+		if got := textRendersTime(tc.text, tc.v); got != tc.want {
+			t.Errorf("textRendersTime(%q, %v) = %v, want %v", tc.text, tc.v, got, tc.want)
+		}
+	}
+}
+
+func TestHasMeridiem(t *testing.T) {
+	for _, s := range []string{"12:00 PM", "12:00pm", "12:00 P.M.", "12:00 pm"} {
+		if !hasMeridiem(s, "pm") {
+			t.Errorf("%q should carry a PM marker", s)
+		}
+	}
+	// A word that merely contains the letters is not a marker.
+	for _, s := range []string{"12:00 Sample", "12:00 ampere"} {
+		if hasMeridiem(s, "am") {
+			t.Errorf("%q should not count as an AM marker", s)
+		}
+	}
+}
+
+// The note must name the column that is actually generated, which differs from
+// the source field name once --field-regex renames it.
+func TestDualNoteNamesTheGeneratedColumn(t *testing.T) {
+	renamer, err := NewFieldRenamer(`^[^-]*-\|\|-(?P<name>[^-]*)-\|\|-(?P<comment>.*)$`, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := qvdtest.Field{Name: "A057-||-STATUS-||-Bearbeitungsstatus", Type: "INTEGER", Rows: []int{0, 1},
+		Symbols: []qvd.Symbol{qvdtest.DualInt(1, "Open"), qvdtest.DualInt(2, "Closed")}}
+
+	rs := mustResolve(t, f, func(o *Options) { o.Renamer = renamer })
+	if len(rs.Columns) != 2 {
+		t.Fatalf("got %d columns, want 2", len(rs.Columns))
+	}
+	generated := rs.Columns[1].Name
+	if generated != "STATUS__text" {
+		t.Fatalf("generated column = %q, want STATUS__text", generated)
+	}
+	notes := strings.Join(rs.Notes, " ")
+	if !strings.Contains(notes, `"`+generated+`"`) {
+		t.Errorf("notes should name the generated column %q: %s", generated, notes)
+	}
+	if strings.Contains(notes, `"A057-||-STATUS-||-Bearbeitungsstatus__text"`) {
+		t.Errorf("notes name a column that does not exist: %s", notes)
+	}
+}

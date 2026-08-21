@@ -238,6 +238,16 @@ func textRendersTime(text string, n float64) bool {
 	h, m := total/3600000, total/60000%60
 	sec, milli := total/1000%60, total%1000
 
+	// A meridiem marker is a claim about the value, not decoration: "12:00 PM"
+	// must not be accepted as a rendering of midnight. Reject the string when
+	// the marker disagrees with the hour.
+	switch {
+	case hasMeridiem(t, "pm") && h < 12:
+		return false
+	case hasMeridiem(t, "am") && h >= 12:
+		return false
+	}
+
 	allowed := map[int]bool{h: true, m: true, sec: true, milli: true}
 	if h%12 == 0 {
 		allowed[12] = true
@@ -255,6 +265,30 @@ func textRendersTime(text string, n float64) bool {
 		}
 	}
 	return true
+}
+
+// hasMeridiem reports whether text carries the given AM/PM marker as a
+// standalone token, so that a word merely containing those letters does not
+// count.
+func hasMeridiem(text, marker string) bool {
+	lower := strings.ToLower(text)
+	for _, form := range []string{marker, marker[:1] + "." + marker[1:] + "."} {
+		i := strings.Index(lower, form)
+		if i < 0 {
+			continue
+		}
+		beforeOK := i == 0 || !isLetter(rune(lower[i-1]))
+		end := i + len(form)
+		afterOK := end >= len(lower) || !isLetter(rune(lower[end]))
+		if beforeOK && afterOK {
+			return true
+		}
+	}
+	return false
+}
+
+func isLetter(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
 }
 
 // textRendersDecimal reports whether text is a rendering of the exact decimal

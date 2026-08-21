@@ -291,6 +291,8 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 		OriginalName: col.Name,
 		Comment:      comment,
 		Nullable:     true,
+		DecSep:       col.DecSep,
+		ThouSep:      col.ThouSep,
 	}
 
 	// An explicit override wins over inference, but is still validated against
@@ -364,8 +366,10 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 	if effectiveDual == DualAuto {
 		effectiveDual = DualNumeric
 		if dual {
+			// Name the column that will actually be generated: with
+			// --field-regex the output name differs from the source field's.
 			cl := ClassifyDual(col, syms, &numeric, opts.Location)
-			dualNote = cl.Note(col.Name, col.Name+"__text")
+			dualNote = cl.Note(col.Name, numeric.Name+"__text")
 			if cl.Kind == DualInformative {
 				effectiveDual = DualColumns
 			}
