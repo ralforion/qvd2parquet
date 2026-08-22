@@ -375,11 +375,12 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 	// An explicit override wins over inference, but is still validated against
 	// the symbols actually present.
 	if co, ok := override.lookup(col.Name); ok {
-		rc, err := applyOverride(base, co, col, syms, tsType, opts.Location, opts.EmptyStringAsNull)
+		rc, scan, err := applyOverride(base, co, col, syms, tsType, opts.Location, opts.EmptyStringAsNull)
 		if err != nil {
 			return nil, "", err
 		}
-		return []ResolvedColumn{rc}, fmt.Sprintf("%s: pinned to %s by --schema", col.Name, rc.ArrowType), nil
+		return []ResolvedColumn{rc}, withNonFiniteNote(
+			fmt.Sprintf("%s: pinned to %s by --schema", col.Name, rc.ArrowType), scan), nil
 	}
 
 	if prof.HasOnlyNulls() {
@@ -733,7 +734,11 @@ func resolveDecimalColumn(base ResolvedColumn, col qvd.Column, syms []qvd.Symbol
 // an impossible pin fails as a schema policy error before anything is written
 // rather than as a decode error mid-conversion.
 func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
-	syms []qvd.Symbol, tsType arrow.DataType, loc *time.Location, emptyAsNull bool) (ResolvedColumn, error) {
+	syms []qvd.Symbol, tsType arrow.DataType, loc *time.Location, emptyAsNull bool) (ResolvedColumn, dateTimeScan, error) {
+	// Carried out so the caller can report the same conversion caveats a
+	// non-overridden column reports; a pinned timestamp relocates wall clocks
+	// across a DST discontinuity exactly like an inferred one.
+	var outScan dateTimeScan
 	switch strings.ToLower(co.Type) {
 	case "string":
 		base.ArrowType, base.Strategy = arrowString, StrategyString
@@ -743,11 +748,11 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 				continue
 			}
 			if s.Kind == qvd.SymbolFloat || s.Kind == qvd.SymbolDualFloatString {
-				return base, fmt.Errorf("%w: schema override pins %q to int64, but symbol %d is a double (%v)",
+				return base, outScan, fmt.Errorf("%w: schema override pins %q to int64, but symbol %d is a double (%v)",
 					ErrSchemaPolicy, col.Name, i, s.Float)
 			}
 			if s.Kind == qvd.SymbolString {
-				return base, fmt.Errorf("%w: schema override pins %q to int64, but symbol %d is the string %q",
+				return base, outScan, fmt.Errorf("%w: schema override pins %q to int64, but symbol %d is the string %q",
 					ErrSchemaPolicy, col.Name, i, s.Text)
 			}
 		}
@@ -758,7 +763,7 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 				continue
 			}
 			if s.Kind == qvd.SymbolString {
-				return base, fmt.Errorf("%w: schema override pins %q to float64, but symbol %d is the string %q",
+				return base, outScan, fmt.Errorf("%w: schema override pins %q to float64, but symbol %d is the string %q",
 					ErrSchemaPolicy, col.Name, i, s.Text)
 			}
 		}
@@ -766,25 +771,25 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 	case "date32":
 		scan, err := requireConvertibleDateTime(col, syms, "date32", loc, emptyAsNull)
 		if err != nil {
-			return base, err
+			return base, outScan, err
 		}
-		base.NonFiniteNulls = scan.NonFinite
+		base.NonFiniteNulls, outScan = scan.NonFinite, scan
 		base.ArrowType, base.Strategy = arrowDate32, StrategyDate32
 	case "timestamp":
 		scan, err := requireConvertibleDateTime(col, syms, "timestamp", loc, emptyAsNull)
 		if err != nil {
-			return base, err
+			return base, outScan, err
 		}
-		base.NonFiniteNulls = scan.NonFinite
+		base.NonFiniteNulls, outScan = scan.NonFinite, scan
 		// Use the run's configured timezone, so the type metadata matches how
 		// the values are actually converted.
 		base.ArrowType, base.Strategy = tsType, StrategyTimestampMicros
 	case "time":
 		scan, err := requireConvertibleDateTime(col, syms, "time", loc, emptyAsNull)
 		if err != nil {
-			return base, err
+			return base, outScan, err
 		}
-		base.NonFiniteNulls = scan.NonFinite
+		base.NonFiniteNulls, outScan = scan.NonFinite, scan
 		base.ArrowType, base.Strategy = arrowTime32, StrategyTimeMillis
 	case "decimal":
 		ex := &DecimalExtractor{
@@ -797,10 +802,10 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 		}
 		spec, scaled, err := ResolveDecimalSpec(col.Name, syms, ex)
 		if err != nil {
-			return base, fmt.Errorf("%w: %s", ErrSchemaPolicy, err)
+			return base, outScan, fmt.Errorf("%w: %s", ErrSchemaPolicy, err)
 		}
 		if spec.Precision > co.Precision {
-			return base, fmt.Errorf("%w: schema override pins %q to decimal(%d,%d), but the data needs precision %d",
+			return base, outScan, fmt.Errorf("%w: schema override pins %q to decimal(%d,%d), but the data needs precision %d",
 				ErrSchemaPolicy, col.Name, co.Precision, co.Scale, spec.Precision)
 		}
 		spec.Precision = co.Precision
@@ -808,5 +813,5 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 		base.Strategy, base.Decimal, base.Scaled = StrategyDecimal, spec, scaled
 		base.DecimalFromText, base.DecimalFromNumeric = ex.UsedText, ex.UsedNumeric
 	}
-	return base, nil
+	return base, outScan, nil
 }

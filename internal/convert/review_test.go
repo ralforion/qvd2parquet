@@ -334,3 +334,45 @@ func TestDateTimeOverrideAcceptsConvertibleValues(t *testing.T) {
 		t.Errorf("strategy = %v, want StrategyDate32", rs.Columns[0].Strategy)
 	}
 }
+
+// A --schema pin goes down applyOverride, which reported only the pinned type.
+// A pinned timestamp relocates wall clocks across a DST discontinuity exactly
+// like an inferred one, so it has to carry the same caveat.
+func TestOverriddenTimestampReportsDSTDiscontinuities(t *testing.T) {
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "t.qvd")
+	// 2023-03-26 02:30 never happens in Berlin; 2023-10-29 02:30 happens twice.
+	fld := qvdtest.Field{Name: "Seen", Type: "REAL",
+		Symbols: []qvd.Symbol{qvdtest.Float(45011.1041666667), qvdtest.Float(45228.1041666667)},
+		Rows:    []int{0, 1}}
+	if _, err := qvdtest.Build(path, qvdtest.Table{Name: "T", Fields: []qvdtest.Field{fld}}); err != nil {
+		t.Fatal(err)
+	}
+	qf, err := qvd.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer qf.Close()
+	if err := qf.ReadSymbols(qvd.UnknownSymbolError); err != nil {
+		t.Fatal(err)
+	}
+	opts := DefaultOptions()
+	opts.Location, opts.TimezoneName = berlin, "Europe/Berlin"
+	if err := opts.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	override := &SchemaOverride{Columns: map[string]ColumnOverride{"Seen": {Type: "timestamp"}}}
+	rs, err := ResolveSchema(qf, &opts, override)
+	if err != nil {
+		t.Fatalf("ResolveSchema: %v", err)
+	}
+	note := strings.Join(rs.Notes, " ")
+	for _, want := range []string{"pinned to", "do not exist in this timezone", "occur twice in this timezone"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note = %q, want it to mention %q", note, want)
+		}
+	}
+}

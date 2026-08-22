@@ -100,7 +100,7 @@ qvd2parquet --inspect [options] input.qvd
   -compression zstd          Parquet compression: zstd|snappy|gzip|uncompressed
   -batch-rows 65536          Rows per Arrow batch and Parquet row group
   -workers 0                 Decode workers, 0 means runtime.NumCPU()
-  -timezone Local            Local|UTC|IANA timezone name
+  -timezone none             none|Local|UTC|IANA timezone name
   -schema path.json          Explicit schema override
   -schema-report path.json   Write the inferred schema/profile report
   -quality-gate none         Validation mode: none|basic|numeric|full
@@ -390,7 +390,7 @@ producing an unstable schema that depends on which rows were seen first.
 | `REAL` with double symbols | `decimal128(p, s)`, scale inferred from the values; `float64` if no exact scale exists |
 | `MONEY`, `FIX` | `decimal128(p, s)` — never `float64` |
 | `DATE` | `date32` (days since the Unix epoch) |
-| `TIMESTAMP` | `timestamp[ms, tz=<--timezone>]` |
+| `TIMESTAMP` | `timestamp[us]`, or `timestamp[us, tz=UTC]` when `--timezone` names a zone |
 | `TIME` | `time32[ms]` (milliseconds since midnight) |
 | `ASCII` or text-only symbols | `utf8` |
 | all-null column | nullable `utf8` |
@@ -474,7 +474,7 @@ resolved to that type:
 
 ```text
 schema: OrderDate: DATE, written as date32 (days since epoch); no declared type, but tagged $date
-schema: Created: TIMESTAMP, written as timestamp[ms, tz=UTC]; no declared type, but tagged $timestamp
+schema: Created: TIMESTAMP, written as timestamp[us]; no declared type, but tagged $timestamp
 ```
 
 This is the most reliable signal, and the only one that works for a **plain
@@ -489,7 +489,7 @@ fallback: a column with no declared type is read as a date or timestamp when
 **every** display string renders its Excel-style serial value as one:
 
 ```text
-schema: Date: TIMESTAMP, written as timestamp[ms, tz=UTC]; no declared type, but all 18 display strings render their value as a timestamp (e.g. "11/20/2010"), so it is read as one
+schema: Date: TIMESTAMP, written as timestamp[us]; no declared type, but all 18 display strings render their value as a timestamp (e.g. "11/20/2010"), so it is read as one
 ```
 
 The check is format-agnostic: it converts the serial to a date and requires
@@ -603,8 +603,11 @@ written, so pinning a column holding doubles to `int64`, or a text column to
 `date32`, fails as a schema policy error (exit code 3) rather than silently
 truncating or failing part-way through the conversion.
 
-A pinned `timestamp` carries the run's `--timezone`, so its Parquet metadata
-always matches the timezone the values were converted with.
+A pinned `timestamp` is converted with the run's `--timezone` and typed like
+any other timestamp: `timestamp[us]` by default, `timestamp[us, tz=UTC]` when a
+zone is named. It reports the same conversion caveats too, so a pin that
+relocates a wall clock across a DST discontinuity says so rather than doing it
+quietly.
 
 ### Dates and times
 
