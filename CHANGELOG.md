@@ -10,6 +10,8 @@ previous behaviour.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-22
+
 ### Added
 
 - Apache License 2.0. The project shipped without a licence file, which left
@@ -285,7 +287,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ralforion/qvd2parquet/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ralforion/qvd2parquet/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/ralforion/qvd2parquet/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ralforion/qvd2parquet/compare/v0.2.0...v0.3.0
