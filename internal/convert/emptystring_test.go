@@ -311,7 +311,7 @@ func TestEmptyPlaceholderPassesEveryValidator(t *testing.T) {
 		{"DATE", qvdtest.Field{Name: "D", Type: "DATE", Rows: []int{0, 1},
 			Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Str("")}}, "", "date32"},
 		{"TIMESTAMP", qvdtest.Field{Name: "D", Type: "TIMESTAMP", Rows: []int{0, 1},
-			Symbols: []qvd.Symbol{qvdtest.Float(45000.5), qvdtest.Str("")}}, "", "timestamp[ms, tz=UTC]"},
+			Symbols: []qvd.Symbol{qvdtest.Float(45000.5), qvdtest.Str("")}}, "", "timestamp[us, tz=UTC]"},
 		{"TIME", qvdtest.Field{Name: "D", Type: "TIME", Rows: []int{0, 1},
 			Symbols: []qvd.Symbol{qvdtest.Float(0.5), qvdtest.Str("")}}, "", "time32[ms]"},
 		{"tagged $date", qvdtest.Field{Name: "D", Type: "", Tags: []string{"$date"}, Rows: []int{0, 1},

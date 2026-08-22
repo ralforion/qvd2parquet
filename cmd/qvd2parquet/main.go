@@ -121,7 +121,7 @@ func run() int {
 		compression   = fs.String("compression", def.Compression, "Parquet compression: zstd|snappy|gzip|uncompressed")
 		batchRows     = fs.Int("batch-rows", def.BatchRows, "Rows per Arrow batch and Parquet row group")
 		workers       = fs.Int("workers", def.Workers, "Decode workers, 0 means runtime.NumCPU()")
-		timezone      = fs.String("timezone", def.TimezoneName, "Local|UTC|IANA timezone name for date/time conversion")
+		timezone      = fs.String("timezone", def.TimezoneName, "none|Local|UTC|IANA timezone name for date/time conversion; none writes a naive wall clock")
 		schemaPath    = fs.String("schema", "", "Optional explicit schema override JSON")
 		schemaReport  = fs.String("schema-report", "", "Write the inferred schema/profile report to this path")
 		qualityGate   = fs.String("quality-gate", def.Quality.String(), "Validation mode: none|basic|numeric|full")
@@ -225,7 +225,7 @@ func run() int {
 	if _, err = parquetwrite.ParseCompression(opts.Compression); err != nil {
 		return usageErr(err)
 	}
-	if opts.Location, err = qvd.ParseLocation(*timezone); err != nil {
+	if opts.Location, opts.NaiveTimestamps, err = qvd.ParseLocation(*timezone); err != nil {
 		return usageErr(err)
 	}
 	opts.TimezoneName = *timezone

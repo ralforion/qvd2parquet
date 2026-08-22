@@ -28,7 +28,7 @@ func TestColumnMetricsCountsAndIntegerAggregates(t *testing.T) {
 }
 
 func TestColumnMetricsDateTimeAggregatesUsePhysicalValues(t *testing.T) {
-	for _, strategy := range []ValueStrategy{StrategyDate32, StrategyTimestampMillis, StrategyTimeMillis} {
+	for _, strategy := range []ValueStrategy{StrategyDate32, StrategyTimestampMicros, StrategyTimeMillis} {
 		m := intColumn("T", strategy)
 		m.Observe(Value{Int: 100}, false)
 		m.Observe(Value{Int: 300}, false)

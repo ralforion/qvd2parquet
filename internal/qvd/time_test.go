@@ -31,7 +31,7 @@ func TestQlikDaysToDate32(t *testing.T) {
 	}
 }
 
-func TestQlikDaysToTimestampMillisUTC(t *testing.T) {
+func TestQlikDaysToTimestampMicrosUTC(t *testing.T) {
 	tests := []struct {
 		serial float64
 		want   string
@@ -41,35 +41,35 @@ func TestQlikDaysToTimestampMillisUTC(t *testing.T) {
 		{45000.25, "2023-03-15T06:00:00Z"},
 	}
 	for _, tc := range tests {
-		ms, ok := QlikDaysToTimestampMillis(tc.serial, time.UTC)
+		us, ok := QlikDaysToTimestampMicros(tc.serial, time.UTC)
 		if !ok {
-			t.Fatalf("QlikDaysToTimestampMillis(%v) not ok", tc.serial)
+			t.Fatalf("QlikDaysToTimestampMicros(%v) not ok", tc.serial)
 		}
-		if got := time.UnixMilli(ms).UTC().Format(time.RFC3339); got != tc.want {
-			t.Errorf("QlikDaysToTimestampMillis(%v) = %s, want %s", tc.serial, got, tc.want)
+		if got := time.UnixMicro(us).UTC().Format(time.RFC3339); got != tc.want {
+			t.Errorf("QlikDaysToTimestampMicros(%v) = %s, want %s", tc.serial, got, tc.want)
 		}
 	}
 }
 
 // A serial value is a wall-clock reading, so in a non-UTC zone it must map to
 // the instant at which that zone shows those clock digits.
-func TestQlikDaysToTimestampMillisZoned(t *testing.T) {
+func TestQlikDaysToTimestampMicrosZoned(t *testing.T) {
 	berlin, err := time.LoadLocation("Europe/Berlin")
 	if err != nil {
 		t.Skipf("tzdata unavailable: %v", err)
 	}
 	// 2023-07-01 12:00 serial: 2023-07-01 is day 45108.
 	serial := 45108 + 0.5
-	ms, ok := QlikDaysToTimestampMillis(serial, berlin)
+	us, ok := QlikDaysToTimestampMicros(serial, berlin)
 	if !ok {
 		t.Fatal("conversion failed")
 	}
-	got := time.UnixMilli(ms).In(berlin)
+	got := time.UnixMicro(us).In(berlin)
 	if got.Hour() != 12 || got.Day() != 1 || got.Month() != time.July || got.Year() != 2023 {
 		t.Errorf("got %s, want 2023-07-01 12:00 local Berlin time", got)
 	}
 	// CEST is UTC+2 in July.
-	if utc := time.UnixMilli(ms).UTC(); utc.Hour() != 10 {
+	if utc := time.UnixMicro(us).UTC(); utc.Hour() != 10 {
 		t.Errorf("UTC hour = %d, want 10", utc.Hour())
 	}
 }
@@ -97,16 +97,16 @@ func TestQlikFractionToTimeMillis(t *testing.T) {
 }
 
 func TestParseLocation(t *testing.T) {
-	if loc, err := ParseLocation("UTC"); err != nil || loc != time.UTC {
+	if loc, naive, err := ParseLocation("UTC"); err != nil || loc != time.UTC || naive {
 		t.Errorf("UTC -> %v, %v", loc, err)
 	}
-	if loc, err := ParseLocation(""); err != nil || loc != time.Local {
+	if loc, naive, err := ParseLocation(""); err != nil || loc != time.Local || naive {
 		t.Errorf("empty -> %v, %v", loc, err)
 	}
-	if loc, err := ParseLocation("Local"); err != nil || loc != time.Local {
+	if loc, naive, err := ParseLocation("Local"); err != nil || loc != time.Local || naive {
 		t.Errorf("Local -> %v, %v", loc, err)
 	}
-	if _, err := ParseLocation("Mars/Olympus"); err == nil {
+	if _, _, err := ParseLocation("Mars/Olympus"); err == nil {
 		t.Error("expected an error for an unknown timezone")
 	}
 }

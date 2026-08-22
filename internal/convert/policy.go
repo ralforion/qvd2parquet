@@ -207,6 +207,9 @@ type Options struct {
 	Workers             int
 	Location            *time.Location
 	TimezoneName        string
+	// NaiveTimestamps writes timestamps with no timezone (Parquet
+	// isAdjustedToUTC=false), preserving the QVD's wall clock verbatim.
+	NaiveTimestamps     bool
 	SchemaOverridePath  string
 	SchemaReportPath    string
 	Quality             QualityMode

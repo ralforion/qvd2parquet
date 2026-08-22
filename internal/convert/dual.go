@@ -74,7 +74,7 @@ func ClassifyDual(col qvd.Column, syms []qvd.Symbol, rc *ResolvedColumn, loc *ti
 			// or from a rounded payload, so compare against what will actually
 			// be written rather than the raw double.
 			redundant = textRendersDecimal(s.Text, i, rc)
-		case StrategyDate32, StrategyTimestampMillis:
+		case StrategyDate32, StrategyTimestampMicros:
 			redundant = textRendersDate(s.Text, n, loc)
 		case StrategyTimeMillis:
 			redundant = textRendersTime(s.Text, n)
@@ -262,11 +262,11 @@ func textRendersDate(text string, n float64, loc *time.Location) bool {
 	if !dateTextRemainderOK(t) {
 		return false
 	}
-	ms, ok := qvd.QlikDaysToTimestampMillis(n, loc)
+	us, ok := qvd.QlikDaysToTimestampMicros(n, loc)
 	if !ok {
 		return false
 	}
-	ts := time.UnixMilli(ms).In(loc)
+	ts := time.UnixMicro(us).In(loc)
 
 	nums := dateTokens.FindAllString(t, -1)
 	if len(nums) < 2 {

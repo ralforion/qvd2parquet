@@ -334,7 +334,7 @@ func TestTaggedTypeIdentifiesPlainNumericDates(t *testing.T) {
 		{"$date", []string{"$numeric", "$date"},
 			[]qvd.Symbol{qvdtest.Int(45000), qvdtest.Int(45001)}, "date32"},
 		{"$timestamp", []string{"$numeric", "$timestamp"},
-			[]qvd.Symbol{qvdtest.Float(45000.25), qvdtest.Float(45001.5)}, "timestamp[ms, tz=UTC]"},
+			[]qvd.Symbol{qvdtest.Float(45000.25), qvdtest.Float(45001.5)}, "timestamp[us, tz=UTC]"},
 		{"$integer stays numeric", []string{"$numeric", "$integer"},
 			[]qvd.Symbol{qvdtest.Int(45000), qvdtest.Int(45001)}, "int64"},
 		{"no tags stay numeric", nil,
@@ -607,7 +607,7 @@ func TestNonFiniteValuesBecomeNull(t *testing.T) {
 			Rows:    []int{0, 1},
 			Symbols: []qvd.Symbol{qvdtest.Int(45000), qvdtest.Float(nan)}}, "date32"},
 		{"TIMESTAMP with infinity", qvdtest.Field{Name: "D", Type: "TIMESTAMP", Rows: []int{0, 1},
-			Symbols: []qvd.Symbol{qvdtest.Float(45000.5), qvdtest.Float(inf)}}, "timestamp[ms, tz=UTC]"},
+			Symbols: []qvd.Symbol{qvdtest.Float(45000.5), qvdtest.Float(inf)}}, "timestamp[us, tz=UTC]"},
 		{"TIME with NaN", qvdtest.Field{Name: "T", Type: "TIME", Rows: []int{0, 1},
 			Symbols: []qvd.Symbol{qvdtest.Float(0.5), qvdtest.Float(nan)}}, "time32[ms]"},
 	}
@@ -639,7 +639,7 @@ func TestValidDateTimeColumnsStillResolve(t *testing.T) {
 		{qvdtest.Field{Name: "T", Type: "TIME", Rows: []int{0},
 			Symbols: []qvd.Symbol{qvdtest.Float(0.5)}}, "time32[ms]"},
 		{qvdtest.Field{Name: "S", Type: "", Tags: []string{"$timestamp"}, Rows: []int{0},
-			Symbols: []qvd.Symbol{qvdtest.Float(45000.25)}}, "timestamp[ms, tz=UTC]"},
+			Symbols: []qvd.Symbol{qvdtest.Float(45000.25)}}, "timestamp[us, tz=UTC]"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.want, func(t *testing.T) {
@@ -671,8 +671,8 @@ func TestTextRendersTimeRejectsCalendarWords(t *testing.T) {
 func TestTextRendersDateChecksWeekdayNames(t *testing.T) {
 	// Serial 40502 is Saturday, 20 November 2010.
 	const serial = 40502
-	if got := time.UnixMilli(func() int64 {
-		ms, _ := qvd.QlikDaysToTimestampMillis(serial, time.UTC)
+	if got := time.UnixMicro(func() int64 {
+		ms, _ := qvd.QlikDaysToTimestampMicros(serial, time.UTC)
 		return ms
 	}()).UTC().Weekday(); got != time.Saturday {
 		t.Fatalf("fixture assumption wrong: serial %d is a %s", serial, got)

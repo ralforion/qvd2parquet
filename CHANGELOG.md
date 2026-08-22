@@ -10,7 +10,20 @@ previous behaviour.
 
 ## [Unreleased]
 
+### Added
+
+- `--timezone=none` writes timestamps with no timezone (Parquet
+  `isAdjustedToUTC=false`), preserving the QVD's naive wall clock so that every
+  reader shows the same value regardless of where the file is converted or
+  read. `naive` is accepted as a synonym.
+
 ### Changed
+
+- Timestamps are now `timestamp[us]` rather than `timestamp[ms]`. A Qlik serial
+  resolves to about 0.63us at present-day dates, so milliseconds discarded real
+  signal while still carrying the encoding noise that makes a stored `07:15:00`
+  surface as `07:14:59.999999`. Rounding to the microsecond keeps the precision
+  and removes the noise.
 
 - Releases now ship Linux, Windows and macOS on `amd64` and `arm64` only. The
   32-bit, `arm`, `ppc64le`, `s390x`, `riscv64` and BSD targets were building

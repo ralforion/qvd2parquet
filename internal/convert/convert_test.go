@@ -119,8 +119,8 @@ func TestRunEndToEnd(t *testing.T) {
 			t.Errorf("column %q type = %s, want %s", name, got, want)
 		}
 	}
-	if got := schema.Field(schema.FieldIndices("Seen")[0]).Type.String(); !strings.HasPrefix(got, "timestamp[ms") {
-		t.Errorf("Seen type = %s, want timestamp[ms...]", got)
+	if got := schema.Field(schema.FieldIndices("Seen")[0]).Type.String(); !strings.HasPrefix(got, "timestamp[us") {
+		t.Errorf("Seen type = %s, want timestamp[us...]", got)
 	}
 
 	var total int64

@@ -112,7 +112,7 @@ func (m *ColumnMetrics) Observe(v Value, hashValues bool) {
 	} else {
 		m.NonNulls++
 		switch m.Strategy {
-		case StrategyInt64, StrategyDate32, StrategyTimestampMillis, StrategyTimeMillis:
+		case StrategyInt64, StrategyDate32, StrategyTimestampMicros, StrategyTimeMillis:
 			m.intSum.Add(&m.intSum, big.NewInt(v.Int))
 			if !m.hasIntExtrema {
 				m.intMin, m.intMax, m.hasIntExtrema = v.Int, v.Int, true
@@ -179,7 +179,7 @@ func (m *ColumnMetrics) canonicalDigest(v Value) [32]byte {
 		binary.LittleEndian.PutUint64(buf[:], uint64(len(v.Str)))
 		h.Write(buf[:])
 		h.Write([]byte(v.Str))
-	case StrategyInt64, StrategyDate32, StrategyTimestampMillis, StrategyTimeMillis:
+	case StrategyInt64, StrategyDate32, StrategyTimestampMicros, StrategyTimeMillis:
 		binary.LittleEndian.PutUint64(buf[:], uint64(v.Int))
 		h.Write(buf[:])
 	case StrategyFloat64:
@@ -275,7 +275,7 @@ type ColumnStats struct {
 func (m *ColumnMetrics) Stats() ColumnStats {
 	s := ColumnStats{Nulls: m.Nulls, NonNulls: m.NonNulls, Hash: m.fp.String()}
 	switch m.Strategy {
-	case StrategyInt64, StrategyDate32, StrategyTimestampMillis, StrategyTimeMillis:
+	case StrategyInt64, StrategyDate32, StrategyTimestampMicros, StrategyTimeMillis:
 		s.Sum = m.intSum.String()
 		if m.hasIntExtrema {
 			s.Min = strconv.FormatInt(m.intMin, 10)

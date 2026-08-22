@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ralforion/qvd2parquet/internal/qvd"
 	"github.com/ralforion/qvd2parquet/internal/qvdtest"
@@ -124,8 +125,39 @@ func TestResolveTimestampCarriesTimezone(t *testing.T) {
 	f := qvdtest.Field{Name: "TS", Type: "TIMESTAMP",
 		Symbols: []qvd.Symbol{qvdtest.Float(45000.5)}, Rows: []int{0}}
 	rs := mustResolve(t, f, func(o *Options) { o.Location = utc(); o.TimezoneName = "UTC" })
-	if got := rs.Columns[0].ArrowType.String(); !strings.Contains(got, "timestamp[ms") {
-		t.Errorf("type = %s, want a timestamp[ms] type", got)
+	if got := rs.Columns[0].ArrowType.String(); !strings.Contains(got, "timestamp[us") {
+		t.Errorf("type = %s, want a timestamp[us] type", got)
+	}
+}
+
+// A QVD stores a naive wall clock, so --timezone=none must not stamp a zone:
+// the Arrow type carries no name, which is what makes Parquet record
+// isAdjustedToUTC=false and stops every reader shifting the value.
+func TestNaiveTimestampsCarryNoTimezone(t *testing.T) {
+	f := qvdtest.Field{Name: "TS", Type: "TIMESTAMP",
+		Symbols: []qvd.Symbol{qvdtest.Float(45000.5)}, Rows: []int{0}}
+	rs := mustResolve(t, f, func(o *Options) {
+		o.Location = utc()
+		o.TimezoneName = "none"
+		o.NaiveTimestamps = true
+	})
+	if got := rs.Columns[0].ArrowType.String(); got != "timestamp[us]" {
+		t.Errorf("type = %s, want timestamp[us] with no timezone", got)
+	}
+}
+
+// Reinterpreting a wall clock in UTC is the identity mapping, so the naive and
+// UTC modes must agree on every stored value and differ only in the type.
+func TestNaiveAndUTCStoreTheSameValues(t *testing.T) {
+	for _, serial := range []float64{45000.5, 42382.2604166667, 25569, 0.25} {
+		naive, ok := qvd.QlikDaysToTimestampMicros(serial, nil)
+		if !ok {
+			t.Fatalf("serial %v did not convert", serial)
+		}
+		asUTC, ok := qvd.QlikDaysToTimestampMicros(serial, time.UTC)
+		if !ok || naive != asUTC {
+			t.Errorf("serial %v: naive %d != UTC %d", serial, naive, asUTC)
+		}
 	}
 }
 

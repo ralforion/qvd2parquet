@@ -31,8 +31,8 @@ const (
 	StrategyFloat64
 	// StrategyDate32 writes days since the Unix epoch.
 	StrategyDate32
-	// StrategyTimestampMillis writes milliseconds since the Unix epoch.
-	StrategyTimestampMillis
+	// StrategyTimestampMicros writes microseconds since the Unix epoch.
+	StrategyTimestampMicros
 	// StrategyTimeMillis writes milliseconds since midnight.
 	StrategyTimeMillis
 	// StrategyDecimal writes an exact scaled decimal.
@@ -44,7 +44,7 @@ const (
 func (s ValueStrategy) String() string {
 	return [...]string{
 		"StrategyNull", "StrategyString", "StrategyInt64", "StrategyFloat64",
-		"StrategyDate32", "StrategyTimestampMillis", "StrategyTimeMillis",
+		"StrategyDate32", "StrategyTimestampMicros", "StrategyTimeMillis",
 		"StrategyDecimal", "StrategyDualText",
 	}[s]
 }
@@ -52,7 +52,7 @@ func (s ValueStrategy) String() string {
 // IsNumericAggregatable reports whether numeric quality metrics apply.
 func (s ValueStrategy) IsNumericAggregatable() bool {
 	switch s {
-	case StrategyInt64, StrategyFloat64, StrategyDate32, StrategyTimestampMillis,
+	case StrategyInt64, StrategyFloat64, StrategyDate32, StrategyTimestampMicros,
 		StrategyTimeMillis, StrategyDecimal:
 		return true
 	}
@@ -194,7 +194,7 @@ func requireConvertibleDateTime(col qvd.Column, syms []qvd.Symbol, pinned string
 				return 0, reject(i, s, fmt.Sprintf("has serial day %v, which is out of range for date32", n))
 			}
 		case "timestamp":
-			if _, ok := qvd.QlikDaysToTimestampMillis(n, loc); !ok {
+			if _, ok := qvd.QlikDaysToTimestampMicros(n, loc); !ok {
 				return 0, reject(i, s, fmt.Sprintf("has serial timestamp %v, which is out of range", n))
 			}
 		case "time":
@@ -232,7 +232,7 @@ var (
 // ResolveSchema turns profiled QVD columns into the output Parquet schema.
 func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*ResolvedSchema, error) {
 	rs := &ResolvedSchema{}
-	tsType := &arrow.TimestampType{Unit: arrow.Millisecond, TimeZone: arrowTimeZoneName(opts)}
+	tsType := &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: arrowTimeZoneName(opts)}
 
 	for _, idx := range f.SelectedColumns() {
 		col := f.Columns[idx]
@@ -305,13 +305,34 @@ func checkNameCollisions(cols []ResolvedColumn) error {
 	return nil
 }
 
-// arrowTimeZoneName is the timezone stamped into the Arrow timestamp type so
-// downstream readers interpret the stored UTC milliseconds correctly.
+// arrowTimeZoneName is the timezone stamped into the Arrow timestamp type.
+//
+// An empty name is not a missing value: it makes the column a naive wall clock
+// (Parquet isAdjustedToUTC=false), which is what a QVD actually stores. Naming
+// a zone instead asserts that the wall clocks were recorded in it, turning them
+// into instants -- a claim the QVD itself never makes. Parquet cannot record
+// the name either way; only Arrow metadata carries it.
 func arrowTimeZoneName(opts *Options) string {
+	if opts.NaiveTimestamps {
+		return ""
+	}
 	if opts.Location == nil {
 		return "UTC"
 	}
 	return opts.Location.String()
+}
+
+// timestampTypeLabel renders a timestamp type the way the schema notes and the
+// --inspect output name it.
+func timestampTypeLabel(t arrow.DataType) string {
+	ts, ok := t.(*arrow.TimestampType)
+	if !ok {
+		return t.String()
+	}
+	if ts.TimeZone == "" {
+		return "timestamp[us]"
+	}
+	return fmt.Sprintf("timestamp[us, tz=%s]", ts.TimeZone)
 }
 
 // resolveColumn decides the output column(s) for one QVD field. It returns one
@@ -473,9 +494,9 @@ func resolveNumericColumn(base ResolvedColumn, col qvd.Column, prof *qvd.ColumnP
 			return ResolvedColumn{}, "", err
 		}
 		base.NonFiniteNulls = nonFinite
-		base.ArrowType, base.Strategy = tsType, StrategyTimestampMillis
-		return base, withNonFiniteNote(withInferNote(fmt.Sprintf("%s: TIMESTAMP, written as timestamp[ms, tz=%s]",
-			col.Name, tsType.(*arrow.TimestampType).TimeZone), inferNote), nonFinite), nil
+		base.ArrowType, base.Strategy = tsType, StrategyTimestampMicros
+		return base, withNonFiniteNote(withInferNote(fmt.Sprintf("%s: TIMESTAMP, written as %s",
+			col.Name, timestampTypeLabel(tsType)), inferNote), nonFinite), nil
 
 	case qvd.QlikTime:
 		nonFinite, err := requireConvertibleDateTime(col, syms, "time", opts.Location, opts.EmptyStringAsNull)
@@ -720,7 +741,7 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 		base.NonFiniteNulls = nonFinite
 		// Use the run's configured timezone, so the type metadata matches how
 		// the values are actually converted.
-		base.ArrowType, base.Strategy = tsType, StrategyTimestampMillis
+		base.ArrowType, base.Strategy = tsType, StrategyTimestampMicros
 	case "time":
 		nonFinite, err := requireConvertibleDateTime(col, syms, "time", loc, emptyAsNull)
 		if err != nil {

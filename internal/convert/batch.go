@@ -223,7 +223,7 @@ func newColumnConverter(rc *ResolvedColumn, src qvd.Column, opts *Options) (colu
 			}
 		}
 
-	case StrategyTimestampMillis:
+	case StrategyTimestampMicros:
 		cc.convert = func(s qvd.Symbol) (Value, error) {
 			if s.Kind == qvd.SymbolNull {
 				return Value{Null: true}, nil
@@ -235,11 +235,11 @@ func newColumnConverter(rc *ResolvedColumn, src qvd.Column, opts *Options) (colu
 			if isNonFinite(n) {
 				return Value{Null: true}, nil
 			}
-			ms, ok := qvd.QlikDaysToTimestampMillis(n, loc)
+			us, ok := qvd.QlikDaysToTimestampMicros(n, loc)
 			if !ok {
 				return Value{}, fmt.Errorf("column %q: serial timestamp %v is out of range", rc.Name, n)
 			}
-			return Value{Int: ms}, nil
+			return Value{Int: us}, nil
 		}
 		cc.appendTo = func(b array.Builder, v Value) {
 			bl := b.(*array.TimestampBuilder)

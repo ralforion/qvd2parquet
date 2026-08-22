@@ -609,16 +609,41 @@ always matches the timezone the values were converted with.
 ### Dates and times
 
 Qlik stores dates and times as serial day numbers where `25569` is
-1970-01-01. `--timezone` decides how a serial timestamp's wall-clock reading is
-mapped onto an instant:
+1970-01-01. A serial names no timezone: it is a bare wall-clock reading, and
+Qlik's own display string for a dual is a pure formatting of the same number
+with no zone step. Which zone that wall clock was recorded in is simply not in
+the file.
 
-- `Local` (default) matches the Java reference reader's behaviour.
-- `UTC` is recommended for reproducible ETL, since the output no longer depends
-  on the machine's timezone.
-- Any IANA name (`Europe/Berlin`) also works.
+`--timezone` therefore does not change the wall clock, ever. Every mode writes
+back the same calendar and clock fields. What it decides is which *instant*
+those fields denote, and so which number lands in the file:
 
-`date32` and `time32[ms]` are timezone independent. Rounding follows the Java
-reference reader's `Math.round`.
+- `none` writes the wall clock as-is, with no timezone on the column (Parquet
+  `isAdjustedToUTC=false`). It asserts nothing the QVD does not say, and the
+  output is byte-identical whatever machine converts it. Use it unless you know
+  better than the file does.
+- Any IANA name (`Europe/Berlin`) asserts that the wall clocks were recorded in
+  that zone and converts them to true instants.
+- `UTC` is the same assertion for UTC. It stores the identical bytes as `none`
+  and differs only in claiming instant semantics.
+- `Local` (default) is `UTC`'s assertion made with whatever zone the converting
+  machine happens to be in, and matches the Java reference reader. It is the
+  one mode whose output depends on where it ran.
+
+Note that Parquet cannot record a timezone *name* at all — its timestamp type
+carries only `isAdjustedToUTC` plus the unit. A name survives solely in Arrow's
+`ARROW:schema` metadata, so pyarrow and polars recover `tz=Europe/Berlin` while
+DuckDB, Spark and Trino see only "UTC instant" and re-render it in their own
+session zone.
+
+Timestamps are written as `timestamp[us]`. Microseconds are the finest unit a
+Qlik serial carries any signal in: one float64 ulp is about 0.63us at
+present-day serials. Rounding there removes the encoding noise — measured at up
+to 210ns on real Qlik output, which is what makes a stored `07:15:00` read back
+elsewhere as `07:14:59.999999` — without discarding anything the source could
+have expressed.
+
+`date32` and `time32[ms]` are timezone independent.
 
 ## Parallel decoding
 

@@ -85,7 +85,7 @@ func compareColumn(src, pq *ColumnMetrics, opts *Options) []string {
 	// numeric: aggregates.
 	ss, ps := src.Stats(), pq.Stats()
 	switch src.Strategy {
-	case StrategyInt64, StrategyDate32, StrategyTimestampMillis, StrategyTimeMillis, StrategyDecimal:
+	case StrategyInt64, StrategyDate32, StrategyTimestampMicros, StrategyTimeMillis, StrategyDecimal:
 		// Integers and decimals compare exactly.
 		for _, m := range []struct{ name, a, b string }{
 			{"sum", ss.Sum, ps.Sum}, {"min", ss.Min, ps.Min}, {"max", ss.Max, ps.Max},
