@@ -614,21 +614,51 @@ Qlik's own display string for a dual is a pure formatting of the same number
 with no zone step. Which zone that wall clock was recorded in is simply not in
 the file.
 
-`--timezone` therefore does not change the wall clock, ever. Every mode writes
-back the same calendar and clock fields. What it decides is which *instant*
-those fields denote, and so which number lands in the file:
+`--timezone` therefore does not change the wall clock -- every mode writes back
+the same calendar and clock fields, with one exception noted below. What it
+decides is which *instant* those fields denote, and so which number lands in
+the file:
 
 - `none` writes the wall clock as-is, with no timezone on the column (Parquet
   `isAdjustedToUTC=false`). It asserts nothing the QVD does not say, and the
   output is byte-identical whatever machine converts it. Use it unless you know
   better than the file does.
 - Any IANA name (`Europe/Berlin`) asserts that the wall clocks were recorded in
-  that zone and converts them to true instants.
+  that zone and converts them to true instants. This is the mode that earns its
+  keep for Parquet: the instant is what makes ordering across a DST change,
+  joins against other instant data, and rendering in a consumer's own zone come
+  out right. Losing the *name* costs nothing, since an instant is unambiguous
+  without it.
 - `UTC` is the same assertion for UTC. It stores the identical bytes as `none`
   and differs only in claiming instant semantics.
 - `Local` (default) is `UTC`'s assertion made with whatever zone the converting
   machine happens to be in, and matches the Java reference reader. It is the
   one mode whose output depends on where it ran.
+
+The exception is a DST discontinuity. A zoned mode has to place the wall clock
+on the timeline, and twice a year some wall clocks do not sit there cleanly:
+`2023-03-26 02:30` never happens in `Europe/Berlin`, so it is written as
+`03:30`, and `2023-10-29 02:30` happens twice, so one of the two instants is
+picked. `none` has no such edge, because it never places the reading on a
+timeline at all.
+
+In practice only the ambiguous side bites, because DST is already baked into
+the stored wall clocks. The Chicago taxi QVDs show it directly -- on 13 March
+2016 the data runs 01:45, then 03:00, with the 02:00 hour absent because the
+local clock skipped it:
+
+    01:45   1035 trips
+    03:00   1049 trips
+
+which also proves those values are local readings and not UTC, since a UTC
+series would have no gap.
+
+That gap is the whole argument for `none` being the safe choice. Converting
+those readings to instants is only correct with `America/Chicago`, and nothing
+in the QVD says so; the offset is not even constant, since it moves by an hour
+mid-file. Choosing a zone is therefore a claim about provenance that only the
+person running the conversion can make -- and `Local` makes it accidentally,
+using whatever zone the converting machine sits in.
 
 Note that Parquet cannot record a timezone *name* at all — its timestamp type
 carries only `isAdjustedToUTC` plus the unit. A name survives solely in Arrow's
