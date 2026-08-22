@@ -687,6 +687,22 @@ see the Parquet type alone, would render the instant. Identical bytes would
 show two different times, and the Arrow rendering would look as though no
 conversion had happened. Naming UTC keeps every reader agreeing.
 
+Engines differ in what they do with `isAdjustedToUTC`, so it is worth knowing
+your target. Measured against `dremio/dremio-oss` with both files loaded from
+S3, Dremio renders the stored value verbatim and never shifts it:
+
+    ts_naive     (isAdjustedToUTC=false)   TIMESTAMP   2023-03-15 00:00:00.000
+    ts_chicago   (isAdjustedToUTC=true)    TIMESTAMP   2023-03-15 05:00:00.000
+
+Both arrive as a plain `TIMESTAMP`, and the same two files render identically
+on a Dremio whose host clock is `Asia/Tokyo` -- its `CURRENT_TIMESTAMP` stays
+UTC regardless. So Dremio applies no session zone in either direction, which
+makes both modes stable there, unlike DuckDB, which re-renders an instant in
+whatever zone the session is set to. The flip side is that Dremio shows no
+difference between the two: a wall clock and a UTC instant are the same type on
+arrival, so which one a column holds has to be conveyed by naming or
+documentation rather than by the schema.
+
 The source zone is therefore not preserved anywhere in the file. It is an input
 to the conversion, not part of the result; record it in a column comment with
 `--field-comment` if the provenance matters downstream.
