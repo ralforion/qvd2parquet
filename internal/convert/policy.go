@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
 
 // MixedStrategy selects how columns holding more than one logical type are
@@ -234,8 +236,9 @@ func DefaultOptions() Options {
 		Compression:         "zstd",
 		BatchRows:           65536,
 		Workers:             0,
-		Location:            time.Local,
-		TimezoneName:        "Local",
+		Location:            time.UTC,
+		TimezoneName:        "none",
+		NaiveTimestamps:     true,
 		Quality:             QualityNone,
 		QualityRelTolerance: 1e-9,
 		QualityAbsTolerance: 0,
@@ -257,8 +260,22 @@ func (o *Options) Validate() error {
 	if o.ProgressEvery < 0 {
 		return fmt.Errorf("--progress must not be negative, got %d", o.ProgressEvery)
 	}
+	// TimezoneName is authoritative, so Location and NaiveTimestamps cannot
+	// drift apart. Setting one of them alone used to change the conversion
+	// without changing the other, which now that the default is naive would
+	// mean a caller naming a zone still got a naive wall clock.
+	if name := strings.TrimSpace(o.TimezoneName); name != "" {
+		loc, naive, err := qvd.ParseLocation(name)
+		if err != nil {
+			return err
+		}
+		o.Location, o.NaiveTimestamps = loc, naive
+	}
 	if o.Location == nil {
-		o.Location = time.Local
+		// Not time.Local: a partially filled Options must not pick up the
+		// converting machine's zone by accident, which is the whole reason
+		// the default is a naive wall clock.
+		o.Location = time.UTC
 	}
 	// --mixed=dual-columns implies emitting both sides of a dual.
 	if o.Mixed == MixedDualColumns && o.Dual != DualColumns {

@@ -31,6 +31,17 @@ previous behaviour.
 
 ### Changed
 
+- **Breaking.** `--timezone` now defaults to `none`, so timestamps are written
+  as the naive wall clock the QVD actually holds and nothing is converted
+  unless asked. The previous default, `Local`, interpreted every reading in the
+  converting machine's timezone, which made the output depend on where it ran:
+  the same QVD produced three different instants on boxes in UTC, New York and
+  Tokyo, none of them correct unless the data happened to come from that zone.
+  Pass `--timezone=Local` to restore the old behaviour, or name the zone the
+  data was recorded in to get true instants.
+- `Options.TimezoneName` is now authoritative in `Validate`, which derives
+  `Location` and `NaiveTimestamps` from it. Setting one of those fields alone no
+  longer leaves the conversion disagreeing with the type.
 - Timestamps are now `timestamp[us]` rather than `timestamp[ms]`. A Qlik serial
   resolves to about 0.63us at present-day dates, so milliseconds discarded real
   signal while still carrying the encoding noise that makes a stored `07:15:00`

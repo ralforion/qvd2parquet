@@ -619,10 +619,10 @@ the same calendar and clock fields, with one exception noted below. What it
 decides is which *instant* those fields denote, and so which number lands in
 the file:
 
-- `none` writes the wall clock as-is, with no timezone on the column (Parquet
-  `isAdjustedToUTC=false`). It asserts nothing the QVD does not say, and the
-  output is byte-identical whatever machine converts it. Use it unless you know
-  better than the file does.
+- `none` (default) writes the wall clock as-is, with no timezone on the column
+  (Parquet `isAdjustedToUTC=false`). It asserts nothing the QVD does not say,
+  and the output is byte-identical whatever machine converts it. Nothing is
+  converted unless you ask for it.
 - Any IANA name (`Europe/Berlin`) asserts that the wall clocks were recorded in
   that zone and converts them to true instants. This is the mode that earns its
   keep for Parquet: the instant is what makes ordering across a DST change,
@@ -631,9 +631,9 @@ the file:
   without it.
 - `UTC` is the same assertion for UTC. It stores the identical bytes as `none`
   and differs only in claiming instant semantics.
-- `Local` (default) is `UTC`'s assertion made with whatever zone the converting
-  machine happens to be in, and matches the Java reference reader. It is the
-  one mode whose output depends on where it ran.
+- `Local` is `UTC`'s assertion made with whatever zone the converting machine
+  happens to be in, and matches the Java reference reader. It is the one mode
+  whose output depends on where it ran, so it is no longer the default.
 
 The exception is a DST discontinuity. A zoned mode has to place the wall clock
 on the timeline, and twice a year some wall clocks do not sit there cleanly:
