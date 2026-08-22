@@ -110,3 +110,26 @@ func TestParseLocation(t *testing.T) {
 		t.Error("expected an error for an unknown timezone")
 	}
 }
+
+func TestTimestampZoneAnomaly(t *testing.T) {
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Skipf("no tzdata: %v", err)
+	}
+	tests := []struct {
+		serial float64
+		loc    *time.Location
+		want   ZoneAnomaly
+	}{
+		{45011.1041666667, berlin, ZoneRelocated}, // 2023-03-26 02:30, skipped
+		{45228.1041666667, berlin, ZoneAmbiguous}, // 2023-10-29 02:30, repeated
+		{45000.5, berlin, ZoneOK},                 // an ordinary midday
+		{45011.1041666667, time.UTC, ZoneOK},      // UTC never shifts
+		{45011.1041666667, nil, ZoneOK},           // naive never shifts
+	}
+	for _, tc := range tests {
+		if got := TimestampZoneAnomaly(tc.serial, tc.loc); got != tc.want {
+			t.Errorf("TimestampZoneAnomaly(%v, %v) = %v, want %v", tc.serial, tc.loc, got, tc.want)
+		}
+	}
+}

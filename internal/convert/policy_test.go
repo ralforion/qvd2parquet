@@ -482,3 +482,35 @@ func TestOptionsValidate(t *testing.T) {
 func writeFile(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o644)
 }
+
+// A zoned conversion has to place a naive wall clock on a timeline, and twice a
+// year that changes it. The QVD names no zone, so the change rests entirely on
+// the --timezone claim and must be reported rather than made silently.
+func TestZonedTimestampReportsDSTDiscontinuities(t *testing.T) {
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Skipf("no tzdata: %v", err)
+	}
+	// 2023-03-26 02:30 never happens in Berlin; 2023-10-29 02:30 happens twice.
+	f := qvdtest.Field{Name: "TS", Type: "TIMESTAMP",
+		Symbols: []qvd.Symbol{qvdtest.Float(45011.1041666667), qvdtest.Float(45228.1041666667)},
+		Rows:    []int{0, 1}}
+
+	rs := mustResolve(t, f, func(o *Options) { o.Location = berlin; o.TimezoneName = "Europe/Berlin" })
+	note := strings.Join(rs.Notes, " ")
+	for _, want := range []string{"do not exist in this timezone", "occur twice in this timezone", "--timezone=none"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note = %q, want it to mention %q", note, want)
+		}
+	}
+
+	// The same values carry no such caveat when no zone is claimed.
+	rs = mustResolve(t, f, func(o *Options) {
+		o.Location = utc()
+		o.TimezoneName = "none"
+		o.NaiveTimestamps = true
+	})
+	if note := strings.Join(rs.Notes, " "); strings.Contains(note, "this timezone") {
+		t.Errorf("naive mode should report no timezone caveat, got %q", note)
+	}
+}

@@ -16,6 +16,11 @@ previous behaviour.
   `isAdjustedToUTC=false`), preserving the QVD's naive wall clock so that every
   reader shows the same value regardless of where the file is converted or
   read. `naive` is accepted as a synonym.
+- A zoned conversion now reports where it had to alter a wall clock. Twice a
+  year a DST change skips an hour, so a reading in it does not exist and gets
+  moved, or repeats an hour, so a reading in it has two instants and one is
+  chosen. A QVD names no timezone, which makes both changes a consequence of
+  the `--timezone` claim rather than of the data, so they are no longer silent.
 
 ### Changed
 

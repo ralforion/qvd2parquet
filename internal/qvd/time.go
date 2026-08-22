@@ -72,6 +72,56 @@ func QlikDaysToTimestampMicros(v float64, loc *time.Location) (int64, bool) {
 	return local.UnixMicro(), true
 }
 
+// ZoneAnomaly reports what reinterpreting a wall clock in a location did to it.
+type ZoneAnomaly uint8
+
+const (
+	// ZoneOK means the wall clock exists exactly once in the location.
+	ZoneOK ZoneAnomaly = iota
+	// ZoneRelocated means the location never had that wall clock, because a
+	// DST change skipped it, so it was moved to a different one.
+	ZoneRelocated
+	// ZoneAmbiguous means the location had that wall clock twice, because a
+	// DST change repeated it, so one of the two instants was picked.
+	ZoneAmbiguous
+)
+
+// TimestampZoneAnomaly reports whether placing a serial's wall clock on the
+// timeline of loc changed it or had to choose between two instants.
+//
+// A QVD names no zone, so a zoned conversion is a claim about provenance. Where
+// that claim meets a DST discontinuity it silently alters data, and this is
+// what lets the caller say so instead.
+func TimestampZoneAnomaly(v float64, loc *time.Location) ZoneAnomaly {
+	if loc == nil || loc == time.UTC {
+		return ZoneOK
+	}
+	us, ok := QlikDaysToTimestampMicros(v, time.UTC)
+	if !ok {
+		return ZoneOK
+	}
+	w := time.UnixMicro(us).UTC()
+	y, mo, d := w.Date()
+	h, mi, sec := w.Clock()
+	t := time.Date(y, mo, d, h, mi, sec, w.Nanosecond(), loc)
+	same := func(x time.Time) bool {
+		xy, xmo, xd := x.Date()
+		xh, xmi, xs := x.Clock()
+		return xy == y && xmo == mo && xd == d && xh == h && xmi == mi && xs == sec
+	}
+	if !same(t) {
+		return ZoneRelocated
+	}
+	// Two instants rendering the same wall clock means the clock was repeated.
+	// Real DST shifts are an hour, or half an hour in a few zones.
+	for _, delta := range []time.Duration{-time.Hour, time.Hour, -30 * time.Minute, 30 * time.Minute} {
+		if same(t.Add(delta)) {
+			return ZoneAmbiguous
+		}
+	}
+	return ZoneOK
+}
+
 // QlikFractionToTimeMillis converts a Qlik time value (a fraction of one day)
 // to milliseconds since midnight.
 func QlikFractionToTimeMillis(v float64) (int32, bool) {
