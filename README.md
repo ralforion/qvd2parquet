@@ -642,23 +642,32 @@ on the timeline, and twice a year some wall clocks do not sit there cleanly:
 picked. `none` has no such edge, because it never places the reading on a
 timeline at all.
 
-In practice only the ambiguous side bites, because DST is already baked into
-the stored wall clocks. The Chicago taxi QVDs show it directly -- on 13 March
-2016 the data runs 01:45, then 03:00, with the 02:00 hour absent because the
-local clock skipped it:
+Both sides of that discontinuity turn up in real data, so both matter.
+
+Timestamps recorded by a device following the local clock skip the missing
+hour. The Chicago taxi QVDs show it: on 13 March 2016 the data runs 01:45, then
+03:00, with the 02:00 hour absent because the local clock skipped it.
 
     01:45   1035 trips
     03:00   1049 trips
 
-which also proves those values are local readings and not UTC, since a UTC
+That also settles what those values are -- local readings, not UTC, since a UTC
 series would have no gap.
 
-That gap is the whole argument for `none` being the safe choice. Converting
-those readings to instants is only correct with `America/Chicago`, and nothing
-in the QVD says so; the offset is not even constant, since it moves by an hour
-mid-file. Choosing a zone is therefore a claim about provenance that only the
-person running the conversion can make -- and `Local` makes it accidentally,
-using whatever zone the converting machine sits in.
+Plenty of local-time data does contain the missing hour, though. Generated
+master calendars enumerate every slot whether the zone had it or not, scheduled
+and derived timestamps are computed in local terms, and extracts from systems
+that do not observe DST write wall clocks the target zone never had. A zoned
+conversion silently relocates every one of those, and an ambiguous reading from
+the repeated hour is resolved by picking one of the two instants.
+
+That is the argument for `none` being the safe choice. Converting these
+readings to instants is only correct with the zone the source actually used --
+`America/Chicago` for the taxi data, which nothing in the QVD says, and whose
+offset is not even constant across a single file. Choosing a zone is a claim
+about provenance that only the person running the conversion can make, and
+`Local` makes it accidentally, using whatever zone the converting machine sits
+in.
 
 Note that Parquet cannot record a timezone *name* at all — its timestamp type
 carries only `isAdjustedToUTC` plus the unit. A name survives solely in Arrow's
