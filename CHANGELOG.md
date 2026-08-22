@@ -10,6 +10,17 @@ previous behaviour.
 
 ## [Unreleased]
 
+### Added
+
+- Apache License 2.0. The project shipped without a licence file, which left
+  its terms unstated.
+
+### Removed
+
+- `IMPLEMENTATION_PLAN.md`. It described the build that has since happened and
+  had drifted from the code; the README and CHANGELOG carry what is still true.
+  It remains in the git history.
+
 ### Changed
 
 - Releases now ship Linux, Windows and macOS on `amd64` and `arm64` only. The

@@ -17,3 +17,6 @@
 # Go
 *.test
 *.out
+
+# External sample QVDs downloaded for testing (see testdata/README.md)
+/testdata/external/
