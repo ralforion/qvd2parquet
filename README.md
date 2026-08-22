@@ -900,3 +900,7 @@ payload *followed by* a null-terminated string.
 `TestRealQVDProducts` converts a QVD written by QlikView build 11282 and
 compares every cell against the CSV the Java reader produced from the same
 file. All 77 rows and 9 columns match exactly.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE). Copyright 2026 RALFORION d.o.o.

@@ -12,6 +12,8 @@ previous behaviour.
 
 ### Added
 
+- Apache License 2.0. The project shipped without a licence file, which left
+  its terms unstated.
 - `--timezone=none` writes timestamps with no timezone (Parquet
   `isAdjustedToUTC=false`), preserving the QVD's naive wall clock so that every
   reader shows the same value regardless of where the file is converted or
@@ -28,6 +30,12 @@ previous behaviour.
   moved, or repeats an hour, so a reading in it has two instants and one is
   chosen. A QVD names no timezone, which makes both changes a consequence of
   the `--timezone` claim rather than of the data, so they are no longer silent.
+
+### Removed
+
+- `IMPLEMENTATION_PLAN.md`. It described the build that has since happened and
+  had drifted from the code; the README and CHANGELOG carry what is still true.
+  It remains in the git history.
 
 ### Changed
 
