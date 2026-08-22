@@ -326,18 +326,21 @@ func checkNameCollisions(cols []ResolvedColumn) error {
 // arrowTimeZoneName is the timezone stamped into the Arrow timestamp type.
 //
 // An empty name is not a missing value: it makes the column a naive wall clock
-// (Parquet isAdjustedToUTC=false), which is what a QVD actually stores. Naming
-// a zone instead asserts that the wall clocks were recorded in it, turning them
-// into instants -- a claim the QVD itself never makes. Parquet cannot record
-// the name either way; only Arrow metadata carries it.
+// (Parquet isAdjustedToUTC=false), which is what a QVD actually stores. That is
+// what --timezone=none asks for.
+//
+// Every other mode names UTC, whatever zone was given. --timezone states which
+// zone the *input* wall clocks were recorded in, not how to label the output:
+// once they are placed on the timeline the stored value is a UTC instant, so
+// UTC is what the type should say. Stamping the source zone instead would make
+// Arrow readers render the values back in it while every engine reading the
+// Parquet type alone -- which carries isAdjustedToUTC and no name -- rendered
+// the instant, so identical bytes would show two different times.
 func arrowTimeZoneName(opts *Options) string {
 	if opts.NaiveTimestamps {
 		return ""
 	}
-	if opts.Location == nil {
-		return "UTC"
-	}
-	return opts.Location.String()
+	return "UTC"
 }
 
 // timestampTypeLabel renders a timestamp type the way the schema notes and the

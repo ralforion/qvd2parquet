@@ -110,7 +110,7 @@ func TestScaledFromTextRounding(t *testing.T) {
 
 // A timestamp pinned by --schema must carry the run's --timezone, not a
 // hard-coded UTC that contradicts how the values were converted.
-func TestTimestampOverrideUsesConfiguredTimezone(t *testing.T) {
+func TestTimestampOverrideStampsUTC(t *testing.T) {
 	berlin, err := time.LoadLocation("Europe/Berlin")
 	if err != nil {
 		t.Skipf("tzdata unavailable: %v", err)
@@ -144,9 +144,13 @@ func TestTimestampOverrideUsesConfiguredTimezone(t *testing.T) {
 	if !ok {
 		t.Fatalf("type = %s, want a timestamp type", rs.Columns[0].ArrowType)
 	}
-	if ts.TimeZone != "Europe/Berlin" {
-		t.Errorf("timestamp timezone = %q, want Europe/Berlin: the metadata must match "+
-			"the timezone the values were converted with", ts.TimeZone)
+	// --timezone names the zone the input wall clocks were recorded in, and
+	// the values are placed on the timeline with it. What is stored is then a
+	// UTC instant, so that is what the type says, whatever zone was given.
+	if ts.TimeZone != "UTC" {
+		t.Errorf("timestamp timezone = %q, want UTC: a zoned conversion stores an instant, "+
+			"and stamping the source zone would make Arrow readers show a different "+
+			"time than engines reading the Parquet type alone", ts.TimeZone)
 	}
 }
 

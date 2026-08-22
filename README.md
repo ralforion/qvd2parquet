@@ -669,11 +669,27 @@ about provenance that only the person running the conversion can make, and
 `Local` makes it accidentally, using whatever zone the converting machine sits
 in.
 
-Note that Parquet cannot record a timezone *name* at all — its timestamp type
-carries only `isAdjustedToUTC` plus the unit. A name survives solely in Arrow's
-`ARROW:schema` metadata, so pyarrow and polars recover `tz=Europe/Berlin` while
-DuckDB, Spark and Trino see only "UTC instant" and re-render it in their own
-session zone.
+`--timezone` names the zone the *input* wall clocks were recorded in. It is not
+a label for the output: every mode but `none` writes `tz=UTC`, because once the
+readings are on the timeline what is stored is a UTC instant.
+
+    --timezone=none              timestamp[us]            2016-03-01 00:00:00
+    --timezone=UTC               timestamp[us, tz=UTC]    2016-03-01 00:00:00Z
+    --timezone=America/Chicago   timestamp[us, tz=UTC]    2016-03-01 06:00:00Z
+    --timezone=Asia/Tokyo        timestamp[us, tz=UTC]    2016-02-29 15:00:00Z
+
+Stamping the source zone instead would split the readership. Parquet cannot
+record a timezone *name* at all -- its timestamp type carries only
+`isAdjustedToUTC` plus the unit -- so a name survives solely in Arrow's
+`ARROW:schema` metadata. pyarrow and polars would recover it and render the
+values back in the source zone, while DuckDB, Spark, Trino and Dremio, which
+see the Parquet type alone, would render the instant. Identical bytes would
+show two different times, and the Arrow rendering would look as though no
+conversion had happened. Naming UTC keeps every reader agreeing.
+
+The source zone is therefore not preserved anywhere in the file. It is an input
+to the conversion, not part of the result; record it in a column comment with
+`--field-comment` if the provenance matters downstream.
 
 Timestamps are written as `timestamp[us]`. Microseconds are the finest unit a
 Qlik serial carries any signal in: one float64 ulp is about 0.63us at

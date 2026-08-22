@@ -16,6 +16,13 @@ previous behaviour.
   `isAdjustedToUTC=false`), preserving the QVD's naive wall clock so that every
   reader shows the same value regardless of where the file is converted or
   read. `naive` is accepted as a synonym.
+- A zoned conversion now stamps `tz=UTC` rather than the zone it was given.
+  `--timezone` states which zone the input wall clocks were recorded in, not how
+  to label the output, and what gets stored once they are on the timeline is a
+  UTC instant. Stamping the source zone made Arrow readers render the values
+  back in it while engines reading the Parquet type alone -- which carries no
+  name -- rendered the instant, so identical bytes showed two different times.
+  `--timezone=none` is unaffected and still writes no zone.
 - A zoned conversion now reports where it had to alter a wall clock. Twice a
   year a DST change skips an hour, so a reading in it does not exist and gets
   moved, or repeats an hour, so a reading in it has two instants and one is

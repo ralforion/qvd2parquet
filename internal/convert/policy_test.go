@@ -514,3 +514,33 @@ func TestZonedTimestampReportsDSTDiscontinuities(t *testing.T) {
 		t.Errorf("naive mode should report no timezone caveat, got %q", note)
 	}
 }
+
+// Stamping UTC is a statement about the stored value, not a shortcut past the
+// conversion: a zoned run must still place the wall clock on that zone's
+// timeline, so it lands on a different instant than a UTC run of the same input.
+func TestZonedRunStampsUTCButStillConverts(t *testing.T) {
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Skipf("no tzdata: %v", err)
+	}
+	const serial = 45000.5 // 2023-03-15 12:00 wall clock
+
+	zoned, ok := qvd.QlikDaysToTimestampMicros(serial, berlin)
+	if !ok {
+		t.Fatal("conversion failed")
+	}
+	asUTC, _ := qvd.QlikDaysToTimestampMicros(serial, time.UTC)
+	if zoned == asUTC {
+		t.Error("a Berlin run must land on a different instant than a UTC run")
+	}
+	if delta := asUTC - zoned; delta != int64(time.Hour/time.Microsecond) {
+		t.Errorf("delta = %d us, want one hour: Berlin is UTC+1 in March", delta)
+	}
+
+	f := qvdtest.Field{Name: "TS", Type: "TIMESTAMP",
+		Symbols: []qvd.Symbol{qvdtest.Float(serial)}, Rows: []int{0}}
+	rs := mustResolve(t, f, func(o *Options) { o.Location = berlin; o.TimezoneName = "Europe/Berlin" })
+	if got := rs.Columns[0].ArrowType.String(); got != "timestamp[us, tz=UTC]" {
+		t.Errorf("type = %s, want timestamp[us, tz=UTC]", got)
+	}
+}
