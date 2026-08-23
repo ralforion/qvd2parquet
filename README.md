@@ -11,6 +11,16 @@ instead of stringifying everything, keeps `MONEY` and `FIX` columns as exact
 Parquet decimals, decodes records in parallel, and streams batches into Parquet
 row groups so large files never need to be materialized in memory.
 
+![Converting a BSEG-shaped SAP extract](docs/sap-bseg-conversion.png)
+
+Above: 2.4 million rows of an SAP-shaped extract. `--inspect` reports the type
+chosen for every column and why, before anything is written. `BELNR`, `HKONT`
+and `KOSTL` stay text because their values are zero-padded codes that an
+integer would not preserve; `DMBTR` and `WRBTR` become exact decimals rather
+than floats; `BUDAT` and `CPUDT` are read as dates although the QVD declares no
+type for them. The input is a generated fixture with SAP field names and
+shapes, not a real extract.
+
 ## Install
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. From 1.0.0
