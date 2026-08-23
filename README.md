@@ -1,5 +1,14 @@
 # qvd2parquet
 
+<p>
+<a href="https://github.com/ralforion/qvd2parquet/releases/latest"><img src="https://img.shields.io/github/v/release/ralforion/qvd2parquet?color=purple&label=release" alt="Latest release"></a>
+<a href="https://github.com/ralforion/qvd2parquet/actions/workflows/ci.yml"><img src="https://github.com/ralforion/qvd2parquet/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+<a href="https://pkg.go.dev/github.com/ralforion/qvd2parquet"><img src="https://pkg.go.dev/badge/github.com/ralforion/qvd2parquet.svg" alt="Go reference"></a>
+<a href="https://go.dev/dl/"><img src="https://img.shields.io/badge/go-1.25+-00ADD8?logo=go&logoColor=white" alt="Go 1.25+"></a>
+<a href="https://github.com/ralforion/qvd2parquet/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-orange.svg" alt="License: Apache 2.0"></a>
+<img src="https://img.shields.io/badge/platform-linux%20%7C%20windows%20%7C%20macos-lightgrey" alt="Linux, Windows, macOS">
+</p>
+
 A fast command-line converter from Qlik QVD files to Parquet.
 
 ```sh
@@ -943,6 +952,23 @@ payload *followed by* a null-terminated string.
 compares every cell against the CSV the Java reader produced from the same
 file. All 77 rows and 9 columns match exactly.
 
+---
+
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE). Copyright 2026 RALFORION d.o.o.
+Copyright © 2026 [RALFORION d.o.o.](https://ralforion.com)
+
+Licensed under the [Apache License 2.0](LICENSE).
+
+Built by Ralfo Becher at RALFORION, the team behind the
+[OrionBelt Semantic Layer](https://github.com/ralforion/orionbelt-semantic-layer).
+About the rest of a Qlik to lakehouse migration:
+[ralforion.com](https://ralforion.com/#contact).
+
+---
+
+<p align="center">
+  <a href="https://ralforion.com">
+    <img src="https://raw.githubusercontent.com/ralforion/qvd2parquet/main/docs/assets/RALFORION_doo_Logo.png" alt="RALFORION d.o.o." width="200">
+  </a>
+</p>
