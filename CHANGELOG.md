@@ -19,6 +19,18 @@ new flag or a new value for an existing one.
   by the compatibility promise above, having been validated against the Java
   reference reader, against QlikView- and Qlik Sense-written files, and against
   an independent third-party reader.
+- An untyped column whose display strings render its serial as a date or
+  timestamp is now read as one in two cases it previously missed, so the value
+  arrives typed instead of as a bare Qlik serial beside a `__text` sidecar.
+  A symbol carrying no value no longer disqualifies the column: one
+  empty-string placeholder among 2,991 dated duals was leaving the taxi files'
+  `trip_end_timestamp` as `float64` plus `trip_end_timestamp__text`, though
+  that placeholder is written as null either way. And the inference window now
+  reaches back to 1600 rather than 1900, because historical series are real
+  data -- the Stockholm temperature record starts in 1756. Across the twelve
+  QVDs used for validation this takes `__text` sidecars from four to none.
+  Labels are unaffected: a month number beside "Jan" still keeps both columns,
+  since "Jan" renders nothing about the serial 1.
 - A mixed text/number column no longer fails when the numeric symbols are
   integers and every symbol carries its own display string. The file already
   states the text for every value, so `utf8` reproduces all of them and nothing

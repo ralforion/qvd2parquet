@@ -242,7 +242,7 @@ func TestInferDateRejectsBlankDisplayStrings(t *testing.T) {
 		qvdtest.DualInt(40502, ""),
 		qvdtest.DualInt(40503, ""),
 	}
-	if inf, ok := InferDateTimeFromDuals(col, syms, time.UTC); ok {
+	if inf, ok := InferDateTimeFromDuals(col, syms, time.UTC, true); ok {
 		t.Errorf("blank display strings should not infer %v", inf.Type)
 	}
 	// One blank among real dates is also not enough.
@@ -250,7 +250,7 @@ func TestInferDateRejectsBlankDisplayStrings(t *testing.T) {
 		qvdtest.DualInt(40502, "11/20/2010"),
 		qvdtest.DualInt(40503, ""),
 	}
-	if _, ok := InferDateTimeFromDuals(col, syms, time.UTC); ok {
+	if _, ok := InferDateTimeFromDuals(col, syms, time.UTC, true); ok {
 		t.Error("a blank display string should block inference")
 	}
 }
@@ -719,11 +719,68 @@ func TestInferDatesFromISOStrings(t *testing.T) {
 		qvdtest.DualInt(40502, "2010-11-20T00:00:00Z"),
 		qvdtest.DualInt(40503, "2010-11-21T00:00:00Z"),
 	}
-	inf, ok := InferDateTimeFromDuals(col, syms, time.UTC)
+	inf, ok := InferDateTimeFromDuals(col, syms, time.UTC, true)
 	if !ok {
 		t.Fatal("ISO display strings should support date inference")
 	}
 	if inf.Type != qvd.QlikTimestamp {
 		t.Errorf("inferred %v, want QlikTimestamp (the strings carry a clock)", inf.Type)
+	}
+}
+
+// Historical series are real data. The Stockholm temperature record starts in
+// 1756, serial -52593, which a 1900 floor rejected -- leaving a bare integer
+// beside a __text sidecar where a date belonged.
+func TestPre1900DualsInferAsDates(t *testing.T) {
+	f := qvdtest.Field{Name: "date", Type: "", Rows: []int{0, 1},
+		Symbols: []qvd.Symbol{
+			qvdtest.DualInt(-52593, "1756-01-01"),
+			qvdtest.DualInt(-52592, "1756-01-02"),
+		}}
+	rs := mustResolve(t, f, nil)
+	if got := len(rs.Columns); got != 1 {
+		t.Fatalf("%d columns, want 1: a date should not need a __text sidecar", got)
+	}
+	if got := rs.Columns[0].ArrowType.String(); got != "date32" {
+		t.Errorf("type = %s, want date32", got)
+	}
+}
+
+// The widened bound must not turn labels into dates. A month number beside its
+// name is not a date: "Jan" renders nothing about the serial 1, so the column
+// keeps the number and carries the label alongside it.
+func TestMonthLabelDualsAreNotDates(t *testing.T) {
+	f := qvdtest.Field{Name: "Month", Type: "", Rows: []int{0, 1, 2},
+		Symbols: []qvd.Symbol{
+			qvdtest.DualInt(1, "Jan"), qvdtest.DualInt(2, "Feb"), qvdtest.DualInt(3, "Mar"),
+		}}
+	rs := mustResolve(t, f, nil)
+	if got := len(rs.Columns); got != 2 {
+		t.Fatalf("%d columns, want 2 (Month and Month__text)", got)
+	}
+	if got := rs.Columns[0].ArrowType.String(); got != "int64" {
+		t.Errorf("type = %s, want int64", got)
+	}
+	if got := rs.Columns[1].Name; got != "Month__text" {
+		t.Errorf("second column = %s, want Month__text", got)
+	}
+}
+
+// A symbol carrying no value is not evidence against the rest of the column.
+// One empty-string placeholder among thousands of dated duals used to
+// disqualify the whole column.
+func TestEmptyPlaceholderDoesNotBlockDateInference(t *testing.T) {
+	f := qvdtest.Field{Name: "Seen", Type: "", Rows: []int{0, 1, 2},
+		Symbols: []qvd.Symbol{
+			qvdtest.DualFloat(45000.5, "2023-03-15 12:00:00"),
+			qvdtest.Str(""),
+			qvdtest.DualFloat(45001.5, "2023-03-16 12:00:00"),
+		}}
+	rs := mustResolve(t, f, nil)
+	if got := len(rs.Columns); got != 1 {
+		t.Fatalf("%d columns, want 1", got)
+	}
+	if got := rs.Columns[0].ArrowType.String(); got != "timestamp[us]" {
+		t.Errorf("type = %s, want timestamp[us]", got)
 	}
 }

@@ -502,11 +502,19 @@ func (c DualClassification) Note(colName, textColName string) string {
 }
 
 // minDateSerial and maxDateSerial bound the Qlik serial values that may be
-// inferred as dates: roughly the years 1900 to 2200. Without a bound, small
-// integers such as a quantity of 5 could be read as dates.
+// inferred as dates: the years 1600 to 2200. The bound is a sanity check, not
+// the real filter -- textRendersDate does that work by requiring the display
+// string to render this particular serial -- so it only has to exclude values
+// no date could plausibly hold.
+//
+// The lower end reaches 1600 rather than 1900 because historical series are
+// real: the Stockholm temperature record starts in 1756, serial -52593, and a
+// 1900 floor left it as a bare integer beside a __text sidecar. Before about
+// 1582 a date is ambiguous about which calendar it is in, so that is a
+// reasonable place to stop.
 const (
-	minDateSerial = 1.0      // 1900-01-01
-	maxDateSerial = 109575.0 // 2200-01-01
+	minDateSerial = -109571.0 // 1600-01-01
+	maxDateSerial = 109575.0  // 2200-01-01
 )
 
 // DateInference is the result of looking for date semantics in a column whose
@@ -527,12 +535,19 @@ type DateInference struct {
 // empty, which would otherwise leave a date column as a bare float64 serial
 // that no downstream reader can interpret. Every dual must agree, so a column
 // mixing dates with anything else is not inferred.
-func InferDateTimeFromDuals(col qvd.Column, syms []qvd.Symbol, loc *time.Location) (DateInference, bool) {
+func InferDateTimeFromDuals(col qvd.Column, syms []qvd.Symbol, loc *time.Location,
+	emptyAsNull bool) (DateInference, bool) {
 	var inf DateInference
 	hasFraction, hasClock := false, false
 
 	for _, s := range syms {
-		if s.Kind == qvd.SymbolNull {
+		// A symbol carrying no value says nothing either way. Skipping it
+		// matters: a single empty-string placeholder among thousands of dated
+		// duals used to disqualify the whole column, which left an untyped
+		// Qlik serial and a __text sidecar where a timestamp belonged. The
+		// value is written as null regardless, so it is no evidence against
+		// the rest.
+		if symbolIsAbsent(s, emptyAsNull) {
 			continue
 		}
 		// Every value-bearing symbol must be a dual: a bare number carries no

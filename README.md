@@ -447,6 +447,16 @@ reuse, so both still fail and leave the call to you.
 | `promote` | keep numerics numeric and pure text as text; still fail on number + text unless `--mixed-string-fallback` |
 | `dual-columns` | write the numeric side under the original name and the display side as `${name}__text` |
 
+An untyped column whose display strings render its serial as a date or
+timestamp is read as one, so it arrives typed rather than as a bare serial with
+a `__text` sidecar. Two things bound that: a symbol carrying no value is
+skipped, since a null placeholder says nothing about the rest of the column, and
+the serial has to fall between 1600 and 2200. The window reaches back that far
+because historical series are real -- the Stockholm temperature record starts in
+1756. It is a sanity check rather than the real filter: the display string still
+has to render that particular serial, which is why a month number beside `Jan`
+is not a date and keeps both columns.
+
 `--dual` selects which side of a Qlik dual is written:
 
 | Value | Behaviour |

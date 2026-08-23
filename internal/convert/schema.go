@@ -517,7 +517,7 @@ func resolveNumericColumn(base ResolvedColumn, col qvd.Column, prof *qvd.ColumnP
 			qlikType = tagged
 			inferNote = fmt.Sprintf("no declared type, but tagged $%s", strings.ToLower(tagged.String()))
 		} else if opts.InferDates {
-			if inf, ok := InferDateTimeFromDuals(col, syms, opts.Location); ok {
+			if inf, ok := InferDateTimeFromDuals(col, syms, opts.Location, opts.EmptyStringAsNull); ok {
 				qlikType = inf.Type
 				inferNote = inf.Note()
 			}
