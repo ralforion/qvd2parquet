@@ -4,11 +4,22 @@ All notable changes to qvd2parquet are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-While the major version is `0`, a minor bump may change conversion defaults;
-those changes are called out under **Changed** with the flag that restores the
-previous behaviour.
+From 1.0.0 the CLI surface and the conversion defaults are stable: a flag will
+not be removed or change its meaning, and a default will not change what an
+existing file converts to, outside a major bump. New behaviour arrives behind a
+new flag or a new value for an existing one.
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-08-23
+
+### Changed
+
+- Declared stable. There are no functional changes since 0.5.0; the version
+  states that the CLI surface and the conversion defaults are now covered by
+  the compatibility promise above, having been validated against the Java
+  reference reader, against QlikView- and Qlik Sense-written files, and against
+  an independent third-party reader.
 
 ## [0.5.0] - 2026-08-22
 
@@ -287,7 +298,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/ralforion/qvd2parquet/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/ralforion/qvd2parquet/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ralforion/qvd2parquet/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/ralforion/qvd2parquet/compare/v0.3.0...v0.3.1
