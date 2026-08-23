@@ -111,6 +111,13 @@ func textRendersNumber(text string, n float64, decSep, thouSep string) bool {
 		// An empty display string carries nothing to preserve.
 		return true
 	}
+	// A zero-padded rendering is not merely a rendering: the width is part of
+	// the value. SAP codes are the common case -- BELNR 0100002878 is a
+	// CHAR(10) document number, and reading it as 100002878 stops it joining
+	// back to the source system.
+	if isZeroPadded(t) {
+		return false
+	}
 	v, ok := parseLocalizedNumber(t, decSep, thouSep)
 	if !ok {
 		return false
@@ -123,6 +130,54 @@ func textRendersNumber(text string, n float64, decSep, thouSep string) bool {
 	diff := math.Abs(n - v)
 	scale := math.Max(math.Max(math.Abs(n), math.Abs(v)), 1)
 	return diff <= 1e-9*scale
+}
+
+// isZeroPadded reports whether text is a number written with leading zeros.
+// A single "0", and a leading zero before a decimal separator such as "0.5",
+// are ordinary formatting rather than padding.
+func isZeroPadded(text string) bool {
+	t := strings.TrimSpace(text)
+	t = strings.TrimLeft(t, "+-")
+	return len(t) > 1 && t[0] == '0' && t[1] >= '0' && t[1] <= '9'
+}
+
+// ZeroPaddedCodeExample reports whether every value in the column is an integer
+// stored beside its own zero-padded decimal form, and returns one example.
+//
+// That shape is an identifier of fixed width, not a quantity: the padding
+// carries meaning the integer cannot, so the column belongs in utf8 as a single
+// value rather than as a number with the text alongside it. Decimals are
+// excluded for the same reason they are excluded elsewhere -- a padded decimal
+// is a formatting choice, not a code.
+func ZeroPaddedCodeExample(syms []qvd.Symbol, emptyAsNull bool) (string, bool) {
+	example, padded, seen := "", false, 0
+	for _, s := range syms {
+		if symbolIsAbsent(s, emptyAsNull) {
+			continue
+		}
+		if s.Kind != qvd.SymbolDualIntString {
+			return "", false
+		}
+		t := strings.TrimSpace(s.Text)
+		// The text has to be the digits of the number and nothing else, or it
+		// is carrying something a code would not.
+		if t == "" || strings.TrimLeft(t, "0123456789") != "" {
+			return "", false
+		}
+		if v, err := strconv.ParseInt(strings.TrimLeft(t, "0"), 10, 64); err != nil || v != s.Int {
+			if !(strings.TrimLeft(t, "0") == "" && s.Int == 0) {
+				return "", false
+			}
+		}
+		seen++
+		if isZeroPadded(t) {
+			padded = true
+			if example == "" {
+				example = t
+			}
+		}
+	}
+	return example, seen > 0 && padded
 }
 
 // dateTokens matches runs of digits, which are the parts of a rendered date.

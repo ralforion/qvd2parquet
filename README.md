@@ -125,7 +125,7 @@ pipelines and shell substitutions.
 
 ```text
 $ qvd2parquet --timezone UTC --quality-gate numeric sales.qvd sales.parquet
-qvd2parquet 1.0.0  (c) 2026, RALFORION d.o.o.
+qvd2parquet 1.0.1  (c) 2026, RALFORION d.o.o.
 qvd2parquet: sales.qvd: table "products", 77 rows, 7 bytes/record, 9 of 9 columns selected
 qvd2parquet: read 412 symbols in 1ms; records start at offset 8973
 qvd2parquet: schema: Einkaufspreis: REAL with 75 double symbols promoted to decimal(5,2); scale 2 inferred from values
@@ -144,7 +144,7 @@ Print the version and exit with `--version`:
 
 ```text
 $ qvd2parquet --version
-qvd2parquet 1.0.0  (c) 2026, RALFORION d.o.o.
+qvd2parquet 1.0.1  (c) 2026, RALFORION d.o.o.
 ```
 
 ### Examples
@@ -448,6 +448,13 @@ reuse, so both still fail and leave the call to you.
 | `string` | write the whole column as UTF-8; the display string wins for duals |
 | `promote` | keep numerics numeric and pure text as text; still fail on number + text unless `--mixed-string-fallback` |
 | `dual-columns` | write the numeric side under the original name and the display side as `${name}__text` |
+
+A column whose values are integers stored beside their own zero-padded digits
+is written as `utf8`. The padding is part of the value: SAP keeps its keys as
+fixed-width codes -- `BELNR` is `CHAR(10)`, so document 100000001 is stored
+`0100000001` -- and reading that as 100000001 produces a key that no longer
+joins back. Padded decimals are formatting rather than codes, and dates are
+neither, so both keep their own typing.
 
 An untyped column whose display strings render its serial as a date or
 timestamp is read as one, so it arrives typed rather than as a bare serial with

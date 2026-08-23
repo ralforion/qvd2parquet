@@ -784,3 +784,55 @@ func TestEmptyPlaceholderDoesNotBlockDateInference(t *testing.T) {
 		t.Errorf("type = %s, want timestamp[us]", got)
 	}
 }
+
+// A zero-padded number is a fixed-width code, not a quantity. SAP's BELNR is
+// CHAR(10): read as an integer it stops joining back to the source system.
+func TestZeroPaddedDualsBecomeText(t *testing.T) {
+	f := qvdtest.Field{Name: "BELNR", Type: "", Rows: []int{0, 1},
+		Symbols: []qvd.Symbol{
+			qvdtest.DualInt(100000001, "0100000001"),
+			qvdtest.DualInt(100000002, "0100000002"),
+		}}
+	rs := mustResolve(t, f, nil)
+	if got := len(rs.Columns); got != 1 {
+		t.Fatalf("%d columns, want 1: the code is the value, not a sidecar", got)
+	}
+	if got := rs.Columns[0].ArrowType.String(); got != "utf8" {
+		t.Errorf("type = %s, want utf8", got)
+	}
+	if note := strings.Join(rs.Notes, " "); !strings.Contains(note, `"0100000001"`) {
+		t.Errorf("note = %q, want it to quote the padded example", note)
+	}
+}
+
+// The rule keys on the padding, not on being a dual. An unpadded number beside
+// its own digits is still a number.
+func TestUnpaddedDualsStayNumeric(t *testing.T) {
+	f := qvdtest.Field{Name: "N", Type: "", Rows: []int{0, 1},
+		Symbols: []qvd.Symbol{qvdtest.DualInt(42, "42"), qvdtest.DualInt(4711, "4711")}}
+	rs := mustResolve(t, f, nil)
+	if got := len(rs.Columns); got != 1 {
+		t.Fatalf("%d columns, want 1", got)
+	}
+	if got := rs.Columns[0].ArrowType.String(); got != "int64" {
+		t.Errorf("type = %s, want int64", got)
+	}
+}
+
+// A padded decimal is a formatting choice rather than a code, and a date is
+// neither, so both keep their own typing.
+func TestPaddedDecimalsAndDatesAreNotCodes(t *testing.T) {
+	dec := qvdtest.Field{Name: "V", Type: "", Rows: []int{0, 1},
+		Symbols: []qvd.Symbol{qvdtest.DualFloat(7.5, "007.50"), qvdtest.DualFloat(8.25, "008.25")}}
+	if rs := mustResolve(t, dec, nil); rs.Columns[0].ArrowType.String() == "utf8" {
+		t.Error("a padded decimal must not be read as a code")
+	}
+	date := qvdtest.Field{Name: "BUDAT", Type: "", Rows: []int{0, 1},
+		Symbols: []qvd.Symbol{
+			qvdtest.DualInt(45292, "2024-01-01"), qvdtest.DualInt(45293, "2024-01-02"),
+		}}
+	rs := mustResolve(t, date, nil)
+	if got := rs.Columns[0].ArrowType.String(); got != "date32" {
+		t.Errorf("type = %s, want date32", got)
+	}
+}

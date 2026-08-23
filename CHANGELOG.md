@@ -11,6 +11,20 @@ new flag or a new value for an existing one.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-23
+
+### Fixed
+
+- A zero-padded number is no longer read as the number. SAP stores its keys as
+  fixed-width character codes -- `BELNR` is `CHAR(10)`, so document 100000001
+  is written `0100000001` -- and the display string was being compared to the
+  numeric side as a number, which made the padding look like formatting. The
+  column was typed `int64` and the padding dropped, leaving a key that no
+  longer joins back to the source system. A column whose values are integers
+  stored beside their own zero-padded digits is now written as `utf8`, as one
+  column rather than a number with a `__text` sidecar. Padded decimals and
+  dates are unaffected, being formatting and dates rather than codes.
+
 ## [1.0.0] - 2026-08-23
 
 ### Changed
@@ -319,7 +333,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/ralforion/qvd2parquet/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/ralforion/qvd2parquet/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/ralforion/qvd2parquet/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ralforion/qvd2parquet/compare/v0.3.1...v0.4.0

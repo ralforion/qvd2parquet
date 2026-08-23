@@ -434,6 +434,17 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 		return []ResolvedColumn{base}, fmt.Sprintf("%s: %d text symbols, written as utf8", col.Name, prof.Strings), nil
 	}
 
+	// A column of zero-padded codes is textual, whatever the numbers behind it
+	// say. Reading SAP's BELNR 0100002878 as 100002878 loses the width the
+	// source system joins on, and a __text sidecar would only put the real
+	// value in a second column.
+	if ex, ok := ZeroPaddedCodeExample(syms, opts.EmptyStringAsNull); ok {
+		base.ArrowType, base.Strategy = arrowString, StrategyString
+		return []ResolvedColumn{base}, fmt.Sprintf(
+			"%s: every value is a zero-padded code (e.g. %q), which the number alone would not "+
+				"preserve, so it is written as utf8", col.Name, ex), nil
+	}
+
 	// From here on the column is numeric or dual-numeric only.
 	dual := prof.HasDuals()
 
