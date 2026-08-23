@@ -544,3 +544,50 @@ func TestZonedRunStampsUTCButStillConverts(t *testing.T) {
 		t.Errorf("type = %s, want timestamp[us, tz=UTC]", got)
 	}
 }
+
+// A column mixing text with numbers normally stops, because writing it as text
+// means choosing a rendering for the numbers. When every symbol already carries
+// its own display string that choice does not exist, so an integer column
+// resolves to utf8 on its own. A zero-padded value is the clearest case: "0901"
+// is a code, and reading it as 901 would not survive a round trip.
+func TestMixedIntegerWithTextForEverySymbolResolvesToUTF8(t *testing.T) {
+	f := qvdtest.Field{Name: "part_num", Type: "",
+		Symbols: []qvd.Symbol{qvdtest.DualInt(901, "0901"), qvdtest.Str("0687b1")},
+		Rows:    []int{0, 1}}
+	rs := mustResolve(t, f, nil)
+	if got := rs.Columns[0].ArrowType.String(); got != "utf8" {
+		t.Fatalf("type = %s, want utf8", got)
+	}
+	note := strings.Join(rs.Notes, " ")
+	for _, want := range []string{"every symbol carries its own display string", `"0901"`} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note = %q, want it to mention %q", note, want)
+		}
+	}
+}
+
+// The rule is deliberately narrow. A decimal beside text is more likely a
+// measurement than a code, and a bare number carries no text to reuse, so both
+// still stop and leave the choice to the caller.
+func TestMixedStillStopsWhereTextWouldBeInvented(t *testing.T) {
+	tests := []struct {
+		name string
+		syms []qvd.Symbol
+	}{
+		{"decimal duals", []qvd.Symbol{qvdtest.DualFloat(9.5, "9.5"), qvdtest.Str("n/a")}},
+		{"bare integer with no text", []qvd.Symbol{qvdtest.Int(901), qvdtest.Str("0687b1")}},
+		{"bare double with no text", []qvd.Symbol{qvdtest.Float(9.5), qvdtest.Str("n/a")}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := qvdtest.Field{Name: "V", Type: "", Symbols: tc.syms, Rows: []int{0, 1}}
+			_, err := resolve(t, f, nil)
+			if err == nil {
+				t.Fatal("want a schema policy error, got none")
+			}
+			if !errors.Is(err, ErrSchemaPolicy) {
+				t.Errorf("error = %v, want ErrSchemaPolicy", err)
+			}
+		})
+	}
+}

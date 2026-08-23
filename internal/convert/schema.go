@@ -224,6 +224,23 @@ func requireConvertibleDateTime(col qvd.Column, syms []qvd.Symbol, pinned string
 	return scan, nil
 }
 
+// zeroPaddedNote reports, for the schema note, whether any dual's display
+// string is a zero-padded rendering of its number. That is the clearest sign a
+// column holds identifiers rather than quantities, since reading "0901" as 901
+// would not survive a round trip.
+func zeroPaddedNote(syms []qvd.Symbol) string {
+	for _, s := range syms {
+		if s.Kind != qvd.SymbolDualIntString {
+			continue
+		}
+		t := strings.TrimSpace(s.Text)
+		if len(t) > 1 && t[0] == '0' && t[1] != '.' {
+			return fmt.Sprintf(" (e.g. %q, which is not the number %d)", t, s.Int)
+		}
+	}
+	return ""
+}
+
 // symbolIsAbsent reports whether a symbol carries no value for conversion
 // purposes. Every schema-time validator has to use this, or it will reject a
 // placeholder the conversion is about to write as null.
@@ -396,6 +413,14 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 			base.ArrowType, base.Strategy = arrowString, StrategyString
 			return []ResolvedColumn{base}, fmt.Sprintf(
 				"%s: mixed text and numeric symbols (%s), written as utf8", col.Name, prof.Describe()), nil
+		case prof.TextIsLosslessForMixed():
+			// Nothing is being decided here: the file already states a display
+			// string for every value, so utf8 reproduces all of them exactly.
+			base.ArrowType, base.Strategy = arrowString, StrategyString
+			return []ResolvedColumn{base}, fmt.Sprintf(
+				"%s: mixed text and integer symbols (%s), but every symbol carries its own "+
+					"display string%s, so utf8 is written without inventing one",
+				col.Name, prof.Describe(), zeroPaddedNote(syms)), nil
 		default:
 			return nil, "", fmt.Errorf("%w: mixed type column %q: symbols contain %d numeric values and %d strings; "+
 				"use --mixed=string to write this column as UTF-8, or --mixed-string-fallback",

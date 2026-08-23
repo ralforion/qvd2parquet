@@ -15,11 +15,20 @@ new flag or a new value for an existing one.
 
 ### Changed
 
-- Declared stable. There are no functional changes since 0.5.0; the version
-  states that the CLI surface and the conversion defaults are now covered by
-  the compatibility promise above, having been validated against the Java
+- Declared stable: the CLI surface and the conversion defaults are now covered
+  by the compatibility promise above, having been validated against the Java
   reference reader, against QlikView- and Qlik Sense-written files, and against
   an independent third-party reader.
+- A mixed text/number column no longer fails when the numeric symbols are
+  integers and every symbol carries its own display string. The file already
+  states the text for every value, so `utf8` reproduces all of them and nothing
+  is invented. This is what the LEGO `parts.qvd` and `inventory_parts.qvd` hit:
+  `part_num` holds `0901` beside the number 901, a code rather than a quantity,
+  which reading as 901 would destroy. Of the twelve real QVDs used for
+  validation, eleven now convert on the defaults where nine did; the twelfth is
+  deliberately corrupt. Decimals beside text, and bare numbers carrying no text,
+  still stop -- there a rendering would have to be chosen, and that is the
+  caller's call.
 
 ## [0.5.0] - 2026-08-22
 

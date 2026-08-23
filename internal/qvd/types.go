@@ -219,6 +219,20 @@ type ColumnProfile struct {
 	hasFloat bool
 }
 
+// TextIsLosslessForMixed reports whether a column mixing text and numbers can
+// be written as text without inventing a rendering for any value: every symbol
+// carries its own display string, and the numeric side is integer.
+//
+// Decimals are deliberately excluded. An integer stored beside its own text is
+// an identifier rather than a quantity -- "0901" is not the number 901, and
+// reading it as one destroys it -- whereas a decimal mixed with text is more
+// likely a measurement whose display string is a formatting of it. Flattening
+// that to text is a judgement for the caller, so it still stops.
+func (p *ColumnProfile) TextIsLosslessForMixed() bool {
+	return p.Ints == 0 && p.Floats == 0 && p.DualFloats == 0 &&
+		p.DualInts > 0 && p.Strings > 0
+}
+
 // Observe folds one symbol into the profile.
 func (p *ColumnProfile) Observe(s Symbol) {
 	p.Symbols++

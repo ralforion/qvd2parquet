@@ -426,7 +426,19 @@ harmless, some are not:
 - dual numeric + display string — a normal Qlik concept, resolved by `--dual`.
 - number + unrelated text — never silently made numeric.
 
-`--mixed` selects what happens to the last case:
+One shape of the last case resolves on its own, because nothing is actually
+being decided: when the numeric symbols are **integers** and **every symbol in
+the column carries its own display string**, the file already states the text
+for every value, so the column is written as `utf8` without inventing a
+rendering for anything. The LEGO `parts.qvd` is the archetype -- `part_num`
+holds `0901` beside the number 901, and `0687b1` beside nothing at all. `0901`
+is a code, not a quantity, and reading it as 901 would not survive a round trip.
+
+The rule stops there. A **decimal** beside text is more likely a measurement
+whose display string is a formatting of it, and a bare number carries no text to
+reuse, so both still fail and leave the call to you.
+
+`--mixed` selects what happens to everything else:
 
 | Value | Behaviour |
 | --- | --- |
