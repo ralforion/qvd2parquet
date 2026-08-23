@@ -13,9 +13,11 @@ row groups so large files never need to be materialized in memory.
 
 ## Install
 
-See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. Conversion
-defaults may change while the major version is `0`; every such change is listed
-under **Changed** with the flag that restores the previous behaviour.
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. From 1.0.0
+the CLI surface and the conversion defaults are stable: a flag will not be
+removed or change its meaning, and a default will not change what an existing
+file converts to, outside a major bump. New behaviour arrives behind a new flag
+or a new value for an existing one.
 
 ### Prebuilt binaries
 

@@ -559,7 +559,7 @@ func TestMixedIntegerWithTextForEverySymbolResolvesToUTF8(t *testing.T) {
 		t.Fatalf("type = %s, want utf8", got)
 	}
 	note := strings.Join(rs.Notes, " ")
-	for _, want := range []string{"every symbol carries its own display string", `"0901"`} {
+	for _, want := range []string{"every value carries a non-empty display string", `"0901"`} {
 		if !strings.Contains(note, want) {
 			t.Errorf("note = %q, want it to mention %q", note, want)
 		}
@@ -589,5 +589,31 @@ func TestMixedStillStopsWhereTextWouldBeInvented(t *testing.T) {
 				t.Errorf("error = %v, want ErrSchemaPolicy", err)
 			}
 		})
+	}
+}
+
+// A dual whose display string is empty has nothing to write on the text side,
+// and the default policy then turns that empty string into null, so its number
+// would disappear. Counting symbols is not enough to call the column lossless.
+func TestMixedStopsWhenADualHasEmptyText(t *testing.T) {
+	f := qvdtest.Field{Name: "V", Type: "", Rows: []int{0, 1},
+		Symbols: []qvd.Symbol{qvdtest.DualInt(7, ""), qvdtest.Str("A")}}
+	_, err := resolve(t, f, nil)
+	if err == nil {
+		t.Fatal("want a schema policy error: writing text would drop the 7")
+	}
+	if !errors.Is(err, ErrSchemaPolicy) {
+		t.Errorf("error = %v, want ErrSchemaPolicy", err)
+	}
+}
+
+// A bare empty string is a null placeholder, not a dual with nothing to write,
+// so it must not block the lossless path.
+func TestMixedAllowsBareEmptyStringPlaceholder(t *testing.T) {
+	f := qvdtest.Field{Name: "V", Type: "", Rows: []int{0, 1, 2},
+		Symbols: []qvd.Symbol{qvdtest.DualInt(901, "0901"), qvdtest.Str(""), qvdtest.Str("0687b1")}}
+	rs := mustResolve(t, f, nil)
+	if got := rs.Columns[0].ArrowType.String(); got != "utf8" {
+		t.Errorf("type = %s, want utf8", got)
 	}
 }

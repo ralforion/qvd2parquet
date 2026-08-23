@@ -229,6 +229,14 @@ type ColumnProfile struct {
 // likely a measurement whose display string is a formatting of it. Flattening
 // that to text is a judgement for the caller, so it still stops.
 func (p *ColumnProfile) TextIsLosslessForMixed() bool {
+	// A dual whose display string is empty is the exception: writing the text
+	// side drops its number, and under the default policy the empty string
+	// then becomes null, so the value disappears entirely. EmptyText counts
+	// every empty display string and EmptyStrings only the bare ones, so their
+	// difference is the number of duals with nothing to write.
+	if p.EmptyText != p.EmptyStrings {
+		return false
+	}
 	return p.Ints == 0 && p.Floats == 0 && p.DualFloats == 0 &&
 		p.DualInts > 0 && p.Strings > 0
 }

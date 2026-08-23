@@ -418,7 +418,7 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 			// string for every value, so utf8 reproduces all of them exactly.
 			base.ArrowType, base.Strategy = arrowString, StrategyString
 			return []ResolvedColumn{base}, fmt.Sprintf(
-				"%s: mixed text and integer symbols (%s), but every symbol carries its own "+
+				"%s: mixed text and integer symbols (%s), but every value carries a non-empty "+
 					"display string%s, so utf8 is written without inventing one",
 				col.Name, prof.Describe(), zeroPaddedNote(syms)), nil
 		default:
