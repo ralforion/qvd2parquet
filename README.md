@@ -460,11 +460,12 @@ reuse, so both still fail and leave the call to you.
 | `dual-columns` | write the numeric side under the original name and the display side as `${name}__text` |
 
 A column whose values are integers stored beside their own zero-padded digits
-is written as `utf8`. The padding is part of the value: SAP keeps its keys as
+is written as `utf8` under `--dual=auto`. The padding is part of the value: SAP keeps its keys as
 fixed-width codes -- `BELNR` is `CHAR(10)`, so document 100000001 is stored
 `0100000001` -- and reading that as 100000001 produces a key that no longer
 joins back. Padded decimals are formatting rather than codes, and dates are
-neither, so both keep their own typing.
+neither, so both keep their own typing. Naming a side with `--dual` overrides
+the inference: `--dual=numeric` still writes the number, padding and all lost.
 
 An untyped column whose display strings render its serial as a date or
 timestamp is read as one, so it arrives typed rather than as a bare serial with

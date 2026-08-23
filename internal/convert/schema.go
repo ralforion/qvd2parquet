@@ -438,7 +438,11 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 	// say. Reading SAP's BELNR 0100002878 as 100002878 loses the width the
 	// source system joins on, and a __text sidecar would only put the real
 	// value in a second column.
-	if ex, ok := ZeroPaddedCodeExample(syms, opts.EmptyStringAsNull); ok {
+	//
+	// This is inference, so it only fills in for --dual=auto. Naming a side
+	// explicitly is an instruction, and --dual=numeric asking for the number
+	// has to get the number even where that drops the padding.
+	if ex, ok := ZeroPaddedCodeExample(syms, opts.EmptyStringAsNull); ok && opts.Dual == DualAuto {
 		base.ArrowType, base.Strategy = arrowString, StrategyString
 		return []ResolvedColumn{base}, fmt.Sprintf(
 			"%s: every value is a zero-padded code (e.g. %q), which the number alone would not "+

@@ -23,7 +23,9 @@ new flag or a new value for an existing one.
   longer joins back to the source system. A column whose values are integers
   stored beside their own zero-padded digits is now written as `utf8`, as one
   column rather than a number with a `__text` sidecar. Padded decimals and
-  dates are unaffected, being formatting and dates rather than codes.
+  dates are unaffected, being formatting and dates rather than codes, and so is
+  an explicit `--dual`: the rule is inference, so it fills in for `--dual=auto`
+  only and never overrides a side named on the command line.
 
 ## [1.0.0] - 2026-08-23
 

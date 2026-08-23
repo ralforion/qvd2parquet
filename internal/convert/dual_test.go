@@ -836,3 +836,40 @@ func TestPaddedDecimalsAndDatesAreNotCodes(t *testing.T) {
 		t.Errorf("type = %s, want date32", got)
 	}
 }
+
+// The zero-padded-code rule is inference, so it fills in for --dual=auto only.
+// Naming a side is an instruction: --dual=numeric asking for the number has to
+// get the number even where that drops the padding, and --dual=columns has to
+// get both columns.
+func TestZeroPaddedCodesYieldToExplicitDual(t *testing.T) {
+	f := qvdtest.Field{Name: "BELNR", Type: "", Rows: []int{0, 1},
+		Symbols: []qvd.Symbol{
+			qvdtest.DualInt(100000001, "0100000001"),
+			qvdtest.DualInt(100000002, "0100000002"),
+		}}
+	tests := []struct {
+		dual     DualStrategy
+		name     string
+		wantCols int
+		wantType string
+	}{
+		{DualAuto, "auto", 1, "utf8"},
+		{DualNumeric, "numeric", 1, "int64"},
+		{DualText, "text", 1, "utf8"},
+		{DualColumns, "columns", 2, "int64"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := mustResolve(t, f, func(o *Options) { o.Dual = tc.dual })
+			if got := len(rs.Columns); got != tc.wantCols {
+				t.Fatalf("%d columns, want %d", got, tc.wantCols)
+			}
+			if got := rs.Columns[0].ArrowType.String(); got != tc.wantType {
+				t.Errorf("type = %s, want %s", got, tc.wantType)
+			}
+			if tc.wantCols == 2 && rs.Columns[1].Name != "BELNR__text" {
+				t.Errorf("second column = %s, want BELNR__text", rs.Columns[1].Name)
+			}
+		})
+	}
+}
