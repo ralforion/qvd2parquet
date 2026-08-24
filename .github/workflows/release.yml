@@ -58,7 +58,7 @@ jobs:
         run: ./scripts/build-release.sh
 
       - name: Upload the archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           # Artifact names cannot contain a slash.
           name: dist-${{ strategy.job-index }}
@@ -75,7 +75,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Collect every archive
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: dist-*
           merge-multiple: true
