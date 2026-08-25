@@ -124,6 +124,10 @@ func clockText(millis int32) string {
 	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
 }
 
+// floatText renders a float64 column's bound. It allows scientific notation,
+// which is how a float64 column's extremes read anyway. Decimal values want
+// exactText in decimal.go instead: that one never switches notation, because
+// scientific form hides the decimals the message is about.
 func floatText(v float64) string {
 	return fmt.Sprintf("%g", v)
 }

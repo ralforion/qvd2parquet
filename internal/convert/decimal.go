@@ -469,7 +469,8 @@ func FormatScaled(v *big.Int, scale int32) string {
 }
 
 // exactText renders a float in full decimal notation, using the shortest form
-// that round-trips. That is the representation the scale check reasons about,
+// that round-trips. Not to be confused with floatText in valuerange.go, which
+// renders a float64 column's bound and does allow scientific notation. That is the representation the scale check reasons about,
 // and %v or %g would switch to scientific notation past seven digits, hiding
 // the very decimals in question behind 8.115022364865e+09.
 func exactText(v float64) string {
