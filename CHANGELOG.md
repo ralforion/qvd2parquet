@@ -34,6 +34,19 @@ restarts from it.
 
 ### Changed
 
+- `--decimal-strict` reports up to three offending values per column instead of
+  stopping at the first, with the total so the reader knows how much was not
+  shown. One example rarely settles whether a column holds genuine extra
+  decimals or float64 representation error, which is the question a reader
+  actually has, and finding the rest previously meant leaving the tool.
+- A value in those messages is shown as the double actually holds it, not in
+  scientific notation. A value whose shortest form reads `8115022364.865` is
+  stored as `8115022364.864999771`, and seeing both is what separates
+  representation error from a third decimal that is really in the source. The
+  message names the step it is not a multiple of, `0.001`, rather than a power
+  of ten, and no longer quotes an empty display string for a pure numeric
+  symbol that never had one.
+
 - Each phase reports its own duration. The conversion's timing used to arrive
   only as the last `--progress` line, so `--progress 0` left it as the one
   phase that never accounted for itself while the quality gate always did, and

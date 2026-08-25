@@ -2,7 +2,9 @@ package convert
 
 import (
 	"errors"
+	"github.com/ralforion/qvd2parquet/internal/qvdtest"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/ralforion/qvd2parquet/internal/qvd"
@@ -225,5 +227,89 @@ func TestFormatScaled(t *testing.T) {
 	}
 	if got := FormatScaled(nil, 2); got != "" {
 		t.Errorf("FormatScaled(nil) = %q, want empty", got)
+	}
+}
+
+// --decimal-strict reports several offending values, not just the first. One
+// example rarely settles whether a column holds genuine extra decimals or
+// float64 representation error, and stopping at the first sent a reader to a
+// Qlik script to find the rest.
+func TestDecimalStrictReportsSeveralExamples(t *testing.T) {
+	// Large magnitudes where a third decimal exceeds what a double holds, so
+	// every one of them fails at the inferred scale.
+	var syms []qvd.Symbol
+	for _, v := range []float64{
+		8115022364.865, 7115022364.865, 6115022364.865,
+		5115022364.865, 4115022364.865,
+	} {
+		syms = append(syms, qvdtest.Float(v))
+	}
+	syms = append(syms, qvdtest.Float(12.125))
+
+	ex := &DecimalExtractor{Scale: 3, Strict: true, Source: DecimalNumeric}
+	_, _, err := ResolveDecimalSpec("Preisdifferenzen", syms, ex)
+	if err == nil {
+		t.Fatal("strict mode accepted values it cannot hold exactly")
+	}
+	if !errors.Is(err, ErrDecimalInexact) {
+		t.Fatalf("error does not wrap ErrDecimalInexact: %v", err)
+	}
+	msg := err.Error()
+
+	// The total, so the reader knows how much was not shown.
+	if !strings.Contains(msg, "has 5 such value(s)") {
+		t.Errorf("message does not report the total:\n%s", msg)
+	}
+	if !strings.Contains(msg, "the first 3 shown") {
+		t.Errorf("message does not say the list is truncated:\n%s", msg)
+	}
+	if got := strings.Count(msg, "symbol "); got != StrictExamples {
+		t.Errorf("listed %d examples, want %d:\n%s", got, StrictExamples, msg)
+	}
+
+	// The value as stored, which is what separates float64 noise from a real
+	// third decimal in the source.
+	if !strings.Contains(msg, "8115022364.864999771") {
+		t.Errorf("message does not show what the double actually holds:\n%s", msg)
+	}
+	// Never scientific notation: it hides the decimals in question.
+	if strings.Contains(msg, "e+09") {
+		t.Errorf("value rendered in scientific notation:\n%s", msg)
+	}
+	// A pure float has no display string, so quoting an empty one says nothing.
+	if strings.Contains(msg, `float ""`) {
+		t.Errorf("empty display string quoted for a pure float:\n%s", msg)
+	}
+	// The sentinel's own sentence must appear once, not on every example line.
+	if got := strings.Count(msg, ErrDecimalInexact.Error()); got != 1 {
+		t.Errorf("sentinel text repeated %d times:\n%s", got, msg)
+	}
+}
+
+// Fewer offenders than the cap are all listed, with no truncation note.
+func TestDecimalStrictListsAllWhenFewerThanCap(t *testing.T) {
+	syms := []qvd.Symbol{qvdtest.Float(8115022364.865), qvdtest.Float(12.125)}
+	ex := &DecimalExtractor{Scale: 3, Strict: true, Source: DecimalNumeric}
+	_, _, err := ResolveDecimalSpec("V", syms, ex)
+	if err == nil {
+		t.Fatal("strict mode accepted a value it cannot hold exactly")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "has 1 such value(s)") {
+		t.Errorf("wrong total:\n%s", msg)
+	}
+	if strings.Contains(msg, "shown") {
+		t.Errorf("claimed truncation with nothing truncated:\n%s", msg)
+	}
+}
+
+func TestScaleStep(t *testing.T) {
+	for _, tc := range []struct {
+		scale int32
+		want  string
+	}{{0, "1"}, {1, "0.1"}, {2, "0.01"}, {3, "0.001"}} {
+		if got := scaleStep(tc.scale); got != tc.want {
+			t.Errorf("scaleStep(%d) = %q, want %q", tc.scale, got, tc.want)
+		}
 	}
 }

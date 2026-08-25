@@ -921,6 +921,23 @@ modular sum of digests) rather than an ordered stream hash, so it is valid
 despite unordered chunk delivery. Nulls are marked explicitly in the digest, so
 a null never collides with a zero or an empty string.
 
+`--decimal-strict` fails instead of rounding, and reports up to three offending
+values per column with the total:
+
+```text
+column "VV120" has 5 such value(s), the first 3 shown
+    symbol 0 (float 8115022364.865): stored as 8115022364.864999771, not a multiple of 0.001
+    symbol 1 (float 7115022364.865): stored as 7115022364.864999771, not a multiple of 0.001
+    symbol 2 (float 6115022364.865): stored as 6115022364.864999771, not a multiple of 0.001
+```
+
+Each value is shown twice on purpose: as its shortest form, and as the double
+actually holds it. A value reading `8115022364.865` that is stored as
+`8115022364.864999771` is float64 representation error, and rounding it to the
+column's scale is more faithful than keeping it. One reading `1234.565` stored
+as `1234.565000000` is a genuine third decimal, and the column wants pinning
+with `--schema`. Pair it with `--inspect` to get the answer without converting.
+
 `--quality-report` is written on success and on failure.
 
 The gate defaults to `full`: a conversion nobody checked is not a conversion
