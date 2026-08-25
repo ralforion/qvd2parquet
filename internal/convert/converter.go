@@ -344,7 +344,7 @@ func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema, 
 				FromNumeric: c.DecimalFromNumeric,
 				Rounded:     c.DecimalRounded,
 				NonFinite:   c.NonFiniteNulls,
-				Limit:       strconvFixed(decimalLimit(c.Decimal.Precision, c.Decimal.Scale), int(c.Decimal.Scale)),
+				Limit:       scaledText(scaledLimit(c.Decimal.Precision), c.Decimal.Scale),
 				Used:        DecimalHeadroom(c, f.Profiles[c.SourceIndex]),
 			}
 		}

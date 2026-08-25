@@ -88,14 +88,14 @@ func TestDecimalHeadroomIgnoresNonDecimals(t *testing.T) {
 func TestDecimalLimit(t *testing.T) {
 	for _, tc := range []struct {
 		precision, scale int32
-		want             float64
+		want             string
 	}{
-		{12, 2, 9999999999.99},
-		{4, 2, 99.99},
-		{14, 0, 99999999999999},
+		{12, 2, "9999999999.99"},
+		{4, 2, "99.99"},
+		{14, 0, "99999999999999"},
 	} {
-		if got := decimalLimit(tc.precision, tc.scale); got != tc.want {
-			t.Errorf("decimalLimit(%d, %d) = %v, want %v", tc.precision, tc.scale, got, tc.want)
+		if got := scaledText(scaledLimit(tc.precision), tc.scale); got != tc.want {
+			t.Errorf("limit(%d, %d) = %q, want %q", tc.precision, tc.scale, got, tc.want)
 		}
 	}
 }
@@ -120,4 +120,60 @@ func resolveFixture(t *testing.T, f qvdtest.Field) (*ResolvedSchema, *qvd.File) 
 		t.Fatal(err)
 	}
 	return rs, qf
+}
+
+// A decimal's range and headroom must come from the values the column writes,
+// not from the numeric profile. A dual's decimal may be built from its display
+// string, so a symbol carrying the payload 1000 beside the text "999.99" is
+// written as 999.99 and the profile's 1000 is a value the column never holds.
+// Reading the profile reported a range and a used fraction outside the type's
+// own limit.
+func TestDecimalRangeFollowsDisplayStrings(t *testing.T) {
+	rs, qf := resolveFixture(t, qvdtest.Field{
+		Name: "Betrag", Type: "MONEY", NDec: 2, Dec: ".",
+		Symbols: []qvd.Symbol{
+			qvdtest.DualFloat(1000, "999.99"),
+			qvdtest.DualFloat(2, "2.00"),
+		},
+		Rows: []int{0, 1},
+	})
+	defer qf.Close()
+
+	c := &rs.Columns[0]
+	if !c.DecimalFromText {
+		t.Fatal("fixture no longer resolves from display strings")
+	}
+
+	got := ValueRange(c, qf.Profiles[c.SourceIndex], nil)
+	const want = "2.00 .. 999.99"
+	if got != want {
+		t.Errorf("range = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "1000") {
+		t.Error("the numeric payload leaked into a range built from display strings")
+	}
+
+	// The widest written value is exactly the type's limit, so the fraction is
+	// 1.0 and never above it.
+	used := DecimalHeadroom(c, qf.Profiles[c.SourceIndex])
+	if used > 1.0 {
+		t.Errorf("used fraction = %v, which is outside the column's own type", used)
+	}
+	if used < 0.99 {
+		t.Errorf("used fraction = %v, want about 1.0", used)
+	}
+}
+
+// Nulls carry no value and must not widen a range.
+func TestDecimalRangeIgnoresNulls(t *testing.T) {
+	rs, qf := resolveFixture(t, qvdtest.Field{
+		Name: "V", Type: "REAL", NDec: 2, Dec: ".",
+		Symbols: []qvd.Symbol{qvdtest.Null(), qvdtest.Float(4.25), qvdtest.Float(-1.5)},
+		Rows:    []int{0, 1, 2},
+	})
+	defer qf.Close()
+	c := &rs.Columns[0]
+	if got, want := ValueRange(c, qf.Profiles[c.SourceIndex], nil), "-1.50 .. 4.25"; got != want {
+		t.Errorf("range = %q, want %q", got, want)
+	}
 }

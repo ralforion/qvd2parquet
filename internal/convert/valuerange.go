@@ -60,8 +60,11 @@ func ValueRange(c *ResolvedColumn, p *qvd.ColumnProfile, opts *Options) string {
 		return rangeText(fmt.Sprintf("%d", int64(lo)), fmt.Sprintf("%d", int64(hi)))
 
 	case StrategyDecimal:
-		s := int(c.Decimal.Scale)
-		return rangeText(strconvFixed(lo, s), strconvFixed(hi, s))
+		dlo, dhi, ok := decimalBounds(c)
+		if !ok {
+			return ""
+		}
+		return rangeText(scaledText(dlo, c.Decimal.Scale), scaledText(dhi, c.Decimal.Scale))
 
 	case StrategyFloat64:
 		return rangeText(floatText(lo), floatText(hi))
@@ -116,10 +119,6 @@ func clockText(millis int32) string {
 	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
 }
 
-func strconvFixed(v float64, scale int) string {
-	return fmt.Sprintf("%.*f", scale, v)
-}
-
 func floatText(v float64) string {
 	return fmt.Sprintf("%g", v)
 }
@@ -144,28 +143,61 @@ func DecimalHeadroom(c *ResolvedColumn, p *qvd.ColumnProfile) float64 {
 	if c.Strategy != StrategyDecimal || p == nil {
 		return 0
 	}
-	lo, hi, ok := numericBounds(p)
+	lo, hi, ok := decimalBounds(c)
 	if !ok {
 		return 0
 	}
-	widest := math.Max(math.Abs(lo), math.Abs(hi))
-	limit := decimalLimit(c.Decimal.Precision, c.Decimal.Scale)
-	if limit <= 0 {
+	widest := new(big.Int).Abs(lo)
+	if h := new(big.Int).Abs(hi); h.Cmp(widest) > 0 {
+		widest = h
+	}
+	limit := scaledLimit(c.Decimal.Precision)
+	if limit.Sign() <= 0 {
 		return 0
 	}
-	return widest / limit
+	// Both are scaled by the same power of ten, so the ratio is the fraction
+	// of the type's range in use and needs no conversion back to a decimal.
+	q, _ := new(big.Float).Quo(
+		new(big.Float).SetInt(widest), new(big.Float).SetInt(limit)).Float64()
+	return q
 }
 
-// decimalLimit is the largest magnitude a decimal(precision, scale) holds:
-// 10^(precision-scale) less one unit in the last place.
-func decimalLimit(precision, scale int32) float64 {
-	if precision <= 0 || scale < 0 || precision < scale {
-		return 0
+// decimalBounds spans the values the column will actually write. It reads the
+// pre-scaled integers rather than the numeric profile, because a dual's
+// decimal may be built from its display string: a symbol carrying the payload
+// 1000 beside the text "999.99" is written as 999.99, and the profile's 1000
+// is not a value the column ever holds.
+func decimalBounds(c *ResolvedColumn) (lo, hi *big.Int, ok bool) {
+	for _, v := range c.Scaled {
+		if v == nil {
+			continue // a null, or a value the extractor could not represent
+		}
+		if lo == nil || v.Cmp(lo) < 0 {
+			lo = v
+		}
+		if hi == nil || v.Cmp(hi) > 0 {
+			hi = v
+		}
 	}
-	pow := new(big.Float).SetFloat64(math.Pow(10, float64(precision-scale)))
-	ulp := new(big.Float).SetFloat64(math.Pow(10, -float64(scale)))
-	limit, _ := new(big.Float).Sub(pow, ulp).Float64()
-	return limit
+	return lo, hi, lo != nil
+}
+
+// scaledText renders an integer scaled by 10^scale as a decimal.
+func scaledText(v *big.Int, scale int32) string {
+	return new(big.Rat).SetFrac(v, scaledLimitPow(scale)).FloatString(int(scale))
+}
+
+// scaledLimit is the largest scaled integer a decimal of this precision holds:
+// 10^precision less one, since the scale cancels on both sides of the ratio.
+func scaledLimit(precision int32) *big.Int {
+	if precision <= 0 {
+		return big.NewInt(0)
+	}
+	return new(big.Int).Sub(scaledLimitPow(precision), big.NewInt(1))
+}
+
+func scaledLimitPow(exp int32) *big.Int {
+	return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exp)), nil)
 }
 
 // decimalsNearLimit names the decimal columns at or above
