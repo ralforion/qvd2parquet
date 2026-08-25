@@ -853,9 +853,9 @@ the type policy but not the round trip.
 
 It is not free, and it costs in two places rather than one. The read-back pass
 is the visible half: the whole output is read again and every cell digested,
-single-threaded. The other half is inside the conversion — `full` is the only
-mode that fingerprints values, so each decode worker digests every value as it
-writes it. On a 213-column fixture, holding everything else equal and changing
+split across `--workers` by row group. The other half is inside the conversion
+— `full` is the only mode that fingerprints values, so each decode worker
+digests every value as it writes it. On a 213-column fixture, holding everything else equal and changing
 only the mode, conversion ran at 106k rows/s under `none`, 114k under `numeric`
 and 62k under `full`: the inline digest costs about 40% of decode throughput,
 while `basic` and `numeric` cost nothing there, collecting their metrics from
@@ -956,7 +956,7 @@ to 36 GB; 2.0.0 climbed to 23.9k and held, at 9.3 GB. Comparing the two at any
 single point mid-run says nothing, since they move in opposite directions.
 
 The gate reports its own progress on the `--progress` cadence, because reading
-back a wide file takes minutes and is single-threaded.
+back a wide file still takes a while even split across workers.
 
 Budget for that on a wide file, or name a cheaper mode.
 

@@ -28,7 +28,7 @@ minor one:
 - `--quality-gate` defaults to `full`, so a conversion whose output does not
   match its input now exits 6 where it previously exited 0. The output was
   already wrong in those cases; the gate is what is new. It also makes a
-  default run several times slower -- roughly 4.7x on a wide file -- so a
+  default run several times slower -- roughly 2.6x on a wide file -- so a
   scheduled job should either budget for it or name a cheaper mode.
 
 ### Changed
@@ -54,8 +54,9 @@ minor one:
   mode that fingerprints values, so it is the only one that catches a value
   which survived the type policy but not the round trip. Two consequences to
   plan for. It is not free, and it costs in two places: the gate reads the whole
-  output back and digests every cell, single-threaded, and, because `full` is
-  the only mode that fingerprints values, each decode worker also digests every
+  output back and digests every cell, in parallel across `--workers`, and,
+  because `full` is the only mode that fingerprints values, each decode worker
+  also digests every
   value inside the conversion itself. Changing only the mode on a 213-column
   fixture, conversion ran at 106k rows/s under `none`, 114k under `numeric` and
   62k under `full`, and the whole run took roughly 2.6x as long under `full`.
