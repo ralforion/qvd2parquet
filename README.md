@@ -852,13 +852,13 @@ anybody can trust, and the fingerprints are what catch a value that survived
 the type policy but not the round trip.
 
 It is not free, and it costs in two places rather than one. The read-back pass
-is the visible half: the whole output is read again and every cell digested.
-The other half is inside the conversion — `full` is the only mode that
-fingerprints values, so each decode worker digests every value as it writes it,
-which is why the reported `rows/s` drops as well as the total wall clock. On a
-213-column, 20.6M-row SAP extract on a 16-core Xeon, conversion alone went from
-26.7k rows/s to 22.4k, the read-back arriving on top of that. Only `full`
-carries the inline cost; `basic` and `numeric` collect their metrics from
+is the visible half: the whole output is read again and every cell digested,
+single-threaded. The other half is inside the conversion — `full` is the only
+mode that fingerprints values, so each decode worker digests every value as it
+writes it. On a 213-column fixture, holding everything else equal and changing
+only the mode, conversion ran at 106k rows/s under `none`, 114k under `numeric`
+and 62k under `full`: the inline digest costs about 40% of decode throughput,
+while `basic` and `numeric` cost nothing there, collecting their metrics from
 values already being converted.
 
 When that is too much for a run, name a cheaper mode explicitly:
@@ -939,9 +939,20 @@ The overhead is per cell, not per row, so it grows with width. On a 213-column,
 
 `full` is the only mode that pays part of that inside the conversion rather
 than after it, because only it fingerprints values, and the decode workers
-digest each value as they write it. Measured on real data — a 213-column,
-20.6M-row SAP extract on a 16-core Xeon — conversion alone ran at 26.7k rows/s
-under `none` and 22.4k under `full`, with the read-back pass still to come.
+digest each value as they write it. Changing only the mode on the same fixture,
+conversion ran at 106k rows/s under `none`, 114k under `numeric` and 62k under
+`full`.
+
+Read that against what the mode buys rather than in isolation. On a 213-column,
+20.6M-row SAP extract on a 16-core Xeon, 2.0.0 with `full` still converted
+slightly faster end to end than 1.0.1 with no gate at all — 23.9k against 23.5k
+rows/s — because the memory the release gave back mattered more than the digest
+cost. 1.0.1 peaked at 26.7k early and fell to 23.5k as its resident size climbed
+to 36 GB; 2.0.0 climbed to 23.9k and held, at 9.3 GB. Comparing the two at any
+single point mid-run says nothing, since they move in opposite directions.
+
+The gate reports its own progress on the `--progress` cadence, because reading
+back a wide file takes minutes and is single-threaded.
 
 Budget for that on a wide file, or name a cheaper mode.
 

@@ -54,14 +54,13 @@ minor one:
   mode that fingerprints values, so it is the only one that catches a value
   which survived the type policy but not the round trip. Two consequences to
   plan for. It is not free, and it costs in two places: the gate reads the whole
-  output back and digests every cell, and, because `full` is the only mode that
-  fingerprints values, each decode worker also digests every value inside the
-  conversion itself -- so the reported `rows/s` drops as well as the total wall
-  clock. Together that is roughly 4.7x the conversion on a 213-column fixture,
-  and it grows with width; on a 213-column, 20.6M-row SAP extract on a 16-core
-  Xeon, conversion alone went from 26.7k rows/s to 22.4k before the read-back
-  began. Name `basic`, `numeric` or `none` when throughput matters -- neither
-  carries the inline cost. And a conversion that previously exited 0 can now exit 6, because
+  output back and digests every cell, single-threaded, and, because `full` is
+  the only mode that fingerprints values, each decode worker also digests every
+  value inside the conversion itself. Changing only the mode on a 213-column
+  fixture, conversion ran at 106k rows/s under `none`, 114k under `numeric` and
+  62k under `full`, and the whole run took roughly 4.7x as long under `full`.
+  Name `basic` or `numeric` when throughput matters: neither carries the inline
+  cost. And a conversion that previously exited 0 can now exit 6, because
   the file is checked where it previously was not -- a run that starts failing
   under this default was already producing that output, the gate is only now
   reporting it. Validation still reads the temporary file before the final
@@ -119,6 +118,11 @@ minor one:
   finally handed its record over. Measured on a 213-column fixture, ordering
   costs no throughput and slightly less memory, the window being tighter than
   what was previously in flight.
+
+- The quality gate reports progress on the `--progress` cadence, which is on by
+  default. It reads the whole output back single-threaded, which on a wide file
+  runs for minutes; it previously printed nothing until it finished, so a run
+  that was working looked like one that had hung.
 
 ### Fixed
 

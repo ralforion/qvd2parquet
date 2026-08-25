@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -17,8 +18,11 @@ import (
 // RunQualityGate validates the written Parquet file against the metrics
 // collected while converting. parquetPath is read directly, so the caller can
 // validate a temporary file before renaming it into place.
+// logf may be nil. When it is not, and --progress is enabled, the read-back
+// reports rows verified as it goes: on a wide file the gate runs for minutes
+// with nothing else to show for itself, which reads as a hang.
 func RunQualityGate(inputPath, outputPath, parquetPath string, rs *ResolvedSchema,
-	source *Metrics, opts *Options) (*QualityReport, error) {
+	source *Metrics, opts *Options, logf Logf) (*QualityReport, error) {
 
 	rep := &QualityReport{
 		Input:      inputPath,
@@ -28,7 +32,7 @@ func RunQualityGate(inputPath, outputPath, parquetPath string, rs *ResolvedSchem
 		RowsSource: source.Rows,
 	}
 
-	pqMetrics, pqRows, pqSchema, err := readParquetMetrics(parquetPath, rs, opts)
+	pqMetrics, pqRows, pqSchema, err := readParquetMetrics(parquetPath, rs, opts, logf)
 	if err != nil {
 		rep.Passed = false
 		rep.Errors = append(rep.Errors, err.Error())
@@ -153,7 +157,7 @@ func compareSchemas(want, got *arrow.Schema) error {
 
 // readParquetMetrics reopens the written Parquet file and recomputes the same
 // metrics from its data, never reusing the in-memory batches from the writer.
-func readParquetMetrics(path string, rs *ResolvedSchema, opts *Options) (*Metrics, int64, *arrow.Schema, error) {
+func readParquetMetrics(path string, rs *ResolvedSchema, opts *Options, logf Logf) (*Metrics, int64, *arrow.Schema, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("open Parquet output %s: %w", path, err)
@@ -184,6 +188,25 @@ func readParquetMetrics(path string, rs *ResolvedSchema, opts *Options) (*Metric
 	defer rr.Release()
 
 	hash := opts.Quality == QualityFull
+	// The gate re-reads the whole output single-threaded, which on a wide file
+	// takes minutes. Report the same way conversion does, on the same
+	// --progress cadence, so the run does not look stalled.
+	totalRows := rdr.NumRows()
+	gateStart := time.Now()
+	nextProgress := opts.ProgressEvery
+	report := func(rows int64) {
+		if logf == nil || opts.ProgressEvery <= 0 || rows < nextProgress {
+			return
+		}
+		el := time.Since(gateStart)
+		logf("quality gate %s: verified %d/%d rows in %s (%.0f rows/s)",
+			opts.Quality, rows, totalRows, el.Round(time.Millisecond),
+			float64(rows)/el.Seconds())
+		for rows >= nextProgress {
+			nextProgress += opts.ProgressEvery
+		}
+	}
+
 	var rows int64
 	for {
 		rec, err := rr.Read()
@@ -204,6 +227,7 @@ func readParquetMetrics(path string, rs *ResolvedSchema, opts *Options) (*Metric
 			return nil, 0, nil, err
 		}
 		rec.Release()
+		report(rows)
 	}
 	metrics.Rows = rows
 	return metrics, rows, schema, nil

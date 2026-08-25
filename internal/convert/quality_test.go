@@ -1,8 +1,11 @@
 package convert
 
 import (
+	"context"
+	"fmt"
 	"math"
 	"math/big"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -227,4 +230,47 @@ func mustBig(s string) *big.Int {
 		panic("bad big int " + s)
 	}
 	return v
+}
+
+// The gate reads the whole output back single-threaded, which on a wide file
+// runs for minutes. It must report progress while it does, or a working run
+// looks like a hung one.
+func TestQualityGateReportsProgress(t *testing.T) {
+	const rows = 5000
+	in := buildFixture(t, sampleTable(rows))
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Quality = QualityFull
+	opts.ProgressEvery = 1000
+
+	var lines []string
+	logf := func(format string, args ...any) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	if _, _, err := Run(context.Background(), in, out, &opts, logf); err != nil {
+		t.Fatal(err)
+	}
+
+	var verified int
+	for _, l := range lines {
+		if strings.Contains(l, "quality gate") && strings.Contains(l, "verified") {
+			verified++
+		}
+	}
+	if verified == 0 {
+		t.Errorf("the gate reported no progress; lines were:\n%s", strings.Join(lines, "\n"))
+	}
+
+	// --progress 0 silences the gate as it silences conversion.
+	opts.ProgressEvery = 0
+	lines = nil
+	out2 := filepath.Join(t.TempDir(), "out2.parquet")
+	if _, _, err := Run(context.Background(), in, out2, &opts, logf); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range lines {
+		if strings.Contains(l, "verified") {
+			t.Errorf("--progress 0 should silence the gate, got: %s", l)
+		}
+	}
 }

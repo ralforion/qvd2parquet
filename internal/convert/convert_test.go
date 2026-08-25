@@ -361,7 +361,7 @@ func TestQualityGateDetectsTruncatedOutput(t *testing.T) {
 	qf, rs, metrics := reconvert(t, in, &opts)
 	defer qf.Close()
 	opts.Quality = QualityBasic
-	report, err := RunQualityGate(in, out, truncated, rs, metrics, &opts)
+	report, err := RunQualityGate(in, out, truncated, rs, metrics, &opts, nil)
 	if err != nil {
 		t.Fatalf("RunQualityGate: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestQualityGateDetectsRowCountMismatch(t *testing.T) {
 
 	metrics.Rows++ // pretend one more source row than was written
 	opts.Quality = QualityBasic
-	report, err := RunQualityGate(in, out, out, rs, metrics, &opts)
+	report, err := RunQualityGate(in, out, out, rs, metrics, &opts, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +449,7 @@ func TestQualityGateDetectsChangedAggregates(t *testing.T) {
 			tc.corrupt(metrics)
 			o := opts
 			o.Quality = tc.mode
-			report, err := RunQualityGate(in, out, out, rs, metrics, &o)
+			report, err := RunQualityGate(in, out, out, rs, metrics, &o, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -487,7 +487,7 @@ func TestFloatSumWithinTolerancePasses(t *testing.T) {
 	c.floatSum += math.Abs(c.floatSum) * 1e-12 // well inside the default 1e-9
 
 	opts.Quality = QualityNumeric
-	report, err := RunQualityGate(in, out, out, rs, metrics, &opts)
+	report, err := RunQualityGate(in, out, out, rs, metrics, &opts, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
