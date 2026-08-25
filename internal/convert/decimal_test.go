@@ -322,3 +322,32 @@ func TestScaleStep(t *testing.T) {
 		}
 	}
 }
+
+// A failure that is not about decimal scale keeps its own meaning. Gathering
+// every error under the inexact-scale heading told a reader their value did
+// not fit the scale and offered --decimal-strict=false, when the symbol simply
+// had no display string to read a decimal from and rounding cannot help.
+func TestDecimalStrictKeepsNonScaleErrors(t *testing.T) {
+	// --decimal-source=text over a pure float: no display string exists.
+	syms := []qvd.Symbol{qvdtest.Float(1.5)}
+	ex := &DecimalExtractor{Scale: 2, Strict: true, Source: DecimalText}
+
+	_, _, err := ResolveDecimalSpec("V", syms, ex)
+	if err == nil {
+		t.Fatal("a symbol with no display string was accepted")
+	}
+	if errors.Is(err, ErrDecimalInexact) {
+		t.Errorf("a non-scale failure was reported as an inexact scale: %v", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "no display string") {
+		t.Errorf("the original reason was lost: %v", err)
+	}
+	if strings.Contains(msg, "--decimal-strict=false") {
+		t.Errorf("advises a flag that cannot help: %v", err)
+	}
+	// The column and symbol are still named, so the value can be found.
+	if !strings.Contains(msg, `column "V"`) || !strings.Contains(msg, "symbol 0") {
+		t.Errorf("message does not locate the value: %v", err)
+	}
+}

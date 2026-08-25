@@ -415,6 +415,15 @@ func ResolveDecimalSpec(colName string, symbols []qvd.Symbol, ex *DecimalExtract
 			continue // leaves scaled[i] nil, which is written as null
 		}
 		if err != nil {
+			if !errors.Is(err, ErrDecimalInexact) {
+				// Not a scale problem: a symbol with no display string under
+				// --decimal-source=text cannot be fixed by rounding, so it
+				// must keep its own wording rather than be gathered under a
+				// heading about decimal scale and offered a flag that has no
+				// bearing on it.
+				return DecimalSpec{}, nil, fmt.Errorf("column %q symbol %d (%s): %w",
+					colName, i, symbolText(s), err)
+			}
 			// Keep scanning. One example rarely settles whether a column
 			// holds real extra decimals or float64 noise, and stopping at the
 			// first sent a reader to a Qlik script to find the rest.
