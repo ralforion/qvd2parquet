@@ -119,8 +119,15 @@ qvd2parquet --inspect [options] input.qvd
   -decimal-source auto       Decimal extraction: auto|text|numeric
   -decimal-strict            Fail instead of rounding when a value does not fit its scale
   -compression zstd          Parquet compression: zstd|snappy|gzip|uncompressed
+<<<<<<< HEAD
   -batch-rows 65536          Rows per Arrow batch and Parquet row group
   -workers 0                 Decode workers, 0 means one per 2 CPUs (minimum 2)
+=======
+  -batch-rows 0              Rows per Arrow batch, 0 sizes it from the column
+                             count to hold in-flight memory steady
+  -row-group-rows 65536      Rows per Parquet row group
+  -workers 0                 Decode workers, 0 means one per 4 CPUs (minimum 2)
+>>>>>>> c3d47c3 (Separate the Arrow batch size from the Parquet row group size)
   -timezone none             none|Local|UTC|IANA timezone name
   -schema path.json          Explicit schema override
   -schema-report path.json   Write the inferred schema/profile report
@@ -909,10 +916,35 @@ The overhead is per cell, not per row, so it grows with width. On a 213-column,
 
 Budget for that on a wide file, or name a cheaper mode.
 
-Batch size (`--batch-rows`) peaks around 16k-64k rows; larger batches trade
-throughput for memory. Read that benchmark with the clamp above in mind: batch
-size also sets the chunk count, so on a fixture this size the largest batches
-leave too few chunks to keep every worker busy.
+Batch size and row group size are separate settings, because they size
+different things. `--batch-rows` sizes what is held in memory: a batch lives in
+its worker and again in the queue to the writer, so it costs roughly
+`rows * columns * 16 bytes`. `--row-group-rows` sizes the unit a reader scans
+and a dictionary is built over, which is what drives output size.
+
+`--batch-rows=0`, the default, picks a row count that holds about 2M cells,
+between 4096 and 65536 rows. A narrow file therefore still batches 65536 rows,
+while a 213-column file batches ~9.4k -- so in-flight memory stays put instead
+of growing with width. On that 213-column, 1M-row fixture, at the same row
+group size:
+
+| `--batch-rows` | workers | rows/s | peak RSS |
+| --- | --- | --- | --- |
+| 65536 | 4 | 52.2k | 7.3 GB |
+| 65536 | 16 | 57.7k | 8.5 GB |
+| 0 (auto, ~9.4k rows) | 4 | 54.7k | 1.8 GB |
+| 0 (auto, ~9.4k rows) | 16 | 95.1k | 5.5 GB |
+
+The memory saving is the direct effect, but the interesting column is
+throughput. At a fixed 65536-row batch, four times the workers buys 10%,
+because each one carries a batch of `65536 * 213` cells and the machine spends
+its time moving memory. Sized by cells, the same workers scale: the batch size
+was what stopped them.
+
+Lowering `--batch-rows` by hand used to shrink the row groups with it, which
+cost far more in output size than it saved in memory -- on this fixture a
+4096-row batch tripled the file, to 486 MiB. Row group size is now
+`--row-group-rows` and holds still.
 
 Reproduce:
 

@@ -49,13 +49,18 @@ type Converter struct {
 	Schema  *ResolvedSchema
 	File    *qvd.File
 	Options *Options
+	// BatchRows is Options.BatchRows resolved against this file's width, so
+	// it is always a usable size even when the option asks for automatic. Use
+	// it rather than Options.BatchRows when sizing anything per batch.
+	BatchRows int
 
 	converters []columnConverter
 }
 
 // NewConverter builds the per-column conversion functions.
 func NewConverter(f *qvd.File, rs *ResolvedSchema, opts *Options) (*Converter, error) {
-	c := &Converter{Schema: rs, File: f, Options: opts}
+	c := &Converter{Schema: rs, File: f, Options: opts,
+		BatchRows: opts.EffectiveBatchRows(len(rs.Columns))}
 	c.converters = make([]columnConverter, len(rs.Columns))
 	for i := range rs.Columns {
 		rc := &rs.Columns[i]

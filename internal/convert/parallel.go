@@ -109,7 +109,7 @@ type ProgressFunc func(rows int64)
 // order is not preserved.
 func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressFunc) (*Metrics, error) {
 	f := c.File
-	chunks := Chunks(f.NoOfRecords, c.Options.BatchRows, f.RecordByteSize, f.RecordStart)
+	chunks := Chunks(f.NoOfRecords, c.BatchRows, f.RecordByteSize, f.RecordStart)
 	total := NewMetrics(c.Schema)
 
 	if len(chunks) == 0 {
@@ -273,8 +273,8 @@ func (c *Converter) newWorker() *worker {
 	w := &worker{
 		c:      c,
 		file:   c.File.FileHandle(),
-		batch:  c.NewBatch(mem, c.Options.BatchRows),
-		raw:    make([]byte, c.Options.BatchRows*c.File.RecordByteSize),
+		batch:  c.NewBatch(mem, c.BatchRows),
+		raw:    make([]byte, c.BatchRows*c.File.RecordByteSize),
 		symIdx: make([]int64, len(c.File.Columns)),
 		hash:   c.Options.Quality == QualityFull,
 		mem:    mem,
