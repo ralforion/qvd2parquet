@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -12,7 +13,12 @@ import (
 // process: signal handling and exit codes are only observable from outside.
 func buildCLI(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "qvd2parquet")
+	name := "qvd2parquet"
+	if runtime.GOOS == "windows" {
+		// Windows will not execute a file without the extension.
+		name += ".exe"
+	}
+	bin := filepath.Join(t.TempDir(), name)
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
