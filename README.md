@@ -846,23 +846,32 @@ a fraction of `full`.
 Measured on an Apple M3 Max (16 cores) over a 200k-row synthetic fixture with
 integer, high-cardinality string, decimal, date and nullable double columns.
 
-Decode only (no Parquet writing):
+Decode only (no Parquet writing), the fixture split into ~98 chunks:
 
 | Workers | Rows/s |
 | --- | --- |
-| 1 | 5.5M |
-| 2 | 8.1M |
-| 4 | 14.7M |
-| 8 | 14.2M |
-| NumCPU | 15.5M |
+| 1 | 4.6M |
+| 2 | 8.3M |
+| 4 | 13.6M |
+| 8 | 18.8M |
+| `--workers=0` default, 4 here | 13.8M |
+| one per CPU, 16 here | 28.6M |
 
-Scaling flattens around 4-8 workers on this fixture because symbol resolution
-becomes memory-bound. Only decoding is parallel — the Parquet writer is a single
-goroutine — so the full pipeline stops scaling well before one worker per CPU,
-while each extra worker still costs its share of in-flight memory. That is why
-`--workers=0` resolves to one worker per four CPUs (minimum 2) rather than one
-per CPU. Raise it if the machine has headroom and the file is narrow; lower it
-to cut peak memory further.
+Decoding is the parallel half of the pipeline, and it scales: 6x on 16 CPUs.
+
+An earlier version of this table showed it flattening after four workers. That
+was an artifact. `WorkerCount` clamps to the number of chunks, and at the
+default 65536-row batch this fixture is only four chunks, so the `8` and
+`NumCPU` rows were both measuring four workers. The benchmark now uses a small
+batch and reports the worker count each case actually ran, so a clamp cannot
+hide in the numbers again.
+
+So `--workers=0` resolving to one per four CPUs is a memory decision, not a
+free one: it gives up decode throughput to hold in-flight Arrow memory down,
+which on a wide file is the binding constraint (see [Memory](#memory)). Raise
+it when the machine has headroom for the extra batches. Only decoding is
+parallel — the Parquet writer is a single goroutine — so the full pipeline
+scales less steeply than this table.
 
 Full pipeline including Parquet writing:
 
@@ -899,7 +908,9 @@ The overhead is per cell, not per row, so it grows with width. On a 213-column,
 Budget for that on a wide file, or name a cheaper mode.
 
 Batch size (`--batch-rows`) peaks around 16k-64k rows; larger batches trade
-throughput for memory.
+throughput for memory. Read that benchmark with the clamp above in mind: batch
+size also sets the chunk count, so on a fixture this size the largest batches
+leave too few chunks to keep every worker busy.
 
 Reproduce:
 

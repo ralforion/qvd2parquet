@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/ralforion/qvd2parquet/internal/qvd"
@@ -74,16 +75,33 @@ func benchFixture(b *testing.B, rows int) string {
 
 // BenchmarkDecode measures QVD read and Arrow batch construction without any
 // Parquet writing.
+//
+// The batch size is small on purpose. WorkerCount clamps to the number of
+// chunks, and at a 65536-row batch this 200k-row fixture is only four chunks,
+// so every case above four workers measured four of them and the curve looked
+// like it flattened when it was simply pinned. Each case reports the worker
+// count it actually ran, so a clamp can never hide again.
 func BenchmarkDecode(b *testing.B) {
-	for _, workers := range []int{1, 2, 4, 8, 0} {
-		name := fmt.Sprintf("workers=%d", workers)
-		if workers == 0 {
-			name = "workers=numcpu"
-		}
-		b.Run(name, func(b *testing.B) {
-			const rows = 200000
+	const (
+		rows = 200000
+		// ~98 chunks: comfortably more than one per CPU on a CI machine.
+		batchRows = 2048
+	)
+	for _, tc := range []struct {
+		name    string
+		workers int
+	}{
+		{"workers=1", 1},
+		{"workers=2", 2},
+		{"workers=4", 4},
+		{"workers=8", 8},
+		{"workers=default", 0}, // whatever DefaultWorkers() resolves to
+		{"workers=numcpu", runtime.NumCPU()},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
 			in := benchFixture(b, rows)
-			conv := benchConverter(b, in, workers)
+			conv := benchConverter(b, in, tc.workers, batchRows)
+			chunks := len(Chunks(rows, batchRows, conv.File.RecordByteSize, conv.File.RecordStart))
 			b.ResetTimer()
 			b.SetBytes(int64(rows))
 			for i := 0; i < b.N; i++ {
@@ -92,6 +110,7 @@ func BenchmarkDecode(b *testing.B) {
 				}
 			}
 			b.ReportMetric(float64(rows*b.N)/b.Elapsed().Seconds(), "rows/s")
+			b.ReportMetric(float64(WorkerCount(tc.workers, chunks)), "workers")
 		})
 	}
 }
@@ -183,7 +202,9 @@ func testBenchOptions() Options {
 	return o
 }
 
-func benchConverter(b *testing.B, in string, workers int) *Converter {
+// benchConverter builds a converter over in, with an explicit worker count and
+// batch size so a benchmark can control both independently of the defaults.
+func benchConverter(b *testing.B, in string, workers, batchRows int) *Converter {
 	b.Helper()
 	qf, err := qvd.Open(in)
 	if err != nil {
@@ -195,6 +216,7 @@ func benchConverter(b *testing.B, in string, workers int) *Converter {
 	}
 	opts := testBenchOptions()
 	opts.Workers = workers
+	opts.BatchRows = batchRows
 	if err := opts.Validate(); err != nil {
 		b.Fatal(err)
 	}

@@ -43,6 +43,14 @@ new flag or a new value for an existing one.
 
 ### Fixed
 
+- `BenchmarkDecode` measured four workers in every case above four. The
+  fixture is four chunks at the default batch size and `WorkerCount` clamps to
+  the chunk count, so the worker-scaling table in the README was reporting a
+  plateau that was the clamp rather than the code. The benchmark now uses a
+  batch small enough to keep every worker fed, names the automatic case
+  `workers=default` instead of `workers=numcpu`, measures one per CPU
+  separately, and reports the worker count each case actually ran.
+
 - Decode workers no longer serialize their reads on Windows. Every worker read
   its chunks through the one `*os.File` opened for the input, and Windows -
   unlike Unix `pread`, which needs no lock - implements `ReadAt` by taking that
