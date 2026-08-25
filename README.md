@@ -801,6 +801,16 @@ Parquet file holds the same multiset of rows as the QVD but not in the same
 physical order. Every quality metric is order-independent, so validation is
 unaffected. Do not rely on physical row order in downstream queries.
 
+This reaches into row groups too, and has since parallel decoding existed. A
+row group is filled from whichever chunks finish while it is open, so on a
+sorted input its per-column min/max cover a wider range than the rows it holds.
+On a 500k-row fixture keyed by an ascending `DocNo`, the spans covered by the
+row groups summed to 3.1x and 3.8x the row count on two runs of the same input,
+against exactly 1.0x at `--workers=1`. Row-group statistics are therefore
+weaker than the data would allow, and how much weaker varies run to run. If a
+downstream engine relies on row-group skipping over a sorted key, convert that
+file with `--workers=1`.
+
 On a failure the context is cancelled, in-flight chunks are drained, and the
 temporary output is removed.
 
