@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -532,8 +533,24 @@ func TestWorkerCount(t *testing.T) {
 	if got := WorkerCount(8, 3); got != 3 {
 		t.Errorf("WorkerCount should not exceed the chunk count, got %d", got)
 	}
-	if got := WorkerCount(0, 100); got < 1 {
-		t.Errorf("WorkerCount(0, 100) = %d, want at least 1", got)
+	if got := WorkerCount(0, 100); got != DefaultWorkers() {
+		t.Errorf("WorkerCount(0, 100) = %d, want the default %d", got, DefaultWorkers())
+	}
+}
+
+// The automatic worker count stays well under one per CPU: only decoding is
+// parallel, and every extra worker costs in-flight memory that dominates
+// resident size on a wide file.
+func TestDefaultWorkers(t *testing.T) {
+	got := DefaultWorkers()
+	if got < MinDefaultWorkers {
+		t.Errorf("DefaultWorkers() = %d, want at least the floor %d", got, MinDefaultWorkers)
+	}
+	if want := runtime.NumCPU() / 4; want >= MinDefaultWorkers && got != want {
+		t.Errorf("DefaultWorkers() = %d, want NumCPU/4 = %d", got, want)
+	}
+	if got > runtime.NumCPU() && runtime.NumCPU() >= MinDefaultWorkers {
+		t.Errorf("DefaultWorkers() = %d, must not exceed NumCPU = %d", got, runtime.NumCPU())
 	}
 }
 

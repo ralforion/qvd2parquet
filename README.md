@@ -120,7 +120,7 @@ qvd2parquet --inspect [options] input.qvd
   -decimal-strict            Fail instead of rounding when a value does not fit its scale
   -compression zstd          Parquet compression: zstd|snappy|gzip|uncompressed
   -batch-rows 65536          Rows per Arrow batch and Parquet row group
-  -workers 0                 Decode workers, 0 means runtime.NumCPU()
+  -workers 0                 Decode workers, 0 means one per 4 CPUs (minimum 2)
   -timezone none             none|Local|UTC|IANA timezone name
   -schema path.json          Explicit schema override
   -schema-report path.json   Write the inferred schema/profile report
@@ -240,18 +240,18 @@ first result.
 ### Parallelism
 
 `--file-workers` converts several files at once and **divides the decode
-workers between them**, so the total stays near one per CPU:
+workers between them**, so the total stays near the default worker count:
 
 ```text
 $ qvd2parquet --out-dir out --file-workers 4 ./qvds
 qvd2parquet: converting 50 file(s), 4 at a time, 4 decode worker(s) each
 ```
 
-The default is `1`: one file at a time, using every core to decode it. Raise it
-for many small files, where per-file parallelism beats per-chunk. This is the
-main reason folder conversion is built in rather than left to a shell loop —
-four separate processes would each start `NumCPU` workers, oversubscribing the
-machine fourfold.
+The default is `1`: one file at a time, decoding it with the default worker
+count. Raise it for many small files, where per-file parallelism beats
+per-chunk. This is the main reason folder conversion is built in rather than
+left to a shell loop — four separate processes would each start their own full
+set of workers, oversubscribing the machine fourfold.
 
 ### The log
 
@@ -837,8 +837,12 @@ Decode only (no Parquet writing):
 | NumCPU | 15.5M |
 
 Scaling flattens around 4-8 workers on this fixture because symbol resolution
-becomes memory-bound. The `--workers=0` default (one per CPU) is a good starting
-point; lower it to reduce peak memory.
+becomes memory-bound. Only decoding is parallel — the Parquet writer is a single
+goroutine — so the full pipeline stops scaling well before one worker per CPU,
+while each extra worker still costs its share of in-flight memory. That is why
+`--workers=0` resolves to one worker per four CPUs (minimum 2) rather than one
+per CPU. Raise it if the machine has headroom and the file is narrow; lower it
+to cut peak memory further.
 
 Full pipeline including Parquet writing:
 
@@ -878,7 +882,8 @@ go test ./internal/convert -run XXX -bench . -benchtime 3x
 Peak memory is roughly:
 
 - the symbol tables of the selected columns, plus
-- `workers * batch-rows` of Arrow builder memory, plus
+- `workers * batch-rows * columns` of Arrow builder memory — on a wide file
+  this dominates, at roughly 16 bytes per in-flight cell — plus
 - Parquet writer buffers, plus
 - one `batch-rows * RecordByteSize` scratch buffer per worker.
 

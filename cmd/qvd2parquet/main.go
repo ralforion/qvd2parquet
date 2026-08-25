@@ -120,7 +120,7 @@ func run() int {
 		decStrict     = fs.Bool("decimal-strict", def.DecimalStrict, "Fail instead of rounding when a decimal value does not fit its scale")
 		compression   = fs.String("compression", def.Compression, "Parquet compression: zstd|snappy|gzip|uncompressed")
 		batchRows     = fs.Int("batch-rows", def.BatchRows, "Rows per Arrow batch and Parquet row group")
-		workers       = fs.Int("workers", def.Workers, "Decode workers, 0 means runtime.NumCPU()")
+		workers       = fs.Int("workers", def.Workers, "Decode workers, 0 means one per 4 CPUs (minimum 2)")
 		timezone      = fs.String("timezone", def.TimezoneName, "none|Local|UTC|IANA timezone name for date/time conversion; none writes a naive wall clock")
 		schemaPath    = fs.String("schema", "", "Optional explicit schema override JSON")
 		schemaReport  = fs.String("schema-report", "", "Write the inferred schema/profile report to this path")

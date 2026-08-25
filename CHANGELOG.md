@@ -11,6 +11,23 @@ new flag or a new value for an existing one.
 
 ## [Unreleased]
 
+### Changed
+
+- `--workers=0` now resolves to one decode worker per four CPUs, with a floor
+  of two, instead of one per CPU. Only decoding is parallel -- the Parquet
+  writer is a single goroutine -- so the full pipeline stops scaling well
+  before one worker per CPU, while every extra worker still costs its share of
+  in-flight Arrow memory. On a wide file that memory is roughly
+  `workers * batch-rows * columns * 16 bytes` and dominates resident size: a
+  213-column file on a 16-core machine held around 9 GB at one worker per CPU
+  and hit peak throughput at 8-12 workers, so the extra workers were buying
+  memory rather than speed. On a hyper-threaded box the new default lands near
+  that peak. This changes only how much of the machine a conversion uses, not
+  what any file converts to, so it stays inside the compatibility promise
+  above. Pass `--workers` explicitly to override it in either direction.
+- `--file-workers` divides the same automatic budget, so batch mode and
+  single-file mode now agree on how much of the machine to use.
+
 ## [1.0.1] - 2026-08-23
 
 ### Fixed

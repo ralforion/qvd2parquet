@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -351,7 +350,7 @@ func splitWorkerBudget(fileWorkers, decodeWorkers, files int) (int, int) {
 	}
 	budget := decodeWorkers
 	if budget <= 0 {
-		budget = runtime.NumCPU()
+		budget = DefaultWorkers()
 	}
 	perFile := budget / fileWorkers
 	if perFile < 1 {

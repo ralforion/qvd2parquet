@@ -62,11 +62,31 @@ func Chunks(rows int64, batchRows int, recordSize int, recordStart int64) []Deco
 	return out
 }
 
+// MinDefaultWorkers is the floor under the automatic worker count, so a small
+// machine still decodes in parallel.
+const MinDefaultWorkers = 2
+
+// DefaultWorkers is the worker count --workers=0 resolves to: one per four
+// CPUs, never fewer than MinDefaultWorkers.
+//
+// It is deliberately below runtime.NumCPU(). Only decoding is parallel; the
+// Parquet writer is a single goroutine, so throughput stops scaling well
+// before one worker per CPU. Every extra worker still costs its share of
+// in-flight memory, which on a wide file is roughly
+// workers * batch-rows * columns * 16 bytes and dominates resident size.
+func DefaultWorkers() int {
+	n := runtime.NumCPU() / 4
+	if n < MinDefaultWorkers {
+		n = MinDefaultWorkers
+	}
+	return n
+}
+
 // WorkerCount resolves the --workers option.
 func WorkerCount(requested int, chunks int) int {
 	n := requested
 	if n <= 0 {
-		n = runtime.NumCPU()
+		n = DefaultWorkers()
 	}
 	if chunks > 0 && n > chunks {
 		n = chunks

@@ -215,6 +215,14 @@ func TestSplitWorkerBudget(t *testing.T) {
 				gotFiles, gotPer, tc.decode)
 		}
 	}
+
+	// An unset --workers divides the automatic default, not one per CPU, so
+	// batch mode and single-file mode agree on how much of the machine to use.
+	files, perFile := splitWorkerBudget(2, 0, 10)
+	if want := DefaultWorkers() / 2; files != 2 || perFile != max(want, 1) {
+		t.Errorf("splitWorkerBudget(2, 0, 10) = %d, %d; want 2, %d",
+			files, perFile, max(want, 1))
+	}
 }
 
 // Files convert correctly when several run at once.
