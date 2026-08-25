@@ -19,6 +19,18 @@ import (
 // It returns an empty string for columns whose range carries no information,
 // such as text, and for any value the conversion itself could not represent.
 func ValueRange(c *ResolvedColumn, p *qvd.ColumnProfile, opts *Options) string {
+	// Decimals read the values they will write and need no profile at all. A
+	// column pinned to decimal by --schema may hold nothing but text symbols,
+	// which have no numeric bounds: requiring them first left such a column
+	// with a headroom figure and no range to read it against.
+	if c.Strategy == StrategyDecimal {
+		lo, hi, ok := decimalBounds(c)
+		if !ok {
+			return ""
+		}
+		return rangeText(scaledText(lo, c.Decimal.Scale), scaledText(hi, c.Decimal.Scale))
+	}
+
 	if p == nil {
 		return ""
 	}
@@ -58,13 +70,6 @@ func ValueRange(c *ResolvedColumn, p *qvd.ColumnProfile, opts *Options) string {
 
 	case StrategyInt64:
 		return rangeText(fmt.Sprintf("%d", int64(lo)), fmt.Sprintf("%d", int64(hi)))
-
-	case StrategyDecimal:
-		dlo, dhi, ok := decimalBounds(c)
-		if !ok {
-			return ""
-		}
-		return rangeText(scaledText(dlo, c.Decimal.Scale), scaledText(dhi, c.Decimal.Scale))
 
 	case StrategyFloat64:
 		return rangeText(floatText(lo), floatText(hi))

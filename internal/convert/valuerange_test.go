@@ -177,3 +177,53 @@ func TestDecimalRangeIgnoresNulls(t *testing.T) {
 		t.Errorf("range = %q, want %q", got, want)
 	}
 }
+
+// A column pinned to decimal by --schema may hold nothing but text symbols.
+// Those have no numeric bounds, so requiring them before reaching the decimal
+// branch left the column with a headroom figure and no range to read it
+// against.
+func TestDecimalRangeOverTextSymbols(t *testing.T) {
+	path := buildFixture(t, qvdtest.Table{Name: "T", Fields: []qvdtest.Field{{
+		Name: "Betrag", Type: "ASCII",
+		Symbols: []qvd.Symbol{qvdtest.Str("2.00"), qvdtest.Str("999.99")},
+		Rows:    []int{0, 1},
+	}}})
+	qf, err := qvd.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer qf.Close()
+	if err := qf.ReadSymbols(qvd.UnknownSymbolError); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	if err := opts.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	override := &SchemaOverride{Columns: map[string]ColumnOverride{
+		"Betrag": {Type: "decimal", Precision: 5, Scale: 2},
+	}}
+	rs, err := ResolveSchema(qf, &opts, override)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := &rs.Columns[0]
+	if c.Strategy != StrategyDecimal {
+		t.Fatalf("override did not pin the column to decimal, got %v", c.Strategy)
+	}
+	prof := qf.Profiles[c.SourceIndex]
+	if _, _, ok := numericBounds(prof); ok {
+		t.Fatal("fixture no longer holds text-only symbols")
+	}
+
+	got := ValueRange(c, prof, &opts)
+	const want = "2.00 .. 999.99"
+	if got != want {
+		t.Errorf("range = %q, want %q", got, want)
+	}
+	// The headroom was already right; the range has to agree with it.
+	if used := DecimalHeadroom(c, prof); used < 0.99 || used > 1.0 {
+		t.Errorf("used fraction = %v, want about 1.0", used)
+	}
+}
