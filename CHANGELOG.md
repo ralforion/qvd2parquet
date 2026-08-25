@@ -43,22 +43,24 @@ new flag or a new value for an existing one.
   rename, so a failed gate never leaves a final-looking output behind.
 
 - `--batch-rows` and the Parquet row group size are no longer the same number.
-  Row group size moves to a new `--row-group-rows`, still 65536, so row groups
-  hold the same number of rows as before. What a row group holds is a separate
-  matter and is not changed by this: a row group has been filled from whichever
-  chunks finish while it is open since parallel decoding existed, so on a
-  sorted input its statistics already covered a wider range than its rows, by a
-  factor that varies run to run. Measured on a 500k-row fixture keyed by an
-  ascending integer, the spans covered by the row groups summed to 3.8x and
-  3.1x the row count on two runs under the old coupling, and 2.7x under the new
-  default -- against 1.0x at `--workers=1` in both. This is now documented in
-  the README rather than left implied by "row order is not preserved". The two were one setting, which made them
-  impossible to tune apart: a batch is held per worker and again in the queue
-  to the writer, so it costs about `rows * columns * 16 bytes` and wants to
-  shrink on a wide file, while the row group is what a reader scans and a
-  dictionary is built over, and shrinking it inflates the output. Lowering
-  `--batch-rows` to save memory tripled the file on a 213-column fixture, to
-  486 MiB.
+  The two were one setting, which made them impossible to tune apart: a batch
+  is held per worker and again in the queue to the writer, so it costs about
+  `rows * columns * 16 bytes` and wants to shrink on a wide file, while the row
+  group is what a reader scans and a dictionary is built over, and shrinking it
+  inflates the output. Lowering `--batch-rows` to save memory tripled the file
+  on a 213-column fixture, to 486 MiB. Row group size moves to a new
+  `--row-group-rows`, still 65536, so row groups hold the same number of rows
+  as before.
+
+  What a row group *holds* is a separate matter, and is not changed by this: a
+  row group has been filled from whichever chunks finish while it is open ever
+  since decoding became parallel, so on a sorted input its statistics already
+  covered a wider range than its rows, by a factor that varies from run to run.
+  Measured on a 500k-row fixture keyed by an ascending integer, the spans
+  covered by the row groups summed to 3.8x and 3.1x the row count on two runs
+  under the old coupling, and 2.7x under the new default -- against 1.0x at
+  `--workers=1` in both. This is now stated in the README rather than left
+  implied by "row order is not preserved".
 - `--batch-rows` now defaults to `0`, meaning a row count sized from the file's
   width to hold about 2M cells, between 4096 and 65536 rows. A narrow file
   still batches 65536 rows; a 213-column file batches ~9.4k, so in-flight
