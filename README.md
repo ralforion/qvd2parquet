@@ -124,7 +124,7 @@ qvd2parquet --inspect [options] input.qvd
   -timezone none             none|Local|UTC|IANA timezone name
   -schema path.json          Explicit schema override
   -schema-report path.json   Write the inferred schema/profile report
-  -quality-gate none         Validation mode: none|basic|numeric|full
+  -quality-gate full         Validation mode: none|basic|numeric|full
   -quality-report path.json  Write the post-conversion quality report
   -quality-tolerance 1e-9    Relative tolerance for floating-point quality checks
   -quality-abs-tolerance 0   Absolute tolerance for floating-point quality checks
@@ -801,10 +801,10 @@ final-looking output behind.
 
 | Mode | What it checks |
 | --- | --- |
-| `none` (default) | nothing |
+| `none` | nothing |
 | `basic` | the file opens; row count, column names, and types match the resolved schema; per-column null counts match |
 | `numeric` | everything in `basic` plus sum, min, max (and sum of squares for floats) per numeric, decimal, date, timestamp and time column |
-| `full` | everything in `numeric` plus order-independent `sha256` value fingerprints per column |
+| `full` (default) | everything in `numeric` plus order-independent `sha256` value fingerprints per column |
 
 Integer, decimal and date/time aggregates are compared exactly — decimal sums
 use scaled-integer arithmetic, with no floating-point tolerance. Floating-point
@@ -821,11 +821,20 @@ a null never collides with a zero or an empty string.
 
 `--quality-report` is written on success and on failure.
 
-Recommended production setting:
+The gate defaults to `full`: a conversion nobody checked is not a conversion
+anybody can trust, and the fingerprints are what catch a value that survived
+the type policy but not the round trip. It is not free — it reads the whole
+output back and digests every cell, which on a wide file costs several times
+the conversion itself (see [Performance](#performance)). When that is too much
+for a run, name a cheaper mode explicitly:
 
 ```sh
 --quality-gate=numeric --quality-report out.quality.json
 ```
+
+`--quality-gate=none` skips validation entirely. Prefer `basic` over `none` if
+throughput matters: it still catches a truncated or mistyped output, and costs
+a fraction of `full`.
 
 ## Performance
 
@@ -871,6 +880,18 @@ Quality gate overhead (100k rows, full pipeline):
 
 `basic` and `numeric` cost about the same because both must read the whole
 Parquet file back. `full` adds a `sha256` digest per cell, which dominates.
+
+The overhead is per cell, not per row, so it grows with width. On a 213-column,
+1M-row fixture on the same machine, wall clock for the whole run:
+
+| Mode | Wall clock | Overhead vs `none` |
+| --- | --- | --- |
+| `none` | 20.3s | — |
+| `basic` | 32.4s | ~1.6x |
+| `numeric` | 32.6s | ~1.6x |
+| `full` (default) | 95.4s | ~4.7x |
+
+Budget for that on a wide file, or name a cheaper mode.
 
 Batch size (`--batch-rows`) peaks around 16k-64k rows; larger batches trade
 throughput for memory.

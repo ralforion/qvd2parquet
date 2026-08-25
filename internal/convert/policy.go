@@ -148,13 +148,16 @@ func (n NumericPromote) Enabled() bool { return n != PromoteNone }
 type QualityMode int
 
 const (
-	// QualityNone skips post-write validation. Default.
+	// QualityNone skips post-write validation.
 	QualityNone QualityMode = iota
 	// QualityBasic validates row counts, schema and null counts.
 	QualityBasic
 	// QualityNumeric adds numeric/date/time aggregates.
 	QualityNumeric
-	// QualityFull adds order-independent value fingerprints.
+	// QualityFull adds order-independent value fingerprints. Default: a
+	// conversion nobody checked is not a conversion anybody can trust, and
+	// the fingerprints are what catch a value that survived the type policy
+	// but not the round trip.
 	QualityFull
 )
 
@@ -239,7 +242,7 @@ func DefaultOptions() Options {
 		Location:            time.UTC,
 		TimezoneName:        "none",
 		NaiveTimestamps:     true,
-		Quality:             QualityNone,
+		Quality:             QualityFull,
 		QualityRelTolerance: 1e-9,
 		QualityAbsTolerance: 0,
 		ProgressEvery:       1000000,

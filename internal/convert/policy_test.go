@@ -348,6 +348,15 @@ func TestDefaultsAreDecimalAndRounding(t *testing.T) {
 	}
 }
 
+// A conversion validates itself unless the caller opts out. The full gate is
+// the only mode that fingerprints values, so it is the only one that catches a
+// value which survived the type policy but not the round trip.
+func TestQualityGateDefaultsToFull(t *testing.T) {
+	if got := DefaultOptions().Quality; got != QualityFull {
+		t.Errorf("default Quality = %v, want QualityFull", got)
+	}
+}
+
 func TestMoneyScaleInferredFromDisplayStrings(t *testing.T) {
 	f := qvdtest.Field{Name: "Amount", Type: "MONEY", NDec: 0, Dec: ",",
 		Symbols: []qvd.Symbol{qvdtest.DualFloat(1.5, "1,5"), qvdtest.DualFloat(2.25, "2,25")},

@@ -28,6 +28,19 @@ new flag or a new value for an existing one.
 - `--file-workers` divides the same automatic budget, so batch mode and
   single-file mode now agree on how much of the machine to use.
 
+- `--quality-gate` now defaults to `full` instead of `none`. A conversion
+  nobody checked is not a conversion anybody can trust, and `full` is the only
+  mode that fingerprints values, so it is the only one that catches a value
+  which survived the type policy but not the round trip. Two consequences to
+  plan for. It is not free: the gate reads the whole output back and digests
+  every cell, which costs roughly 4.7x the conversion on a 213-column fixture
+  and grows with width, so name `basic`, `numeric` or `none` when throughput
+  matters. And a conversion that previously exited 0 can now exit 6, because
+  the file is checked where it previously was not -- a run that starts failing
+  under this default was already producing that output, the gate is only now
+  reporting it. Validation still reads the temporary file before the final
+  rename, so a failed gate never leaves a final-looking output behind.
+
 ### Fixed
 
 - Decode workers no longer serialize their reads on Windows. Every worker read
