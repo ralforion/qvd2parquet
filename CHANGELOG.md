@@ -28,6 +28,20 @@ new flag or a new value for an existing one.
 - `--file-workers` divides the same automatic budget, so batch mode and
   single-file mode now agree on how much of the machine to use.
 
+### Fixed
+
+- Decode workers no longer serialize their reads on Windows. Every worker read
+  its chunks through the one `*os.File` opened for the input, and Windows -
+  unlike Unix `pread`, which needs no lock - implements `ReadAt` by taking that
+  descriptor's read and write locks and moving its shared file pointer, so all
+  workers queued on a single mutex for every chunk. Each worker now opens its
+  own handle, which is a separate kernel file object with its own pointer; the
+  handle is reopened from the path rather than duplicated, since a duplicated
+  handle shares the very pointer that lock exists to protect. A worker falls
+  back to the shared handle if the path cannot be reopened or no longer names
+  the same file, so a replaced input is never decoded unvalidated. Unix
+  behaviour is unchanged.
+
 ## [1.0.1] - 2026-08-23
 
 ### Fixed

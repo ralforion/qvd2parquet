@@ -239,6 +239,12 @@ first result.
 
 ### Parallelism
 
+Each decode worker reads its chunks through its own handle on the input. That
+matters on Windows, where concurrent `ReadAt` on a single file handle is
+serialized by the runtime -- it takes the descriptor's read and write locks and
+moves its shared file pointer -- so one handle would put every worker behind a
+single mutex.
+
 `--file-workers` converts several files at once and **divides the decode
 workers between them**, so the total stays near the default worker count:
 
