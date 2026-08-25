@@ -1,9 +1,11 @@
 package convert
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"math/big"
 	"os"
@@ -231,6 +233,39 @@ func TestRunWorkerCountsAgree(t *testing.T) {
 	}
 	if hashes[0] != hashes[1] {
 		t.Error("--workers=1 and --workers=4 produced different content fingerprints")
+	}
+}
+
+// Records are written in chunk order, so the worker count changes only how
+// fast the file is produced -- not a byte of it. This is the strong form of
+// the fingerprint check above: it would catch row order, row group boundaries
+// or dictionary contents shifting with the number of workers.
+func TestRunIsByteIdenticalAcrossWorkerCounts(t *testing.T) {
+	const rows = 20000
+	in := buildFixture(t, sampleTable(rows))
+	dir := t.TempDir()
+
+	var first []byte
+	for _, workers := range []int{1, 2, 4, 8} {
+		out := filepath.Join(dir, fmt.Sprintf("w%d.parquet", workers))
+		opts := testOptions()
+		opts.Workers = workers
+		opts.BatchRows = 512 // ~40 chunks, so the workers genuinely interleave
+		if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+			t.Fatalf("Run with --workers=%d: %v", workers, err)
+		}
+		got, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first == nil {
+			first = got
+			continue
+		}
+		if !bytes.Equal(first, got) {
+			t.Errorf("--workers=%d produced a different file than --workers=1 "+
+				"(%d bytes vs %d)", workers, len(got), len(first))
+		}
 	}
 }
 

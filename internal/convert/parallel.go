@@ -104,9 +104,18 @@ func WorkerCount(requested int, chunks int) int {
 // ProgressFunc is called with the cumulative number of rows written.
 type ProgressFunc func(rows int64)
 
+// ReorderWindowFactor sets how many chunks may be outstanding per worker
+// before the feeder stops issuing work. Records are written in chunk order, so
+// a chunk that finishes early waits in a reorder buffer for its predecessors;
+// the window is what bounds that buffer. Two per worker lets a worker pick up
+// its next chunk while its last one waits, without letting a straggler pull an
+// unbounded number of finished records into memory behind it.
+const ReorderWindowFactor = 2
+
 // Run decodes every record in parallel and streams the resulting Arrow records
-// into sink. Chunks are written as workers finish, so the QVD's physical row
-// order is not preserved.
+// into sink in chunk order, so the Parquet file holds the QVD's rows in their
+// original order. Decoding still runs in parallel; only the handoff to the
+// writer is sequenced.
 func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressFunc) (*Metrics, error) {
 	f := c.File
 	chunks := Chunks(f.NoOfRecords, c.BatchRows, f.RecordByteSize, f.RecordStart)
@@ -122,6 +131,21 @@ func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressF
 
 	work := make(chan DecodeChunk)
 	results := make(chan DecodeResult, workers)
+
+	// The writer emits chunks in order, so one that finishes ahead of its
+	// predecessors waits in pending. window bounds how far ahead the decoders
+	// may run, and so bounds pending: the feeder takes a slot per chunk and
+	// the writer returns one per record written.
+	//
+	// Without it, a slow chunk 0 would let every other worker race ahead and
+	// pile finished records into pending without limit; and a writer that
+	// simply stopped draining results while it waited would fill that channel
+	// and deadlock chunk 0 when it finally tried to hand its record over.
+	window := workers * ReorderWindowFactor
+	if window > len(chunks) {
+		window = len(chunks)
+	}
+	slots := make(chan struct{}, window)
 
 	var wg sync.WaitGroup
 	// firstErr is written by whichever worker fails first and read by the
@@ -146,6 +170,13 @@ func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressF
 	go func() {
 		defer close(work)
 		for _, ch := range chunks {
+			// Take a window slot first: this is the backpressure that keeps
+			// the reorder buffer bounded.
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 			select {
 			case work <- ch:
 			case <-ctx.Done():
@@ -170,6 +201,9 @@ func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressF
 					fail(err)
 					return
 				}
+				if c.onDecoded != nil {
+					c.onDecoded(ch)
+				}
 				select {
 				case results <- res:
 				case <-ctx.Done():
@@ -187,9 +221,17 @@ func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressF
 
 	// Single writer goroutine: this goroutine. The Parquet writer is not safe
 	// for concurrent use, so only decoding runs in parallel.
+	//
+	// Results arrive in completion order and are written in chunk order. A
+	// chunk that arrives early waits in pending until its predecessors have
+	// been written; the feeder's window bounds how many can be waiting.
 	var written, lastReported int64
 	nextProgress := c.Options.ProgressEvery
-	for res := range results {
+	pending := make(map[int64]DecodeResult, window)
+	nextChunk := int64(0)
+	c.maxPending = 0
+
+	writeOne := func(res DecodeResult) {
 		if !failed() {
 			if err := sink.Write(res.Record); err != nil {
 				fail(err)
@@ -205,6 +247,31 @@ func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressF
 				}
 			}
 		}
+		res.Record.Release()
+		// Return the window slot only once the record is gone, so the feeder
+		// cannot issue a replacement while this one is still held.
+		<-slots
+	}
+
+	for res := range results {
+		pending[res.Chunk.Index] = res
+		if len(pending) > c.maxPending {
+			c.maxPending = len(pending)
+		}
+		for {
+			res, ok := pending[nextChunk]
+			if !ok {
+				break
+			}
+			delete(pending, nextChunk)
+			nextChunk++
+			writeOne(res)
+		}
+	}
+	// A cancelled or failed run can leave chunks that will never be written,
+	// because the chunk before them never arrived. Their records still hold
+	// Arrow buffers.
+	for _, res := range pending {
 		res.Record.Release()
 	}
 

@@ -5,10 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
@@ -391,4 +394,169 @@ func TestOpenWorkerFileFallsBack(t *testing.T) {
 	} else {
 		got.Close()
 	}
+}
+
+// orderFixture builds a QVD whose first column is the row number, so the
+// physical order of the output can be checked against the source directly.
+func orderFixture(t *testing.T, rows int) string {
+	t.Helper()
+	syms := make([]qvd.Symbol, rows)
+	idx := make([]int, rows)
+	for i := range syms {
+		syms[i] = qvdtest.Int(int64(i))
+		idx[i] = i
+	}
+	path := filepath.Join(t.TempDir(), "ordered.qvd")
+	if _, err := qvdtest.Build(path, qvdtest.Table{Name: "Ordered", Fields: []qvdtest.Field{
+		{Name: "RowNo", Type: "INTEGER", Symbols: syms, Rows: idx},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// rowNumbers flattens the first column of every collected record, in the order
+// the records were written.
+func rowNumbers(t *testing.T, recs []arrow.Record) []int64 {
+	t.Helper()
+	var out []int64
+	for _, rec := range recs {
+		col, ok := rec.Column(0).(*array.Int64)
+		if !ok {
+			t.Fatalf("column 0 is %T, want *array.Int64", rec.Column(0))
+		}
+		for i := 0; i < col.Len(); i++ {
+			out = append(out, col.Value(i))
+		}
+	}
+	return out
+}
+
+// Records reach the sink in chunk order even when the first chunk is the last
+// to decode, and the reorder buffer that makes that possible stays inside the
+// feeder's window.
+func TestRunWritesChunksInOrderWhenFirstChunkFinishesLast(t *testing.T) {
+	const (
+		rows      = 20000
+		batchRows = 1000 // 20 chunks
+		workers   = 4
+	)
+	in := orderFixture(t, rows)
+	conv := benchOrderConverter(t, in, workers, batchRows)
+
+	// Chunk 0 decodes first but is held until several later chunks have
+	// finished, so an unordered writer would put their rows in the file first.
+	// It waits on completions rather than starts, so the ordering under test
+	// is forced rather than raced for.
+	var done atomic.Int64
+	gate := make(chan struct{})
+	var once sync.Once
+	conv.onDecoded = func(ch DecodeChunk) {
+		if ch.Index == 0 {
+			<-gate
+			return
+		}
+		if done.Add(1) >= 3 {
+			once.Do(func() { close(gate) })
+		}
+	}
+
+	sink := &collectSink{}
+	defer sink.release()
+	if _, err := conv.Run(context.Background(), sink, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got := rowNumbers(t, sink.records)
+	if len(got) != rows {
+		t.Fatalf("wrote %d rows, want %d", len(got), rows)
+	}
+	for i, v := range got {
+		if v != int64(i) {
+			t.Fatalf("row %d holds RowNo %d: the file is not in source order", i, v)
+		}
+	}
+
+	// The buffer must have been used -- otherwise the ordering above proves
+	// nothing -- and must have stayed inside the window.
+	window := workers * ReorderWindowFactor
+	if conv.maxPending < 2 {
+		t.Errorf("reorder buffer peaked at %d; the out-of-order path was never exercised", conv.maxPending)
+	}
+	if conv.maxPending > window {
+		t.Errorf("reorder buffer held %d records, above the window of %d", conv.maxPending, window)
+	}
+}
+
+// A straggling first chunk must not let the other workers pull an unbounded
+// number of finished records into the reorder buffer behind it, and must not
+// deadlock when it finally hands its own record over.
+func TestReorderBufferStaysBounded(t *testing.T) {
+	const (
+		rows      = 60000
+		batchRows = 500 // 120 chunks, far more than the window
+		workers   = 4
+	)
+	in := orderFixture(t, rows)
+	conv := benchOrderConverter(t, in, workers, batchRows)
+
+	// Hold chunk 0 until every worker has had time to run well ahead. The
+	// window is what stops them, so this deadlocks if the backpressure is
+	// missing or the writer stops draining while it waits.
+	release := make(chan struct{})
+	conv.onDecoded = func(ch DecodeChunk) {
+		if ch.Index == 0 {
+			<-release
+		}
+	}
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		close(release)
+	}()
+
+	sink := &collectSink{}
+	defer sink.release()
+	if _, err := conv.Run(context.Background(), sink, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	window := workers * ReorderWindowFactor
+	if conv.maxPending > window {
+		t.Errorf("reorder buffer held %d records, above the window of %d; "+
+			"the feeder ran ahead unbounded behind the slow chunk",
+			conv.maxPending, window)
+	}
+	got := rowNumbers(t, sink.records)
+	for i, v := range got {
+		if v != int64(i) {
+			t.Fatalf("row %d holds RowNo %d: the file is not in source order", i, v)
+		}
+	}
+}
+
+func benchOrderConverter(t *testing.T, in string, workers, batchRows int) *Converter {
+	t.Helper()
+	qf, err := qvd.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { qf.Close() })
+	if err := qf.ReadSymbols(qvd.UnknownSymbolError); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.Workers = workers
+	opts.BatchRows = batchRows
+	if err := opts.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := ResolveSchema(qf, &opts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := NewConverter(qf, rs, &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conv
 }

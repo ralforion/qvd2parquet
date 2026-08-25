@@ -73,6 +73,28 @@ new flag or a new value for an existing one.
   batch size was what stopped the workers from scaling. An explicit
   `--batch-rows` is honoured unchanged.
 
+- Row order is now preserved. Decoding still runs in parallel, but records
+  reach the Parquet writer in chunk order instead of completion order, so the
+  output holds the QVD's rows in their original order whatever the worker
+  count. This replaces the previous "row order is not preserved" caveat.
+
+  The reason to want it is row groups. A row group's per-column min/max only
+  bound the rows it holds if those rows are contiguous in the source, and under
+  completion order they were not: on a 500k-row fixture keyed by an ascending
+  integer, the spans covered by the row groups summed to 3.8x and 3.1x the row
+  count on two runs, so an engine skipping row groups over a sorted key could
+  rule out far fewer than the data allowed. It is now 1.0x, and stable across
+  runs.
+
+  A chunk that finishes ahead of its predecessors waits in a reorder buffer,
+  bounded by a feeder window of two chunks per worker: without that window a
+  slow first chunk would let the other workers pile every remaining chunk into
+  memory behind it, and a writer that simply waited for the missing chunk
+  instead would fill the results channel and deadlock the slow chunk when it
+  finally handed its record over. Measured on a 213-column fixture, ordering
+  costs no throughput and slightly less memory, the window being tighter than
+  what was previously in flight.
+
 ### Fixed
 
 - `BenchmarkDecode` measured four workers in every case above four. The

@@ -796,20 +796,23 @@ Arrow builders, reads its byte range with `ReadAt`, and emits one Arrow record
 plus chunk-local quality metrics. A single writer goroutine feeds the Parquet
 writer, which is not safe for concurrent use.
 
-**Row order is not preserved.** Chunks are written as workers finish, so the
-Parquet file holds the same multiset of rows as the QVD but not in the same
-physical order. Every quality metric is order-independent, so validation is
-unaffected. Do not rely on physical row order in downstream queries.
+**Row order is preserved.** Decoding runs in parallel, but records reach the
+writer in chunk order, so the Parquet file holds the QVD's rows in their
+original order regardless of worker count. The output is byte-comparable across
+worker counts, and row groups hold contiguous ranges of source rows.
 
-This reaches into row groups too, and has since parallel decoding existed. A
-row group is filled from whichever chunks finish while it is open, so on a
-sorted input its per-column min/max cover a wider range than the rows it holds.
-On a 500k-row fixture keyed by an ascending `DocNo`, the spans covered by the
-row groups summed to 3.1x and 3.8x the row count on two runs of the same input,
-against exactly 1.0x at `--workers=1`. Row-group statistics are therefore
-weaker than the data would allow, and how much weaker varies run to run. If a
-downstream engine relies on row-group skipping over a sorted key, convert that
-file with `--workers=1`.
+That last part is what makes row-group statistics useful. A row group's
+per-column min/max only bound the rows it actually holds if those rows are
+contiguous in the source; when they are not, an engine doing row-group skipping
+over a sorted key cannot rule the group out. On a 500k-row fixture keyed by an
+ascending `DocNo`, the spans covered by the row groups summed to exactly 1.0x
+the row count, against 3.1x and 3.8x on two runs before records were ordered.
+
+A chunk that finishes ahead of its predecessors waits in a small reorder
+buffer. The feeder issues at most two chunks per worker before waiting for one
+to be written, which bounds that buffer and is why a slow chunk cannot pull an
+unbounded number of finished records into memory behind it. Every quality
+metric is order-independent regardless, so validation is unaffected either way.
 
 On a failure the context is cancelled, in-flight chunks are drained, and the
 temporary output is removed.

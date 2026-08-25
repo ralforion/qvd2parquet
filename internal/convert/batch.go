@@ -55,6 +55,14 @@ type Converter struct {
 	BatchRows int
 
 	converters []columnConverter
+
+	// onDecoded, when set, is called by a worker after it decodes a chunk and
+	// before the result is handed to the writer. Tests use it to control the
+	// order in which chunks complete. Always nil in production.
+	onDecoded func(DecodeChunk)
+	// maxPending is how deep the writer's reorder buffer got during the last
+	// Run. Tests read it to prove the window bounds it.
+	maxPending int
 }
 
 // NewConverter builds the per-column conversion functions.
