@@ -849,10 +849,19 @@ a null never collides with a zero or an empty string.
 
 The gate defaults to `full`: a conversion nobody checked is not a conversion
 anybody can trust, and the fingerprints are what catch a value that survived
-the type policy but not the round trip. It is not free — it reads the whole
-output back and digests every cell, which on a wide file costs several times
-the conversion itself (see [Performance](#performance)). When that is too much
-for a run, name a cheaper mode explicitly:
+the type policy but not the round trip.
+
+It is not free, and it costs in two places rather than one. The read-back pass
+is the visible half: the whole output is read again and every cell digested.
+The other half is inside the conversion — `full` is the only mode that
+fingerprints values, so each decode worker digests every value as it writes it,
+which is why the reported `rows/s` drops as well as the total wall clock. On a
+213-column, 20.6M-row SAP extract on a 16-core Xeon, conversion alone went from
+26.7k rows/s to 22.4k, the read-back arriving on top of that. Only `full`
+carries the inline cost; `basic` and `numeric` collect their metrics from
+values already being converted.
+
+When that is too much for a run, name a cheaper mode explicitly:
 
 ```sh
 --quality-gate=numeric --quality-report out.quality.json
@@ -927,6 +936,12 @@ The overhead is per cell, not per row, so it grows with width. On a 213-column,
 | `basic` | 32.4s | ~1.6x |
 | `numeric` | 32.6s | ~1.6x |
 | `full` (default) | 95.4s | ~4.7x |
+
+`full` is the only mode that pays part of that inside the conversion rather
+than after it, because only it fingerprints values, and the decode workers
+digest each value as they write it. Measured on real data — a 213-column,
+20.6M-row SAP extract on a 16-core Xeon — conversion alone ran at 26.7k rows/s
+under `none` and 22.4k under `full`, with the read-back pass still to come.
 
 Budget for that on a wide file, or name a cheaper mode.
 

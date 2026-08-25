@@ -53,10 +53,15 @@ minor one:
   nobody checked is not a conversion anybody can trust, and `full` is the only
   mode that fingerprints values, so it is the only one that catches a value
   which survived the type policy but not the round trip. Two consequences to
-  plan for. It is not free: the gate reads the whole output back and digests
-  every cell, which costs roughly 4.7x the conversion on a 213-column fixture
-  and grows with width, so name `basic`, `numeric` or `none` when throughput
-  matters. And a conversion that previously exited 0 can now exit 6, because
+  plan for. It is not free, and it costs in two places: the gate reads the whole
+  output back and digests every cell, and, because `full` is the only mode that
+  fingerprints values, each decode worker also digests every value inside the
+  conversion itself -- so the reported `rows/s` drops as well as the total wall
+  clock. Together that is roughly 4.7x the conversion on a 213-column fixture,
+  and it grows with width; on a 213-column, 20.6M-row SAP extract on a 16-core
+  Xeon, conversion alone went from 26.7k rows/s to 22.4k before the read-back
+  began. Name `basic`, `numeric` or `none` when throughput matters -- neither
+  carries the inline cost. And a conversion that previously exited 0 can now exit 6, because
   the file is checked where it previously was not -- a run that starts failing
   under this default was already producing that output, the gate is only now
   reporting it. Validation still reads the temporary file before the final
