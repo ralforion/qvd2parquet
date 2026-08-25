@@ -173,6 +173,13 @@ func testBenchOptions() Options {
 	o.ProgressEvery = 0
 	o.Compression = "snappy"
 	o.Force = true
+	// The gate defaults to full, which reads the whole output back and digests
+	// every cell -- and, through Options.Quality, also makes the decode
+	// workers fingerprint each value. That is several times the cost of the
+	// work these benchmarks exist to measure, so it would swamp the decode,
+	// conversion and batch-size baselines the README quotes.
+	// BenchmarkQualityGate sets the mode it is measuring and is unaffected.
+	o.Quality = QualityNone
 	return o
 }
 

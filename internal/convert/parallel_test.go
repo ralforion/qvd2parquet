@@ -343,8 +343,13 @@ func TestOpenWorkerFileIsPrivateHandle(t *testing.T) {
 	}
 }
 
-// A replaced input falls back to the shared handle rather than decoding
-// records from a file whose header was never validated.
+// A path that no longer names the file the header was read from falls back to
+// the shared handle, rather than decoding records from a file nobody validated.
+//
+// Both cases repoint File.Path instead of renaming or removing the input.
+// Windows refuses to replace or delete a file another handle holds open, so
+// driving this from the filesystem would leave the test running on Unix only --
+// and this fallback exists for Windows.
 func TestOpenWorkerFileFallsBack(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "w.qvd")
@@ -357,25 +362,31 @@ func TestOpenWorkerFileFallsBack(t *testing.T) {
 	}
 	defer qf.Close()
 
-	// Replace the file at the path with a different one.
-	replacement := filepath.Join(dir, "other.qvd")
-	if _, err := qvdtest.Build(replacement, benchTable(128)); err != nil {
+	// The path names a different file, as it would if the input were replaced
+	// mid-run.
+	other := filepath.Join(dir, "other.qvd")
+	if _, err := qvdtest.Build(other, benchTable(128)); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(replacement, path); err != nil {
-		t.Fatal(err)
-	}
+	qf.Path = other
 	if got := openWorkerFile(qf); got != nil {
 		got.Close()
-		t.Error("openWorkerFile used a replaced file instead of falling back")
+		t.Error("openWorkerFile used a different file instead of falling back")
 	}
 
-	// A path that no longer exists falls back too.
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
+	// The path names nothing at all.
+	qf.Path = filepath.Join(dir, "gone.qvd")
 	if got := openWorkerFile(qf); got != nil {
 		got.Close()
 		t.Error("openWorkerFile returned a handle for a missing path")
+	}
+
+	// Restored, it opens again: the fallbacks above were caused by the path,
+	// not by anything sticky about the file or the test.
+	qf.Path = path
+	if got := openWorkerFile(qf); got == nil {
+		t.Error("openWorkerFile fell back for the original, unchanged path")
+	} else {
+		got.Close()
 	}
 }

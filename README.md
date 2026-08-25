@@ -250,7 +250,7 @@ workers between them**, so the total stays near the default worker count:
 
 ```text
 $ qvd2parquet --out-dir out --file-workers 4 ./qvds
-qvd2parquet: converting 50 file(s), 4 at a time, 4 decode worker(s) each
+qvd2parquet: converting 50 file(s), 4 at a time, 1 decode worker(s) each
 ```
 
 The default is `1`: one file at a time, decoding it with the default worker
@@ -258,6 +258,11 @@ count. Raise it for many small files, where per-file parallelism beats
 per-chunk. This is the main reason folder conversion is built in rather than
 left to a shell loop — four separate processes would each start their own full
 set of workers, oversubscribing the machine fourfold.
+
+The budget being divided is the automatic worker count, not one per CPU, which
+is why four files at a time on a 16-CPU machine get one worker each. Raise
+`--workers` alongside `--file-workers` when the machine has headroom for more:
+`--file-workers 4 --workers 16` gives four each.
 
 ### The log
 

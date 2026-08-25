@@ -161,7 +161,8 @@ type ManyOptions struct {
 	// OutDir receives the converted files.
 	OutDir string
 	// FileWorkers is how many files convert at once. The decode workers are
-	// divided between them, so the total stays near one per CPU.
+	// divided between them, so the total stays near the automatic worker
+	// count rather than multiplying it by the number of files in flight.
 	FileWorkers int
 	// Recursive descends into subdirectories when expanding a directory.
 	Recursive bool
