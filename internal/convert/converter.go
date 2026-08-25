@@ -183,6 +183,13 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	if err != nil {
 		return nil, nil, err
 	}
+	// Reported unconditionally, the way the quality gate reports itself. It
+	// used to arrive only as the last --progress line, so --progress 0 left
+	// the conversion as the one phase that never said how long it took.
+	decodeElapsed := time.Since(decodeStart)
+	logf("conversion finished in %s: %d rows (%.0f rows/s)",
+		decodeElapsed.Round(time.Millisecond), metrics.Rows,
+		float64(metrics.Rows)/decodeElapsed.Seconds())
 	if err := w.Close(); err != nil {
 		return nil, nil, err
 	}

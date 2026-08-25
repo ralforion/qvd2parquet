@@ -293,7 +293,7 @@ func run() int {
 		return exitCodeFor(err)
 	}
 
-	logf("wrote %s: %d rows, %d columns, %s in %s (%.0f rows/s)",
+	logf("wrote %s: %d rows, %d columns, %s in %s overall (%.0f rows/s)",
 		outputPath, stats.Rows, stats.Columns, humanBytes(stats.OutputBytes),
 		stats.Elapsed.Round(1e6), stats.RowsPerSecond())
 	return exitOK

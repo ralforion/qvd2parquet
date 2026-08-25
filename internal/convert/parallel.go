@@ -232,7 +232,7 @@ func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressF
 	// Results arrive in completion order and are written in chunk order. A
 	// chunk that arrives early waits in pending until its predecessors have
 	// been written; the feeder's window bounds how many can be waiting.
-	var written, lastReported int64
+	var written int64
 	nextProgress := c.Options.ProgressEvery
 	pending := make(map[int64]DecodeResult, window)
 	nextChunk := int64(0)
@@ -247,7 +247,6 @@ func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressF
 				written += res.Record.NumRows()
 				if progress != nil && c.Options.ProgressEvery > 0 && written >= nextProgress {
 					progress(written)
-					lastReported = written
 					for written >= nextProgress {
 						nextProgress += c.Options.ProgressEvery
 					}
@@ -293,9 +292,6 @@ func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressF
 	}
 	if written != f.NoOfRecords {
 		return nil, fmt.Errorf("%w: wrote %d rows but the header declares %d", ErrInput, written, f.NoOfRecords)
-	}
-	if progress != nil && c.Options.ProgressEvery > 0 && written != lastReported {
-		progress(written)
 	}
 	return total, nil
 }

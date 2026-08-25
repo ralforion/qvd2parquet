@@ -776,3 +776,35 @@ func TestCancellationLeavesNoPartialOutput(t *testing.T) {
 		}
 	}
 }
+
+// Each phase reports how long it took, whatever --progress is set to. The
+// conversion's duration used to arrive only as the last progress line, so
+// --progress 0 left it as the one phase that never accounted for itself while
+// the quality gate always did.
+func TestPhasesReportTheirOwnDuration(t *testing.T) {
+	in := buildFixture(t, sampleTable(5000))
+	out := filepath.Join(t.TempDir(), "out.parquet")
+
+	opts := testOptions()
+	opts.Quality = QualityFull
+	opts.ProgressEvery = 0 // the case that used to lose the conversion timing
+
+	var lines []string
+	logf := func(format string, args ...any) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	if _, _, err := Run(context.Background(), in, out, &opts, logf); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"conversion finished in", "quality gate full finished in"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("no %q line with --progress 0; output was:\n%s", want, joined)
+		}
+	}
+	// The running progress lines are the part --progress governs.
+	if strings.Contains(joined, "/5000 rows") {
+		t.Errorf("--progress 0 should silence the running counts:\n%s", joined)
+	}
+}

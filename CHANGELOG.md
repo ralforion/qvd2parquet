@@ -13,6 +13,19 @@ restarts from it.
 
 ## [Unreleased]
 
+### Changed
+
+- Each phase reports its own duration. The conversion's timing used to arrive
+  only as the last `--progress` line, so `--progress 0` left it as the one
+  phase that never accounted for itself while the quality gate always did, and
+  a slow run could not be attributed without re-running it. `converted N/M
+  rows` is now the running count `--progress` governs, and `conversion finished
+  in T: N rows` is printed whatever it is set to, matching the gate's line.
+- The final line says `overall`. It reports the whole run -- conversion, gate,
+  and the rest -- but sat next to a verb about writing, so its figure read as
+  the time taken to write the file. On a wide file the gate alone can be the
+  larger half of it.
+
 ## [2.1.0] - 2026-08-25
 
 The quality gate stops being the slow, silent, uninterruptible part of a wide

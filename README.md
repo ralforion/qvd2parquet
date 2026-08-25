@@ -158,14 +158,25 @@ qvd2parquet: read 412 symbols in 1ms; records start at offset 8973
 qvd2parquet: schema: Einkaufspreis: REAL with 75 double symbols promoted to decimal(5,2); scale 2 inferred from values
 qvd2parquet: schema: Produktname: 77 text symbols, written as utf8
 qvd2parquet: schema: Listenpreis: REAL with 25 integer and 35 double symbols promoted to decimal(5,2); scale 2 inferred from values
-qvd2parquet: converted 77/77 rows in 2ms (47934 rows/s)
+qvd2parquet: batch: 65536 rows over 9 columns (~0.6M cells per batch), 65536 rows per row group
+qvd2parquet: conversion finished in 2ms: 77 rows (47934 rows/s)
 qvd2parquet: quality gate numeric finished in 1ms: passed
-qvd2parquet: wrote sales.parquet: 77 rows, 9 columns, 4.6 KiB in 16ms (4961 rows/s)
+qvd2parquet: wrote sales.parquet: 77 rows, 9 columns, 4.6 KiB in 16ms overall (4961 rows/s)
 ```
 
 One `schema:` line is printed per output column, explaining exactly why each
 type was chosen. That is the first thing to read when a mixed-type column
 fails; `--schema-report` writes the same reasoning as JSON.
+
+Each phase reports its own duration, so a slow run can be attributed without
+guessing: the conversion and the quality gate time themselves separately, and
+the final line is the whole run, not just the write. On a wide file the gate is
+routinely the larger half. Those two lines are printed whatever `--progress` is
+set to; `--progress` only controls the running `converted N/M rows` and
+`verified N/M rows` lines in between.
+
+Everything goes to stderr, so `2> run.log` captures it all and leaves stdout
+empty.
 
 Print the version and exit with `--version`:
 
