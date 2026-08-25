@@ -208,10 +208,18 @@ type Options struct {
 	DecimalSource       DecimalSource
 	DecimalStrict       bool
 	Compression         string
-	BatchRows           int
-	Workers             int
-	Location            *time.Location
-	TimezoneName        string
+	// BatchRows is how many rows one Arrow batch holds. 0 means automatic:
+	// see EffectiveBatchRows.
+	BatchRows int
+	// RowGroupRows caps how many rows go into one Parquet row group. It is
+	// independent of BatchRows -- the writer buffers batches until the row
+	// group fills -- because the two size different things. BatchRows sizes
+	// in-flight memory, RowGroupRows sizes the unit readers scan and
+	// dictionaries are built over.
+	RowGroupRows int
+	Workers      int
+	Location     *time.Location
+	TimezoneName string
 	// NaiveTimestamps writes timestamps with no timezone (Parquet
 	// isAdjustedToUTC=false), preserving the QVD's wall clock verbatim.
 	NaiveTimestamps     bool
@@ -237,7 +245,8 @@ func DefaultOptions() Options {
 		DecimalSource:       DecimalAuto,
 		DecimalStrict:       false,
 		Compression:         "zstd",
-		BatchRows:           65536,
+		BatchRows:           0,
+		RowGroupRows:        DefaultRowGroupRows,
 		Workers:             0,
 		Location:            time.UTC,
 		TimezoneName:        "none",
@@ -249,10 +258,53 @@ func DefaultOptions() Options {
 	}
 }
 
+// Batch sizing. A batch is held in memory per worker and again in the queue to
+// the writer, so its cost is rows * columns * roughly 16 bytes, not rows. A
+// fixed row count therefore means a narrow file holds a few MB per batch and a
+// wide one holds hundreds, which is how a 200-column file ends up holding tens
+// of GB across the workers. Sizing by cells instead keeps in-flight memory
+// roughly constant whatever the shape of the file.
+const (
+	// TargetBatchCells is the cell budget one automatic batch aims for.
+	TargetBatchCells = 2_000_000
+	// MinAutoBatchRows keeps a very wide file from producing batches so small
+	// that per-batch overhead dominates.
+	MinAutoBatchRows = 4096
+	// MaxAutoBatchRows caps a narrow file, where the cell budget would
+	// otherwise allow millions of rows per batch.
+	MaxAutoBatchRows = 65536
+	// DefaultRowGroupRows is the default Parquet row group size. It matches
+	// what row groups were before BatchRows and RowGroupRows were separated,
+	// so the default output layout is unchanged.
+	DefaultRowGroupRows = 65536
+)
+
+// EffectiveBatchRows resolves BatchRows for a file with the given number of
+// output columns. An explicit value is returned unchanged; 0 means automatic.
+func (o *Options) EffectiveBatchRows(columns int) int {
+	if o.BatchRows > 0 {
+		return o.BatchRows
+	}
+	if columns < 1 {
+		columns = 1
+	}
+	n := TargetBatchCells / columns
+	if n < MinAutoBatchRows {
+		n = MinAutoBatchRows
+	}
+	if n > MaxAutoBatchRows {
+		n = MaxAutoBatchRows
+	}
+	return n
+}
+
 // Validate checks the option combination.
 func (o *Options) Validate() error {
-	if o.BatchRows <= 0 {
-		return fmt.Errorf("--batch-rows must be positive, got %d", o.BatchRows)
+	if o.BatchRows < 0 {
+		return fmt.Errorf("--batch-rows must not be negative, got %d", o.BatchRows)
+	}
+	if o.RowGroupRows <= 0 {
+		return fmt.Errorf("--row-group-rows must be positive, got %d", o.RowGroupRows)
 	}
 	if o.Workers < 0 {
 		return fmt.Errorf("--workers must not be negative, got %d", o.Workers)

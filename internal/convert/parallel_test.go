@@ -211,7 +211,9 @@ func TestParallelWorkerBuildersAreIndependent(t *testing.T) {
 	const rows = 5000
 	conv, _ := parallelFixture(t, rows)
 	conv.Options.Workers = 8
-	conv.Options.BatchRows = 64
+	// Set the resolved size, not Options.BatchRows: the converter settles its
+	// batch size against the file's width at construction.
+	conv.BatchRows = 64
 
 	sink := &collectSink{}
 	defer sink.release()

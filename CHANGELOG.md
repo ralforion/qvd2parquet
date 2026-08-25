@@ -42,6 +42,27 @@ new flag or a new value for an existing one.
   reporting it. Validation still reads the temporary file before the final
   rename, so a failed gate never leaves a final-looking output behind.
 
+- `--batch-rows` and the Parquet row group size are no longer the same number.
+  Row group size moves to a new `--row-group-rows`, still 65536, so the default
+  output layout is unchanged. The two were one setting, which made them
+  impossible to tune apart: a batch is held per worker and again in the queue
+  to the writer, so it costs about `rows * columns * 16 bytes` and wants to
+  shrink on a wide file, while the row group is what a reader scans and a
+  dictionary is built over, and shrinking it inflates the output. Lowering
+  `--batch-rows` to save memory tripled the file on a 213-column fixture, to
+  486 MiB.
+- `--batch-rows` now defaults to `0`, meaning a row count sized from the file's
+  width to hold about 2M cells, between 4096 and 65536 rows. A narrow file
+  still batches 65536 rows; a 213-column file batches ~9.4k, so in-flight
+  memory stays put instead of growing with width. On that 213-column, 1M-row
+  fixture, peak resident size fell from 7.3 GB to 1.8 GB at four workers. The
+  throughput effect is the larger one: at a fixed 65536-row batch, going from
+  four workers to sixteen bought 10% (52.2k to 57.7k rows/s), because each
+  worker carried a batch of `65536 * 213` cells and the machine spent its time
+  moving memory; sized by cells the same step goes 54.7k to 95.1k rows/s. The
+  batch size was what stopped the workers from scaling. An explicit
+  `--batch-rows` is honoured unchanged.
+
 ### Fixed
 
 - `BenchmarkDecode` measured four workers in every case above four. The

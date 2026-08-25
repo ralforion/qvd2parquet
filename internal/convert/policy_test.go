@@ -477,14 +477,55 @@ func TestParseFlags(t *testing.T) {
 
 func TestOptionsValidate(t *testing.T) {
 	o := DefaultOptions()
-	o.BatchRows = 0
+	o.BatchRows = 0 // 0 is automatic, not invalid
+	if err := o.Validate(); err != nil {
+		t.Errorf("--batch-rows 0 selects the automatic size, got %v", err)
+	}
+	o = DefaultOptions()
+	o.BatchRows = -1
 	if err := o.Validate(); err == nil {
-		t.Error("expected an error for --batch-rows 0")
+		t.Error("expected an error for a negative --batch-rows")
+	}
+	o = DefaultOptions()
+	o.RowGroupRows = 0
+	if err := o.Validate(); err == nil {
+		t.Error("expected an error for --row-group-rows 0")
 	}
 	o = DefaultOptions()
 	o.Workers = -1
 	if err := o.Validate(); err == nil {
 		t.Error("expected an error for a negative --workers")
+	}
+}
+
+// An automatic batch holds roughly a fixed number of cells, so in-flight
+// memory stays put whatever the shape of the file, with a row floor and
+// ceiling so neither extreme degenerates.
+func TestEffectiveBatchRows(t *testing.T) {
+	o := DefaultOptions()
+	for _, tc := range []struct {
+		columns, want int
+	}{
+		{1, MaxAutoBatchRows},                // narrow: capped by rows
+		{5, MaxAutoBatchRows},                // still capped
+		{213, TargetBatchCells / 213},        // the SAP shape: cell-budgeted
+		{700, MinAutoBatchRows},              // very wide: floored
+		{TargetBatchCells, MinAutoBatchRows}, // absurd width still floors
+		{0, MaxAutoBatchRows},                // a schema with no columns
+	} {
+		if got := o.EffectiveBatchRows(tc.columns); got != tc.want {
+			t.Errorf("EffectiveBatchRows(%d) = %d, want %d", tc.columns, got, tc.want)
+		}
+		if got := o.EffectiveBatchRows(tc.columns); got < MinAutoBatchRows || got > MaxAutoBatchRows {
+			t.Errorf("EffectiveBatchRows(%d) = %d, outside [%d, %d]",
+				tc.columns, got, MinAutoBatchRows, MaxAutoBatchRows)
+		}
+	}
+
+	// An explicit size is honoured whatever the width.
+	o.BatchRows = 1234
+	if got := o.EffectiveBatchRows(213); got != 1234 {
+		t.Errorf("explicit --batch-rows was overridden: got %d, want 1234", got)
 	}
 }
 

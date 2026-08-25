@@ -89,6 +89,10 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	for _, n := range rs.Notes {
 		logf("schema: %s", n)
 	}
+
+	// Batch size depends on the resolved column count, so it can only be
+	// settled here. Work from a copy: the caller's Options are shared across
+	// files in a batch run, where each file resolves its own width.
 	var rounded, nonFinite int64
 	for _, c := range rs.Columns {
 		rounded += c.DecimalRounded
@@ -135,6 +139,18 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	if err != nil {
 		return nil, nil, err
 	}
+	// NewConverter resolves an automatic batch size against this file's width.
+	// Carry it in a copy so everything downstream -- the quality gate reads
+	// the output back a batch at a time -- sizes itself the same way. A copy,
+	// because a batch run shares one Options across files of differing width.
+	if opts.BatchRows != conv.BatchRows {
+		logf("batch: %d rows over %d columns (~%.1fM cells per batch), %d rows per row group",
+			conv.BatchRows, len(rs.Columns),
+			float64(conv.BatchRows*len(rs.Columns))/1e6, opts.RowGroupRows)
+		sized := *opts
+		sized.BatchRows = conv.BatchRows
+		opts = &sized
+	}
 
 	codec, err := parquetwrite.ParseCompression(opts.Compression)
 	if err != nil {
@@ -142,7 +158,7 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	}
 	w, err := parquetwrite.Create(outputPath, rs.Arrow, parquetwrite.Options{
 		Compression:  codec,
-		RowGroupRows: int64(opts.BatchRows),
+		RowGroupRows: int64(opts.RowGroupRows),
 	}, opts.Force)
 	if err != nil {
 		return nil, nil, err
