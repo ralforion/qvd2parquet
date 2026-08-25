@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -382,11 +381,24 @@ func samePath(a, b string) bool {
 	if errA == nil && errB == nil && os.SameFile(infoA, infoB) {
 		return true
 	}
-	pathA, pathB := canonicalPath(a), canonicalPath(b)
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(pathA, pathB)
-	}
-	return pathA == pathB
+	// Fold case on every platform, not only Windows. Whether two spellings
+	// name one file is a property of the filesystem, not of the OS: macOS is
+	// case-insensitive by default, Linux mounts exFAT, NTFS and SMB that way,
+	// and Windows supports per-directory case sensitivity. No list of GOOS
+	// values answers the question.
+	//
+	// os.SameFile above already settles it for files that exist, so this
+	// governs only files about to be created -- the --force path. There the
+	// two errors are not comparable. Refusing a legal pair costs a rename;
+	// allowing an illegal one lets the second writer replace the first, which
+	// on a case-insensitive filesystem left a file named RUN.JSONL holding
+	// Parquet, the log unlinked, and an exit code of 0. So fold, and accept
+	// rejecting a pair that a case-sensitive filesystem would have allowed.
+	//
+	// This does not cover Unicode normalisation, which APFS also folds:
+	// "café.jsonl" and "cafe\u0301.jsonl" are one file there and compare
+	// unequal here.
+	return strings.EqualFold(canonicalPath(a), canonicalPath(b))
 }
 
 func canonicalPath(path string) string {

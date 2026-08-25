@@ -221,13 +221,45 @@ func TestSamePathResolvesSymlinkedParent(t *testing.T) {
 	}
 }
 
-func TestSamePathIgnoresCaseOnWindows(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows paths are case-insensitive")
-	}
+// Case-only aliases are a collision on every platform, not just Windows.
+// Whether two spellings name one file is a property of the filesystem, not the
+// OS: macOS is case-insensitive by default, Linux mounts exFAT, NTFS and SMB
+// that way, and Windows supports per-directory case sensitivity.
+//
+// Reproduced before this was folded everywhere, on macOS/APFS: --log RUN.JSONL
+// beside an output of run.jsonl exited 0, reported writing both, and left one
+// file named RUN.JSONL whose first four bytes were PAR1. The log had been
+// written to an unlinked handle and was gone.
+func TestSamePathIgnoresCase(t *testing.T) {
 	dir := t.TempDir()
 	if !samePath(filepath.Join(dir, "OUT.parquet"), filepath.Join(dir, "out.parquet")) {
 		t.Fatal("case-only aliases treated as different paths")
+	}
+	if !samePath(filepath.Join(dir, "RUN.JSONL"), filepath.Join(dir, "run.jsonl")) {
+		t.Fatal("case-only aliases of a log path treated as different paths")
+	}
+	// Folding must not swallow paths that genuinely differ.
+	if samePath(filepath.Join(dir, "out.parquet"), filepath.Join(dir, "other.parquet")) {
+		t.Fatal("distinct paths reported as the same")
+	}
+}
+
+// The end the fold exists to protect: --log must be refused when it names the
+// output under another casing, rather than the two silently clobbering.
+func TestValidateLogPathRejectsCaseVariantOfOutput(t *testing.T) {
+	dir := t.TempDir()
+	var opts convert.Options
+	err := validateLogPath(
+		filepath.Join(dir, "RUN.JSONL"),
+		filepath.Join(dir, "in.qvd"),
+		filepath.Join(dir, "run.jsonl"),
+		&opts,
+	)
+	if err == nil {
+		t.Fatal("a --log path differing from the output only by case was accepted")
+	}
+	if !strings.Contains(err.Error(), "the output path") {
+		t.Errorf("error should name the colliding path, got: %v", err)
 	}
 }
 
