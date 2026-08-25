@@ -110,7 +110,7 @@ qvd2parquet --inspect [options] input.qvd
   -out-dir DIR               Convert every input into this directory
   -file-workers 1            Files to convert at once; decode workers are divided
   -recursive                 With --out-dir, descend into subdirectories
-  -log path.jsonl            Append a JSON Lines record per file
+  -log path.jsonl            Write one JSON Lines record per input, then a summary
   -columns name1,name2       Convert only these columns
   -exclude '%*,*_TMP'        Skip fields matching these wildcard patterns
   -field-regex <re>          Rewrite field names with this regexp
@@ -283,10 +283,17 @@ is why four files at a time on a 16-CPU machine get two workers each. Raise
 `--workers` alongside `--file-workers` when the machine has headroom for more:
 `--file-workers 4 --workers 16` gives four each.
 
-### The log
+## The log
 
 `--log` writes JSON Lines: one record per file, then a summary. That format is
 chosen so a finished run can be queried rather than read:
+
+```sh
+qvd2parquet --log run.jsonl input.qvd output.parquet
+```
+
+A single-file conversion writes exactly two records: its file record and the
+summary. Folder conversion writes one file record per input before the summary.
 
 ```sh
 duckdb -c "select status, count(*), sum(rows) from read_json_auto('run.jsonl')
@@ -295,7 +302,7 @@ duckdb -c "select input, error from read_json_auto('run.jsonl') where status='fa
 ```
 
 Each file record carries the row and column counts, output size, elapsed time,
-throughput, and the quality gate's verdict with any errors — so a batch can be
+throughput, and the quality gate's verdict with any errors — so a run can be
 audited without opening every per-file report. `--schema-report` and
 `--quality-report` also work in batch mode; each file gets its own document,
 named after the input.

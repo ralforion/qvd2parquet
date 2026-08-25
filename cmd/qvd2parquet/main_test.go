@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ralforion/qvd2parquet/internal/convert"
 )
 
 // buildCLI compiles the command once for the tests that need to run it as a
@@ -23,6 +27,22 @@ func buildCLI(t *testing.T) string {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 	return bin
+}
+
+func readLogRecords(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	records := make([]map[string]any, len(lines))
+	for i, line := range lines {
+		if err := json.Unmarshal([]byte(line), &records[i]); err != nil {
+			t.Fatalf("log line %d is not JSON: %v\n%s", i+1, err, line)
+		}
+	}
+	return records
 }
 
 // A successful run must not announce a cancellation. The signal handler used
@@ -52,5 +72,161 @@ func TestSuccessfulRunDoesNotAnnounceCancellation(t *testing.T) {
 		if strings.Contains(string(combined), "cancelling") {
 			t.Fatalf("run %d announced a cancellation on a successful run:\n%s", i, combined)
 		}
+	}
+}
+
+func TestSingleFileLog(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+
+	// A single-file conversion must honour --log with the same file-plus-summary
+	// shape as a batch run. The flag used to be accepted and silently ignored.
+	t.Run("success records file and summary", func(t *testing.T) {
+		dir := t.TempDir()
+		out := filepath.Join(dir, "out.parquet")
+		logPath := filepath.Join(dir, "logs", "run.jsonl")
+
+		cmd := exec.Command(bin, "--force", "--progress", "0",
+			"--quality-gate", "none", "--log", logPath, fixture, out)
+		if combined, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("run failed: %v\n%s", err, combined)
+		}
+
+		records := readLogRecords(t, logPath)
+		if len(records) != 2 {
+			t.Fatalf("got %d log records, want file and summary", len(records))
+		}
+		file, summary := records[0], records[1]
+		if file["type"] != "file" || file["status"] != "ok" ||
+			file["input"] != fixture || file["output"] != out ||
+			file["rows"] != float64(1000) || file["error"] != "" {
+			t.Errorf("file record = %v", file)
+		}
+		if summary["type"] != "summary" || summary["files"] != float64(1) ||
+			summary["converted"] != float64(1) || summary["failed"] != float64(0) ||
+			summary["rows"] != float64(1000) {
+			t.Errorf("summary record = %v", summary)
+		}
+	})
+
+	t.Run("failure records file and summary", func(t *testing.T) {
+		dir := t.TempDir()
+		in := filepath.Join(dir, "missing.qvd")
+		out := filepath.Join(dir, "out.parquet")
+		logPath := filepath.Join(dir, "run.jsonl")
+
+		cmd := exec.Command(bin, "--progress", "0", "--quality-gate", "none",
+			"--log", logPath, in, out)
+		combined, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != exitInput {
+			t.Fatalf("exit = %v, want %d\n%s", err, exitInput, combined)
+		}
+
+		records := readLogRecords(t, logPath)
+		if len(records) != 2 {
+			t.Fatalf("got %d log records, want file and summary", len(records))
+		}
+		file, summary := records[0], records[1]
+		if file["type"] != "file" || file["status"] != "failed" ||
+			file["input"] != in || file["output"] != "" || file["error"] == "" {
+			t.Errorf("file record = %v", file)
+		}
+		if summary["type"] != "summary" || summary["files"] != float64(1) ||
+			summary["converted"] != float64(0) || summary["failed"] != float64(1) {
+			t.Errorf("summary record = %v", summary)
+		}
+	})
+
+	t.Run("inspect rejects log", func(t *testing.T) {
+		logPath := filepath.Join(t.TempDir(), "run.jsonl")
+		cmd := exec.Command(bin, "--inspect", "--log", logPath, fixture)
+		combined, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != exitUsage {
+			t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+		}
+		if !strings.Contains(string(combined), "cannot be combined with --inspect") {
+			t.Fatalf("missing diagnostic:\n%s", combined)
+		}
+		if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+			t.Fatalf("log created during inspect: %v", err)
+		}
+	})
+
+	t.Run("log cannot overwrite schema", func(t *testing.T) {
+		dir := t.TempDir()
+		schemaPath := filepath.Join(dir, "schema.json")
+		original := []byte(`{"fields": []}`)
+		if err := os.WriteFile(schemaPath, original, 0o600); err != nil {
+			t.Fatalf("write schema: %v", err)
+		}
+		out := filepath.Join(dir, "out.parquet")
+		cmd := exec.Command(bin, "--schema", schemaPath, "--log", schemaPath, fixture, out)
+		combined, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != exitUsage {
+			t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+		}
+		after, err := os.ReadFile(schemaPath)
+		if err != nil {
+			t.Fatalf("read schema after rejection: %v", err)
+		}
+		if !bytes.Equal(after, original) {
+			t.Fatal("schema changed when used as --log path")
+		}
+	})
+}
+
+func TestValidateLogPath(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "run.jsonl")
+	tests := []struct {
+		name   string
+		input  string
+		output string
+		opts   convert.Options
+	}{
+		{name: "input", input: logPath},
+		{name: "output", output: logPath},
+		{name: "schema", opts: convert.Options{SchemaOverridePath: logPath}},
+		{name: "schema report", opts: convert.Options{SchemaReportPath: logPath}},
+		{name: "quality report", opts: convert.Options{QualityReportPath: logPath}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateLogPath(logPath, tc.input, tc.output, &tc.opts); err == nil {
+				t.Fatal("collision accepted")
+			}
+		})
+	}
+}
+
+func TestSamePathResolvesSymlinkedParent(t *testing.T) {
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "real")
+	aliasDir := filepath.Join(dir, "alias")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+	if err := os.Symlink(realDir, aliasDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if !samePath(filepath.Join(realDir, "nested", "out.parquet"),
+		filepath.Join(aliasDir, "nested", "out.parquet")) {
+		t.Fatal("symlinked parent aliases treated as different paths")
+	}
+}
+
+func TestSamePathIgnoresCaseOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows paths are case-insensitive")
+	}
+	dir := t.TempDir()
+	if !samePath(filepath.Join(dir, "OUT.parquet"), filepath.Join(dir, "out.parquet")) {
+		t.Fatal("case-only aliases treated as different paths")
 	}
 }

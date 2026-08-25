@@ -26,6 +26,11 @@ restarts from it.
   the time taken to write the file. On a wide file the gate alone can be the
   larger half of it.
 
+### Fixed
+
+- `--log` now writes a file record and summary for single-file conversions. It
+  was accepted but silently ignored outside `--out-dir` mode.
+
 ## [2.1.0] - 2026-08-25
 
 The quality gate stops being the slow, silent, uninterruptible part of a wide
