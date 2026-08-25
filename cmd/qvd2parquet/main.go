@@ -367,7 +367,7 @@ func runInspect(inputPath string, opts *convert.Options) int {
 			fmt.Fprintf(os.Stderr, "%s: no schema to report: %v\n", programName, rep.SchemaErr)
 			return exitSchema
 		}
-		if err := convert.WriteSchemaReport(opts.SchemaReportPath, inputPath, rep.File, rep.Schema); err != nil {
+		if err := convert.WriteSchemaReport(opts.SchemaReportPath, inputPath, rep.File, rep.Schema, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
 			return exitOutput
 		}

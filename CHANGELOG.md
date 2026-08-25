@@ -13,6 +13,25 @@ restarts from it.
 
 ## [Unreleased]
 
+### Added
+
+- `--inspect` and `--schema-report` show each column's value range, rendered in
+  the type the column is written as. A QVD stores a date as a serial day
+  number, so a profile reported `WADAT` as 38365..411241 and a goods-issue date
+  in the year 3025 read as an ordinary integer among plausible neighbours. The
+  same range now reads `2005-01-13 .. 3025-12-08`, next to a `BUDAT` of
+  `2019-12-27 .. 2026-08-31`. Timestamps follow the run's timezone rules, so
+  the rendering matches what would be written rather than assuming UTC.
+- Decimal columns whose widest value already fills most of the type's range are
+  named. A decimal's precision is inferred from its values, so it fits them
+  exactly by construction and the question is never whether the data fits; it
+  is what a later load has left. On a 213-column SAP extract exactly one column
+  qualified, `VV120` at 81% of a `decimal(12,2)`, which one larger value would
+  have taken out of range. `--schema-report` carries the `limit` and
+  `usedFraction` per column, and the `--log` record carries
+  `decimalsNearLimit`, the names alone, since a record there is one line per
+  file and stays that way.
+
 ### Changed
 
 - Each phase reports its own duration. The conversion's timing used to arrive

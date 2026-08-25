@@ -164,6 +164,40 @@ qvd2parquet: quality gate numeric finished in 1ms: passed
 qvd2parquet: wrote sales.parquet: 77 rows, 9 columns, 4.6 KiB in 16ms overall (4961 rows/s)
 ```
 
+`--inspect` reads only the header and symbol tables, so it answers questions
+about a large file in seconds rather than minutes. Its table carries each
+column's value range rendered in the type the column will be written as, which
+is the point of rendering it at all: a QVD stores a date as a serial day
+number, so a goods-issue date in the year 3025 arrives as the integer 411241
+and sits unremarked among its neighbours.
+
+```text
+COLUMN  QVD TYPE  SYMBOLS  NULLS  PARQUET TYPE    RANGE
+WADAT   DATE      2071     0      date32          2005-01-13 .. 3025-12-08
+BUDAT   DATE      2020     0      date32          2019-12-27 .. 2026-08-31
+VV120   REAL      179590   0      decimal(12, 2)  -8115022364.86 .. 8115022364.86
+KNDNR   ASCII     27767    0      utf8
+```
+
+Read against `BUDAT`, the `WADAT` range is obviously wrong. Text columns have
+no range worth printing and show none.
+
+A decimal's precision is inferred from the values it holds, so it fits them
+exactly by construction and never overflows the data it was built from. What
+varies is how much room is left for a later load, and that is reported
+separately:
+
+```text
+Decimal columns with little room left for larger values:
+  VV120 (decimal(12, 2), 81% used)
+Pin them with --schema if a later load may exceed the range.
+```
+
+`--schema-report` carries the same range per column as JSON, alongside the
+decimal's `limit` and `usedFraction`. The `--log` record does not: it is one
+line per file and stays that way, so it carries only `decimalsNearLimit`, the
+names a scheduled run would want to alert on.
+
 One `schema:` line is printed per output column, explaining exactly why each
 type was chosen. That is the first thing to read when a mixed-type column
 fails; `--schema-report` writes the same reasoning as JSON.
