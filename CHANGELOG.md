@@ -145,6 +145,13 @@ minor one:
   likewise reported a gate failure, as though the output had not matched its
   input, when nobody had finished looking.
 
+  A temporary output that cannot be deleted is now reported and named, instead
+  of the failure being discarded and a partial Parquet file left sitting beside
+  the real one. The delete is retried briefly first: Windows refuses to remove
+  a file while any handle is open, and a virus scanner or the search indexer
+  routinely holds one for a moment on a file just written, so the first attempt
+  can fail on a file that is about to be perfectly deletable.
+
   The quality gate also honours cancellation at all now: it ran on
   `context.Background()`, so Ctrl-C during the read-back did nothing whatsoever
   -- on a wide file, minutes of a signal being ignored. And because

@@ -823,8 +823,16 @@ temporary output is removed.
 
 Ctrl-C (or `SIGTERM`) stops the conversion at the next chunk boundary and the
 quality gate at the next batch, drains what is in flight, removes the temporary
-output, and exits **7**. Nothing is left behind and no existing file at the
-output path is touched, since the rename only happens on success.
+output, and exits **7**.
+
+Nothing is left behind. The partial Parquet file is deleted, and an existing
+file at the output path is untouched — including under `--force`, which
+licenses replacing that file only on success, since the rename happens last.
+If the temporary file cannot be deleted, the run says so and names it, rather
+than leaving an unfinished Parquet file next to the real one with nothing but
+its `.tmp-` suffix to mark it. Removal is retried briefly first, because
+Windows refuses to delete a file while any handle is open and a virus scanner
+or the search indexer routinely holds one for a moment on a file just written.
 
 Cancelling is reported as cancellation, not as bad data. A stopped run has
 written fewer rows than the header declares, which is indistinguishable from a

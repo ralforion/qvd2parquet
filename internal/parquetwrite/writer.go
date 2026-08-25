@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -88,7 +89,7 @@ func Create(finalPath string, schema *arrow.Schema, opts Options, force bool) (*
 	fw, err := pqarrow.NewFileWriter(schema, f, wp, ap)
 	if err != nil {
 		f.Close()
-		os.Remove(tmpPath)
+		removeTemp(tmpPath)
 		return nil, fmt.Errorf("%w: create Parquet writer: %v", ErrOutput, err)
 	}
 	return &Writer{finalPath: finalPath, tmpPath: tmpPath, file: f, fw: fw}, nil
@@ -156,16 +157,40 @@ func (w *Writer) Commit() error {
 
 // Abort closes and removes the temporary output. It is safe to call after a
 // successful Commit, where it does nothing.
-func (w *Writer) Abort() {
+//
+// It reports a removal it could not make. The temporary file is a partial
+// Parquet file, and leaving one next to the real output without a word is
+// worse than the failure itself: the name is the only thing marking it as
+// unfinished.
+func (w *Writer) Abort() error {
 	if w.renamed {
-		return
+		return nil
 	}
 	if !w.closed {
 		w.closed = true
+		// Both are best-effort: the file is about to be deleted, and a footer
+		// that failed to write does not matter. Closing is what releases the
+		// handle so the delete can succeed at all, which is the point.
 		w.fw.Close()
 		w.file.Close()
 	}
-	os.Remove(w.tmpPath)
+	return removeTemp(w.tmpPath)
+}
+
+// removeTemp deletes a temporary output, retrying briefly. Windows refuses to
+// delete a file while any handle on it is open, and a virus scanner or the
+// search indexer routinely holds one for a moment on a file just written, so
+// the first attempt can fail on a file that is about to be perfectly
+// deletable.
+func removeTemp(path string) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		if err = os.Remove(path); err == nil || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt+1) * 40 * time.Millisecond)
+	}
+	return fmt.Errorf("%w: could not remove the partial output %s: %v", ErrOutput, path, err)
 }
 
 // DefaultAllocator is the Arrow allocator used for builders and batches.

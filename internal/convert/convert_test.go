@@ -729,3 +729,50 @@ func readParquet(t *testing.T, path string) (*arrow.Schema, []arrow.Record) {
 	}
 	return schema, out
 }
+
+// Cancelling must never leave a partial Parquet file behind, and must never
+// disturb an output that already exists -- including under --force, which only
+// licenses replacing that file on success.
+func TestCancellationLeavesNoPartialOutput(t *testing.T) {
+	in := buildFixture(t, sampleTable(40000))
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out.parquet")
+
+	// An existing output, which --force may replace only if the run finishes.
+	first := testOptions()
+	first.BatchRows = 4096
+	if _, _, err := Run(context.Background(), in, out, &first, nil); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	opts := testOptions()
+	opts.BatchRows = 64
+	opts.Force = true
+	if _, _, err := Run(ctx, in, out, &opts, nil); !errors.Is(err, ErrCanceled) {
+		t.Fatalf("cancelled run returned %v, want ErrCanceled", err)
+	}
+
+	after, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("the pre-existing output was destroyed: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("--force replaced the existing output with a cancelled run's work")
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "out.parquet" {
+			t.Errorf("cancelling left %q behind", e.Name())
+		}
+	}
+}

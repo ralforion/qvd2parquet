@@ -166,7 +166,11 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	committed := false
 	defer func() {
 		if !committed {
-			w.Abort()
+			// Say so rather than leaving a partial Parquet file sitting next
+			// to the real output with nobody aware of it.
+			if err := w.Abort(); err != nil {
+				logf("warning: %v", err)
+			}
 		}
 	}()
 
