@@ -13,6 +13,67 @@ restarts from it.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-25
+
+The quality gate stops being the slow, silent, uninterruptible part of a wide
+conversion. Everything here follows from running 2.0.0 on the SAP extract that
+prompted it: the gate is now the default, and on a 20.6M-row, 213-column file
+it ran for about twenty minutes at 11% CPU, printing nothing and ignoring
+Ctrl-C.
+
+### Added
+
+- The quality gate reads the output back in parallel, splitting it across
+  workers by row group the same way decoding is split by chunk. It was entirely
+  single-threaded, which on a wide file left the machine idle for minutes at
+  the end of every run: on a 213-column, 1M-row fixture the `full` gate takes
+  60.9s single-threaded and 9.3s at eight workers, cutting the whole run from
+  4.7x the conversion to 2.6x. Row groups are independent, and both the metrics
+  and the fingerprint merge in any order -- which is what already let parallel
+  decoding validate without reordering -- so the verdict does not depend on the
+  worker count. Each worker opens its own handle, for the same reason the
+  decode workers do.
+- The quality gate reports progress on the `--progress` cadence, which is on by
+  default. It previously printed nothing until it finished, so a run that was
+  working looked like one that had hung.
+
+- Ctrl-C and `SIGTERM` now shut down gracefully and report themselves as what
+  they are. A cancelled run stops at the next chunk boundary, drains what is in
+  flight, removes the temporary output and exits with a new code `7`.
+
+  It previously exited `4`, `input error`, with `wrote 234725 rows but the
+  header declares 1000000` -- a stopped run has written fewer rows than the
+  header declares, which is exactly what a truncated input looks like, so
+  pressing Ctrl-C told the user their QVD was corrupt. A cancelled quality gate
+  likewise reported a gate failure, as though the output had not matched its
+  input, when nobody had finished looking.
+
+  A temporary output that cannot be deleted is now reported and named, instead
+  of the failure being discarded and a partial Parquet file left sitting beside
+  the real one. The delete is retried briefly first: Windows refuses to remove
+  a file while any handle is open, and a virus scanner or the search indexer
+  routinely holds one for a moment on a file just written, so the first attempt
+  can fail on a file that is about to be perfectly deletable.
+
+  In batch mode the files not yet started are recorded as cancelled too, rather
+  than carrying a bare `context.Canceled` that mapped to the input-error code
+  and reported unattempted files as unreadable ones. A cancelled batch
+  outranks any individual file's verdict in the summary, since the rest were
+  never tried.
+
+  The signal handler is written against an explicit channel rather than
+  `signal.NotifyContext`, whose stop function cancels the context as well as
+  unregistering the handler: a goroutine waiting on `Done` cannot tell a real
+  signal from the deferred cleanup of a successful run, and announced a
+  cancellation on 37 of 40 successful conversions.
+
+  The quality gate also honours cancellation at all now: it ran on
+  `context.Background()`, so Ctrl-C during the read-back did nothing whatsoever
+  -- on a wide file, minutes of a signal being ignored. And because
+  `signal.NotifyContext` keeps swallowing signals once it has fired, a second
+  Ctrl-C did nothing either. The first signal now restores the default handler
+  and says so, so an impatient second one stops the process outright.
+
 ## [2.0.0] - 2026-08-25
 
 Defaults re-chosen for wide files. A 213-column, 20.6M-row SAP extract was the
@@ -28,8 +89,9 @@ minor one:
 - `--quality-gate` defaults to `full`, so a conversion whose output does not
   match its input now exits 6 where it previously exited 0. The output was
   already wrong in those cases; the gate is what is new. It also makes a
-  default run several times slower -- roughly 2.6x on a wide file -- so a
-  scheduled job should either budget for it or name a cheaper mode.
+  default run several times slower -- roughly 4.7x on a wide file, brought down
+  to 2.6x in 2.1.0 -- so a scheduled job should either budget for it or name a
+  cheaper mode.
 
 ### Changed
 
@@ -54,14 +116,13 @@ minor one:
   mode that fingerprints values, so it is the only one that catches a value
   which survived the type policy but not the round trip. Two consequences to
   plan for. It is not free, and it costs in two places: the gate reads the whole
-  output back and digests every cell, in parallel across `--workers`, and,
+  output back and digests every cell, single-threaded in this release, and,
   because `full` is the only mode that fingerprints values, each decode worker
-  also digests every
-  value inside the conversion itself. Changing only the mode on a 213-column
-  fixture, conversion ran at 106k rows/s under `none`, 114k under `numeric` and
-  62k under `full`, and the whole run took roughly 2.6x as long under `full`.
-  Name `basic` or `numeric` when throughput matters: neither carries the inline
-  cost. And a conversion that previously exited 0 can now exit 6, because
+  also digests every value inside the conversion itself. Changing only the mode
+  on a 213-column fixture, conversion ran at 106k rows/s under `none`, 114k
+  under `numeric` and 62k under `full`, and the whole run took roughly 4.7x as
+  long under `full`. Name `basic` or `numeric` when throughput matters: neither
+  carries the inline cost. And a conversion that previously exited 0 can now exit 6, because
   the file is checked where it previously was not -- a run that starts failing
   under this default was already producing that output, the gate is only now
   reporting it. Validation still reads the temporary file before the final
@@ -119,57 +180,6 @@ minor one:
   finally handed its record over. Measured on a 213-column fixture, ordering
   costs no throughput and slightly less memory, the window being tighter than
   what was previously in flight.
-
-- The quality gate reads the output back in parallel, splitting it across
-  workers by row group the same way decoding is split by chunk. It was entirely
-  single-threaded, which on a wide file left the machine idle for minutes at
-  the end of every run: on a 213-column, 1M-row fixture the `full` gate takes
-  60.9s single-threaded and 9.3s at eight workers, cutting the whole run from
-  4.7x the conversion to 2.6x. Row groups are independent, and both the metrics
-  and the fingerprint merge in any order -- which is what already let parallel
-  decoding validate without reordering -- so the verdict does not depend on the
-  worker count. Each worker opens its own handle, for the same reason the
-  decode workers do.
-- The quality gate reports progress on the `--progress` cadence, which is on by
-  default. It previously printed nothing until it finished, so a run that was
-  working looked like one that had hung.
-
-- Ctrl-C and `SIGTERM` now shut down gracefully and report themselves as what
-  they are. A cancelled run stops at the next chunk boundary, drains what is in
-  flight, removes the temporary output and exits with a new code `7`.
-
-  It previously exited `4`, `input error`, with `wrote 234725 rows but the
-  header declares 1000000` -- a stopped run has written fewer rows than the
-  header declares, which is exactly what a truncated input looks like, so
-  pressing Ctrl-C told the user their QVD was corrupt. A cancelled quality gate
-  likewise reported a gate failure, as though the output had not matched its
-  input, when nobody had finished looking.
-
-  A temporary output that cannot be deleted is now reported and named, instead
-  of the failure being discarded and a partial Parquet file left sitting beside
-  the real one. The delete is retried briefly first: Windows refuses to remove
-  a file while any handle is open, and a virus scanner or the search indexer
-  routinely holds one for a moment on a file just written, so the first attempt
-  can fail on a file that is about to be perfectly deletable.
-
-  In batch mode the files not yet started are recorded as cancelled too, rather
-  than carrying a bare `context.Canceled` that mapped to the input-error code
-  and reported unattempted files as unreadable ones. A cancelled batch
-  outranks any individual file's verdict in the summary, since the rest were
-  never tried.
-
-  The signal handler is written against an explicit channel rather than
-  `signal.NotifyContext`, whose stop function cancels the context as well as
-  unregistering the handler: a goroutine waiting on `Done` cannot tell a real
-  signal from the deferred cleanup of a successful run, and announced a
-  cancellation on 37 of 40 successful conversions.
-
-  The quality gate also honours cancellation at all now: it ran on
-  `context.Background()`, so Ctrl-C during the read-back did nothing whatsoever
-  -- on a wide file, minutes of a signal being ignored. And because
-  `signal.NotifyContext` keeps swallowing signals once it has fired, a second
-  Ctrl-C did nothing either. The first signal now restores the default handler
-  and says so, so an impatient second one stops the process outright.
 
 ### Fixed
 
@@ -517,7 +527,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/ralforion/qvd2parquet/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/ralforion/qvd2parquet/compare/v1.0.1...v2.0.0
 [1.0.1]: https://github.com/ralforion/qvd2parquet/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/ralforion/qvd2parquet/compare/v0.5.0...v1.0.0
