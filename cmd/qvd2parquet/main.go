@@ -103,7 +103,8 @@ func run() int {
 			"  3  schema/type policy error\n"+
 			"  4  input read/decode error\n"+
 			"  5  output/write error\n"+
-			"  6  quality gate failure\n")
+			"  6  quality gate failure\n"+
+			"  7  cancelled by Ctrl-C or SIGTERM\n")
 	}
 
 	def := convert.DefaultOptions()
@@ -243,19 +244,34 @@ func run() int {
 		return usageErr(err)
 	}
 
-	// signal.NotifyContext keeps swallowing signals once it has fired, so a
-	// second Ctrl-C would do nothing while a long phase -- the quality gate on
-	// a wide file -- winds down. Restore the default handler on the first
-	// signal, so an impatient second one terminates the process outright, and
-	// say so, because a Ctrl-C with no visible effect reads as a hang.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// Handled explicitly rather than with signal.NotifyContext, whose stop
+	// function cancels the context as well as unregistering the handler. A
+	// goroutine waiting on Done therefore cannot tell a real signal from the
+	// deferred cleanup of a successful run, and announces a cancellation on
+	// almost every one.
+	//
+	// Once a signal arrives the default handler is restored, so an impatient
+	// second Ctrl-C terminates the process outright: the first one only asks,
+	// and the step in progress -- the quality gate on a wide file -- can take
+	// minutes to wind down. A signal with no visible effect reads as a hang,
+	// hence the message.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
 	go func() {
-		<-ctx.Done()
-		stop()
-		fmt.Fprintf(os.Stderr,
-			"%s: cancelling, finishing the current step; press Ctrl-C again to stop now\n",
-			programName)
+		select {
+		case <-signals:
+			cancel()
+			signal.Stop(signals)
+			fmt.Fprintf(os.Stderr,
+				"%s: cancelling, finishing the current step; press Ctrl-C again to stop now\n",
+				programName)
+		case <-ctx.Done():
+			// The run finished and the deferred cancel fired. Not a signal:
+			// say nothing.
+		}
 	}()
 
 	fmt.Fprintln(os.Stderr, banner())

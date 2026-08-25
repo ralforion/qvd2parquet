@@ -152,6 +152,12 @@ minor one:
   routinely holds one for a moment on a file just written, so the first attempt
   can fail on a file that is about to be perfectly deletable.
 
+  The signal handler is written against an explicit channel rather than
+  `signal.NotifyContext`, whose stop function cancels the context as well as
+  unregistering the handler: a goroutine waiting on `Done` cannot tell a real
+  signal from the deferred cleanup of a successful run, and announced a
+  cancellation on 37 of 40 successful conversions.
+
   The quality gate also honours cancellation at all now: it ran on
   `context.Background()`, so Ctrl-C during the read-back did nothing whatsoever
   -- on a wide file, minutes of a signal being ignored. And because
