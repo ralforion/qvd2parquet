@@ -235,18 +235,20 @@ func TestFormatScaled(t *testing.T) {
 // float64 representation error, and stopping at the first sent a reader to a
 // Qlik script to find the rest.
 func TestDecimalStrictReportsSeveralExamples(t *testing.T) {
-	// Large magnitudes where a third decimal exceeds what a double holds, so
-	// every one of them fails at the inferred scale.
+	// Four decimals against a scale of two, so each value misses the scale by
+	// 0.22 when scaled. Deliberately not a value that merely brushes
+	// decimalTolerance: scaling multiplies before comparing, and whether the
+	// compiler fuses that multiply differs by architecture, so a borderline
+	// fixture passes on arm64 and fails on amd64.
 	var syms []qvd.Symbol
 	for _, v := range []float64{
-		8115022364.865, 7115022364.865, 6115022364.865,
-		5115022364.865, 4115022364.865,
+		1234.5678, 2234.5678, 3234.5678, 4234.5678, 5234.5678,
 	} {
 		syms = append(syms, qvdtest.Float(v))
 	}
-	syms = append(syms, qvdtest.Float(12.125))
+	syms = append(syms, qvdtest.Float(12.25))
 
-	ex := &DecimalExtractor{Scale: 3, Strict: true, Source: DecimalNumeric}
+	ex := &DecimalExtractor{Scale: 2, Strict: true, Source: DecimalNumeric}
 	_, _, err := ResolveDecimalSpec("Preisdifferenzen", syms, ex)
 	if err == nil {
 		t.Fatal("strict mode accepted values it cannot hold exactly")
@@ -267,13 +269,20 @@ func TestDecimalStrictReportsSeveralExamples(t *testing.T) {
 		t.Errorf("listed %d examples, want %d:\n%s", got, StrictExamples, msg)
 	}
 
-	// The value as stored, which is what separates float64 noise from a real
-	// third decimal in the source.
-	if !strings.Contains(msg, "8115022364.864999771") {
+	// Both renderings of the value: the shortest form, and what the double
+	// actually holds. That difference is what separates representation error
+	// from a decimal really present in the source.
+	if !strings.Contains(msg, "float 1234.5678") {
+		t.Errorf("message does not show the value's shortest form:\n%s", msg)
+	}
+	if !strings.Contains(msg, "stored as 1234.5678") {
 		t.Errorf("message does not show what the double actually holds:\n%s", msg)
 	}
+	if !strings.Contains(msg, "not a multiple of 0.01") {
+		t.Errorf("message does not name the step:\n%s", msg)
+	}
 	// Never scientific notation: it hides the decimals in question.
-	if strings.Contains(msg, "e+09") {
+	if strings.ContainsAny(msg, "eE") && strings.Contains(msg, "e+") {
 		t.Errorf("value rendered in scientific notation:\n%s", msg)
 	}
 	// A pure float has no display string, so quoting an empty one says nothing.
@@ -288,8 +297,8 @@ func TestDecimalStrictReportsSeveralExamples(t *testing.T) {
 
 // Fewer offenders than the cap are all listed, with no truncation note.
 func TestDecimalStrictListsAllWhenFewerThanCap(t *testing.T) {
-	syms := []qvd.Symbol{qvdtest.Float(8115022364.865), qvdtest.Float(12.125)}
-	ex := &DecimalExtractor{Scale: 3, Strict: true, Source: DecimalNumeric}
+	syms := []qvd.Symbol{qvdtest.Float(1234.5678), qvdtest.Float(12.25)}
+	ex := &DecimalExtractor{Scale: 2, Strict: true, Source: DecimalNumeric}
 	_, _, err := ResolveDecimalSpec("V", syms, ex)
 	if err == nil {
 		t.Fatal("strict mode accepted a value it cannot hold exactly")
