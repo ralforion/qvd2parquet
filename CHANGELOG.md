@@ -4,12 +4,32 @@ All notable changes to qvd2parquet are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-From 1.0.0 the CLI surface and the conversion defaults are stable: a flag will
+From 2.0.0 the CLI surface and the conversion defaults are stable: a flag will
 not be removed or change its meaning, and a default will not change what an
 existing file converts to, outside a major bump. New behaviour arrives behind a
-new flag or a new value for an existing one.
+new flag or a new value for an existing one. 2.0.0 is that major bump: it is
+the release where the defaults were re-chosen for wide files, and the promise
+restarts from it.
 
 ## [Unreleased]
+
+## [2.0.0] - 2026-08-25
+
+Defaults re-chosen for wide files. A 213-column, 20.6M-row SAP extract was the
+case that prompted it: it converted at 23k rows/s while using 16% of a 16-core
+Xeon and 36 GB of resident memory. None of the changes below alter the data a
+QVD converts to. Two of them are why this is a major release rather than a
+minor one:
+
+- `--batch-rows` no longer sets the Parquet row group size, so it has changed
+  meaning. If you passed it to control row groups, pass `--row-group-rows`
+  instead; if you passed it to control memory, it still does that and now
+  defaults to sizing itself.
+- `--quality-gate` defaults to `full`, so a conversion whose output does not
+  match its input now exits 6 where it previously exited 0. The output was
+  already wrong in those cases; the gate is what is new. It also makes a
+  default run several times slower -- roughly 4.7x on a wide file -- so a
+  scheduled job should either budget for it or name a cheaper mode.
 
 ### Changed
 
@@ -441,7 +461,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/ralforion/qvd2parquet/compare/v1.0.1...v2.0.0
 [1.0.1]: https://github.com/ralforion/qvd2parquet/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/ralforion/qvd2parquet/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/ralforion/qvd2parquet/compare/v0.4.0...v0.5.0
