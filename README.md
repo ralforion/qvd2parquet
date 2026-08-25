@@ -97,6 +97,12 @@ GitHub release.
 
 ## Usage
 
+Options take one dash or two -- `-workers 4` and `--workers 4` are the same
+flag, as are `-workers=4` and `--workers=4`. `--help` prints them with one
+dash; this README writes two. The one place the form matters is a boolean:
+write `--empty-as-null=false`, because `--empty-as-null false` leaves `false`
+sitting in the argument list as if it were a file name.
+
 ```text
 qvd2parquet [options] input.qvd output.parquet
 qvd2parquet --inspect [options] input.qvd
@@ -119,15 +125,10 @@ qvd2parquet --inspect [options] input.qvd
   -decimal-source auto       Decimal extraction: auto|text|numeric
   -decimal-strict            Fail instead of rounding when a value does not fit its scale
   -compression zstd          Parquet compression: zstd|snappy|gzip|uncompressed
-<<<<<<< HEAD
-  -batch-rows 65536          Rows per Arrow batch and Parquet row group
-  -workers 0                 Decode workers, 0 means one per 2 CPUs (minimum 2)
-=======
   -batch-rows 0              Rows per Arrow batch, 0 sizes it from the column
                              count to hold in-flight memory steady
   -row-group-rows 65536      Rows per Parquet row group
-  -workers 0                 Decode workers, 0 means one per 4 CPUs (minimum 2)
->>>>>>> c3d47c3 (Separate the Arrow batch size from the Parquet row group size)
+  -workers 0                 Decode workers, 0 means one per 2 CPUs (minimum 2)
   -timezone none             none|Local|UTC|IANA timezone name
   -schema path.json          Explicit schema override
   -schema-report path.json   Write the inferred schema/profile report

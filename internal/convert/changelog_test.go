@@ -83,3 +83,21 @@ func TestReadmeBannerMatchesCode(t *testing.T) {
 		}
 	}
 }
+
+// TestDocsHaveNoConflictMarkers catches a merge resolution that was staged
+// without being finished. Markdown is not compiled and no other test reads it,
+// so a botched rebase can otherwise reach a release archive: v2.0.0 shipped a
+// README with an unresolved block in the middle of its flag reference.
+func TestDocsHaveNoConflictMarkers(t *testing.T) {
+	for _, name := range []string{"README.md", "CHANGELOG.md"} {
+		body := readTextFile(t, name)
+		for i, line := range strings.Split(body, "\n") {
+			switch {
+			case strings.HasPrefix(line, "<<<<<<< "),
+				strings.HasPrefix(line, ">>>>>>> "),
+				line == "=======":
+				t.Errorf("%s:%d: unresolved conflict marker: %s", name, i+1, line)
+			}
+		}
+	}
+}
