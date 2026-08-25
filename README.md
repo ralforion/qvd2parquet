@@ -120,7 +120,7 @@ qvd2parquet --inspect [options] input.qvd
   -decimal-strict            Fail instead of rounding when a value does not fit its scale
   -compression zstd          Parquet compression: zstd|snappy|gzip|uncompressed
   -batch-rows 65536          Rows per Arrow batch and Parquet row group
-  -workers 0                 Decode workers, 0 means one per 4 CPUs (minimum 2)
+  -workers 0                 Decode workers, 0 means one per 2 CPUs (minimum 2)
   -timezone none             none|Local|UTC|IANA timezone name
   -schema path.json          Explicit schema override
   -schema-report path.json   Write the inferred schema/profile report
@@ -250,7 +250,7 @@ workers between them**, so the total stays near the default worker count:
 
 ```text
 $ qvd2parquet --out-dir out --file-workers 4 ./qvds
-qvd2parquet: converting 50 file(s), 4 at a time, 1 decode worker(s) each
+qvd2parquet: converting 50 file(s), 4 at a time, 2 decode worker(s) each
 ```
 
 The default is `1`: one file at a time, decoding it with the default worker
@@ -260,7 +260,7 @@ left to a shell loop — four separate processes would each start their own full
 set of workers, oversubscribing the machine fourfold.
 
 The budget being divided is the automatic worker count, not one per CPU, which
-is why four files at a time on a 16-CPU machine get one worker each. Raise
+is why four files at a time on a 16-CPU machine get two workers each. Raise
 `--workers` alongside `--file-workers` when the machine has headroom for more:
 `--file-workers 4 --workers 16` gives four each.
 
@@ -854,7 +854,7 @@ Decode only (no Parquet writing), the fixture split into ~98 chunks:
 | 2 | 8.3M |
 | 4 | 13.6M |
 | 8 | 18.8M |
-| `--workers=0` default, 4 here | 13.8M |
+| `--workers=0` default, 8 here | 18.4M |
 | one per CPU, 16 here | 28.6M |
 
 Decoding is the parallel half of the pipeline, and it scales: 6x on 16 CPUs.
@@ -866,12 +866,14 @@ default 65536-row batch this fixture is only four chunks, so the `8` and
 batch and reports the worker count each case actually ran, so a clamp cannot
 hide in the numbers again.
 
-So `--workers=0` resolving to one per four CPUs is a memory decision, not a
-free one: it gives up decode throughput to hold in-flight Arrow memory down,
-which on a wide file is the binding constraint (see [Memory](#memory)). Raise
-it when the machine has headroom for the extra batches. Only decoding is
-parallel — the Parquet writer is a single goroutine — so the full pipeline
-scales less steeply than this table.
+`--workers=0` resolves to one per two CPUs: about two thirds of the decode
+throughput of one per CPU, at half the batches in flight. That trade is what
+the default is for — on a wide file, in-flight Arrow memory is the binding
+constraint, not decode (see [Memory](#memory)). On a hyper-threaded machine,
+where `runtime.NumCPU()` counts threads, it works out to roughly one worker per
+physical core. Raise it when the machine has headroom; lower it when it does
+not. Only decoding is parallel — the Parquet writer is a single goroutine — so
+the full pipeline scales less steeply than this table.
 
 Full pipeline including Parquet writing:
 

@@ -546,8 +546,8 @@ func TestDefaultWorkers(t *testing.T) {
 	if got < MinDefaultWorkers {
 		t.Errorf("DefaultWorkers() = %d, want at least the floor %d", got, MinDefaultWorkers)
 	}
-	if want := runtime.NumCPU() / 4; want >= MinDefaultWorkers && got != want {
-		t.Errorf("DefaultWorkers() = %d, want NumCPU/4 = %d", got, want)
+	if want := runtime.NumCPU() / 2; want >= MinDefaultWorkers && got != want {
+		t.Errorf("DefaultWorkers() = %d, want NumCPU/2 = %d", got, want)
 	}
 	if got > runtime.NumCPU() && runtime.NumCPU() >= MinDefaultWorkers {
 		t.Errorf("DefaultWorkers() = %d, must not exceed NumCPU = %d", got, runtime.NumCPU())

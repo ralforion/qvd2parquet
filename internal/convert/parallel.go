@@ -66,16 +66,20 @@ func Chunks(rows int64, batchRows int, recordSize int, recordStart int64) []Deco
 // machine still decodes in parallel.
 const MinDefaultWorkers = 2
 
-// DefaultWorkers is the worker count --workers=0 resolves to: one per four
+// DefaultWorkers is the worker count --workers=0 resolves to: one per two
 // CPUs, never fewer than MinDefaultWorkers.
 //
-// It is deliberately below runtime.NumCPU(). Only decoding is parallel; the
-// Parquet writer is a single goroutine, so throughput stops scaling well
-// before one worker per CPU. Every extra worker still costs its share of
-// in-flight memory, which on a wide file is roughly
-// workers * batch-rows * columns * 16 bytes and dominates resident size.
+// It is deliberately below runtime.NumCPU(). Decoding itself scales close to
+// linearly, but it is only half the pipeline -- the Parquet writer is a single
+// goroutine -- and every worker costs its share of in-flight Arrow memory,
+// which on a wide file is roughly workers * batch-rows * columns * 16 bytes
+// and dominates resident size. Half the CPUs keeps most of the decode
+// throughput at half the batches in flight.
+//
+// The divisor applies to logical CPUs, so on a hyper-threaded machine this is
+// about one worker per physical core.
 func DefaultWorkers() int {
-	n := runtime.NumCPU() / 4
+	n := runtime.NumCPU() / 2
 	if n < MinDefaultWorkers {
 		n = MinDefaultWorkers
 	}
