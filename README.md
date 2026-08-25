@@ -417,6 +417,7 @@ Rules worth knowing:
 | 4 | input read/decode error |
 | 5 | output/write error |
 | 6 | quality gate failure |
+| 7 | cancelled by Ctrl-C or SIGTERM |
 
 ## Type resolution
 
@@ -817,6 +818,28 @@ metric is order-independent regardless, so validation is unaffected either way.
 
 On a failure the context is cancelled, in-flight chunks are drained, and the
 temporary output is removed.
+
+### Cancelling a run
+
+Ctrl-C (or `SIGTERM`) stops the conversion at the next chunk boundary and the
+quality gate at the next batch, drains what is in flight, removes the temporary
+output, and exits **7**. Nothing is left behind and no existing file at the
+output path is touched, since the rename only happens on success.
+
+Cancelling is reported as cancellation, not as bad data. A stopped run has
+written fewer rows than the header declares, which is indistinguishable from a
+truncated input if you only look at the counts, and a stopped gate has verified
+only part of the file. Neither is an `input error` or a `quality gate failure`,
+and neither exits 4 or 6.
+
+The first signal is graceful; a second one terminates immediately. That matters
+on a wide file, where the gate can run for minutes after the last `converted`
+line:
+
+```text
+qvd2parquet: cancelling, finishing the current step; press Ctrl-C again to stop now
+qvd2parquet: canceled after 234725 of 1000000 rows
+```
 
 ## Quality gate
 

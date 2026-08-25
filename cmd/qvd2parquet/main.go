@@ -27,6 +27,7 @@ const (
 	exitInput       = 4
 	exitOutput      = 5
 	exitQuality     = 6
+	exitCanceled    = 7
 )
 
 // Program identity. version is overridden at build time with
@@ -242,8 +243,20 @@ func run() int {
 		return usageErr(err)
 	}
 
+	// signal.NotifyContext keeps swallowing signals once it has fired, so a
+	// second Ctrl-C would do nothing while a long phase -- the quality gate on
+	// a wide file -- winds down. Restore the default handler on the first
+	// signal, so an impatient second one terminates the process outright, and
+	// say so, because a Ctrl-C with no visible effect reads as a hang.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop()
+		fmt.Fprintf(os.Stderr,
+			"%s: cancelling, finishing the current step; press Ctrl-C again to stop now\n",
+			programName)
+	}()
 
 	fmt.Fprintln(os.Stderr, banner())
 
@@ -389,6 +402,8 @@ func exitCodeFor(err error) int {
 		return exitSchema
 	case errors.Is(err, qvd.ErrUnsupported):
 		return exitUnsupported
+	case errors.Is(err, convert.ErrCanceled):
+		return exitCanceled
 	case errors.Is(err, convert.ErrInput):
 		return exitInput
 	default:

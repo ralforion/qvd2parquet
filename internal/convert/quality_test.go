@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -302,7 +303,7 @@ func TestQualityGateWorkerCountsAgree(t *testing.T) {
 		o := base
 		o.Quality = QualityFull
 		o.Workers = workers
-		report, err := RunQualityGate(in, out, out, rs, metrics, &o, nil)
+		report, err := RunQualityGate(context.Background(), in, out, out, rs, metrics, &o, nil)
 		if err != nil {
 			t.Fatalf("--workers=%d: %v", workers, err)
 		}
@@ -357,11 +358,50 @@ func TestQualityGateParallelStillCatchesTruncation(t *testing.T) {
 	o := opts
 	o.Quality = QualityFull
 	o.Workers = 8
-	report, err := RunQualityGate(in, full, full, rs, metrics, &o, nil)
+	report, err := RunQualityGate(context.Background(), in, full, full, rs, metrics, &o, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if report.Passed {
 		t.Error("a row count mismatch passed the parallel gate")
+	}
+}
+
+// Cancelling during the read-back must stop it, and must not be reported as a
+// quality gate failure: nobody finished looking, which is not the same as the
+// output failing to match its input.
+func TestQualityGateCancellation(t *testing.T) {
+	const rows = 20000
+	in := buildFixture(t, sampleTable(rows))
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out.parquet")
+
+	opts := testOptions()
+	opts.Quality = QualityNone
+	opts.BatchRows = 512
+	opts.RowGroupRows = 512
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	qf, rs, metrics := reconvert(t, in, &opts)
+	defer qf.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	o := opts
+	o.Quality = QualityFull
+	report, err := RunQualityGate(ctx, in, out, out, rs, metrics, &o, nil)
+	if err == nil {
+		t.Fatal("a cancelled context should abort the gate")
+	}
+	if !errors.Is(err, ErrCanceled) {
+		t.Errorf("gate cancellation reported as %v, want ErrCanceled", err)
+	}
+	if errors.Is(err, ErrQualityGate) {
+		t.Errorf("cancellation reported as a gate failure, which reads as bad output: %v", err)
+	}
+	if report != nil && !report.Passed {
+		t.Error("a cancelled gate must not produce a failing report")
 	}
 }

@@ -188,7 +188,7 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	var report *QualityReport
 	if opts.Quality != QualityNone {
 		gateStart := time.Now()
-		report, err = RunQualityGate(inputPath, outputPath, w.TempPath(), rs, metrics, opts, logf)
+		report, err = RunQualityGate(ctx, inputPath, outputPath, w.TempPath(), rs, metrics, opts, logf)
 		if err != nil {
 			return nil, nil, err
 		}

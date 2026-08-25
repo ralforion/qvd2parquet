@@ -22,8 +22,8 @@ import (
 // logf may be nil. When it is not, and --progress is enabled, the read-back
 // reports rows verified as it goes: on a wide file the gate runs for minutes
 // with nothing else to show for itself, which reads as a hang.
-func RunQualityGate(inputPath, outputPath, parquetPath string, rs *ResolvedSchema,
-	source *Metrics, opts *Options, logf Logf) (*QualityReport, error) {
+func RunQualityGate(ctx context.Context, inputPath, outputPath, parquetPath string,
+	rs *ResolvedSchema, source *Metrics, opts *Options, logf Logf) (*QualityReport, error) {
 
 	rep := &QualityReport{
 		Input:      inputPath,
@@ -33,8 +33,14 @@ func RunQualityGate(inputPath, outputPath, parquetPath string, rs *ResolvedSchem
 		RowsSource: source.Rows,
 	}
 
-	pqMetrics, pqRows, pqSchema, err := readParquetMetrics(parquetPath, rs, opts, logf)
+	pqMetrics, pqRows, pqSchema, err := readParquetMetrics(ctx, parquetPath, rs, opts, logf)
 	if err != nil {
+		// A stopped run is not a failed check. Folding it into the report
+		// would tell the user their output did not match its input, when the
+		// truth is that nobody finished looking.
+		if errors.Is(err, ErrCanceled) {
+			return nil, err
+		}
 		rep.Passed = false
 		rep.Errors = append(rep.Errors, err.Error())
 		return rep, nil
@@ -165,7 +171,7 @@ func compareSchemas(want, got *arrow.Schema) error {
 // machine the same way the conversion does. Each worker opens its own handle,
 // for the reason decode workers do: Windows serializes concurrent ReadAt on a
 // shared one.
-func readParquetMetrics(path string, rs *ResolvedSchema, opts *Options, logf Logf) (*Metrics, int64, *arrow.Schema, error) {
+func readParquetMetrics(ctx context.Context, path string, rs *ResolvedSchema, opts *Options, logf Logf) (*Metrics, int64, *arrow.Schema, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("open Parquet output %s: %w", path, err)
@@ -244,7 +250,7 @@ func readParquetMetrics(path string, rs *ResolvedSchema, opts *Options, logf Log
 		wg.Add(1)
 		go func(i int, block []int) {
 			defer wg.Done()
-			partials[i], counts[i], errs[i] = readRowGroups(path, block, rs, opts, hash, report)
+			partials[i], counts[i], errs[i] = readRowGroups(ctx, path, block, rs, opts, hash, report)
 		}(i, block)
 	}
 	wg.Wait()
@@ -266,8 +272,8 @@ func readParquetMetrics(path string, rs *ResolvedSchema, opts *Options, logf Log
 
 // readRowGroups computes metrics over one worker's span of row groups, through
 // a handle of its own.
-func readRowGroups(path string, groups []int, rs *ResolvedSchema, opts *Options,
-	hash bool, report func(int64)) (*Metrics, int64, error) {
+func readRowGroups(ctx context.Context, path string, groups []int, rs *ResolvedSchema,
+	opts *Options, hash bool, report func(int64)) (*Metrics, int64, error) {
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -286,7 +292,7 @@ func readRowGroups(path string, groups []int, rs *ResolvedSchema, opts *Options,
 	if err != nil {
 		return nil, 0, fmt.Errorf("read Parquet output %s: %w", path, err)
 	}
-	rr, err := arrowRdr.GetRecordReader(context.Background(), nil, groups)
+	rr, err := arrowRdr.GetRecordReader(ctx, nil, groups)
 	if err != nil {
 		return nil, 0, fmt.Errorf("read Parquet records from %s: %w", path, err)
 	}
@@ -295,6 +301,12 @@ func readRowGroups(path string, groups []int, rs *ResolvedSchema, opts *Options,
 	metrics := NewMetrics(rs)
 	var rows int64
 	for {
+		// Ctrl-C during the gate must stop it. On a wide file the read-back
+		// runs for minutes, and a signal that appears to do nothing at all is
+		// worse than no signal handling.
+		if err := ctx.Err(); err != nil {
+			return nil, 0, fmt.Errorf("%w while verifying the output", ErrCanceled)
+		}
 		rec, err := rr.Read()
 		if errors.Is(err, io.EOF) {
 			break

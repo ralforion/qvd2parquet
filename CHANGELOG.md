@@ -134,6 +134,24 @@ minor one:
   default. It previously printed nothing until it finished, so a run that was
   working looked like one that had hung.
 
+- Ctrl-C and `SIGTERM` now shut down gracefully and report themselves as what
+  they are. A cancelled run stops at the next chunk boundary, drains what is in
+  flight, removes the temporary output and exits with a new code `7`.
+
+  It previously exited `4`, `input error`, with `wrote 234725 rows but the
+  header declares 1000000` -- a stopped run has written fewer rows than the
+  header declares, which is exactly what a truncated input looks like, so
+  pressing Ctrl-C told the user their QVD was corrupt. A cancelled quality gate
+  likewise reported a gate failure, as though the output had not matched its
+  input, when nobody had finished looking.
+
+  The quality gate also honours cancellation at all now: it ran on
+  `context.Background()`, so Ctrl-C during the read-back did nothing whatsoever
+  -- on a wide file, minutes of a signal being ignored. And because
+  `signal.NotifyContext` keeps swallowing signals once it has fired, a second
+  Ctrl-C did nothing either. The first signal now restores the default handler
+  and says so, so an impatient second one stops the process outright.
+
 ### Fixed
 
 - `BenchmarkDecode` measured four workers in every case above four. The

@@ -17,6 +17,13 @@ import (
 // ErrInput marks an input read/decode failure (CLI exit code 4).
 var ErrInput = errors.New("input error")
 
+// ErrCanceled marks a run stopped by the caller, usually Ctrl-C or SIGTERM. It
+// is deliberately distinct from ErrInput: a cancelled run has written fewer
+// rows than the header declares, which is exactly what a truncated input looks
+// like, and reporting one as the other tells a user their data is corrupt when
+// they simply stopped the job.
+var ErrCanceled = errors.New("canceled")
+
 // DecodeChunk is one contiguous range of records assigned to a worker.
 type DecodeChunk struct {
 	Index      int64
@@ -281,8 +288,8 @@ func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressF
 	if runErr != nil {
 		return nil, runErr
 	}
-	if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
-		return nil, err
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("%w after %d of %d rows", ErrCanceled, written, f.NoOfRecords)
 	}
 	if written != f.NoOfRecords {
 		return nil, fmt.Errorf("%w: wrote %d rows but the header declares %d", ErrInput, written, f.NoOfRecords)
