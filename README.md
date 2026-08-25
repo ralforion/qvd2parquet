@@ -932,10 +932,14 @@ The overhead is per cell, not per row, so it grows with width. On a 213-column,
 
 | Mode | Wall clock | Overhead vs `none` |
 | --- | --- | --- |
-| `none` | 20.3s | — |
-| `basic` | 32.4s | ~1.6x |
-| `numeric` | 32.6s | ~1.6x |
-| `full` (default) | 95.4s | ~4.7x |
+| `none` | 10.4s | — |
+| `basic` | 12.7s | ~1.2x |
+| `numeric` | 12.7s | ~1.2x |
+| `full` (default) | 27.0s | ~2.6x |
+
+The read-back is split across workers by row group, the same way decoding is,
+so it scales with `--workers`: on that fixture the `full` gate takes 60.9s
+single-threaded and 9.3s at eight workers.
 
 `full` is the only mode that pays part of that inside the conversion rather
 than after it, because only it fingerprints values, and the decode workers

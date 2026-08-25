@@ -274,3 +274,94 @@ func TestQualityGateReportsProgress(t *testing.T) {
 		}
 	}
 }
+
+// The gate splits the output across workers by row group. Both the metrics and
+// the full mode's fingerprint merge in any order, so the verdict must not
+// depend on how many workers read it -- including the digests themselves, not
+// merely the pass/fail.
+func TestQualityGateWorkerCountsAgree(t *testing.T) {
+	const rows = 30000
+	in := buildFixture(t, sampleTable(rows))
+	dir := t.TempDir()
+
+	// One shared output, verified repeatedly at different worker counts.
+	out := filepath.Join(dir, "out.parquet")
+	base := testOptions()
+	base.Quality = QualityNone
+	base.BatchRows = 512 // ~59 row groups, so the split is real
+	base.RowGroupRows = 512
+	if _, _, err := Run(context.Background(), in, out, &base, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	qf, rs, metrics := reconvert(t, in, &base)
+	defer qf.Close()
+
+	var want string
+	for _, workers := range []int{1, 2, 4, 16} {
+		o := base
+		o.Quality = QualityFull
+		o.Workers = workers
+		report, err := RunQualityGate(in, out, out, rs, metrics, &o, nil)
+		if err != nil {
+			t.Fatalf("--workers=%d: %v", workers, err)
+		}
+		if !report.Passed {
+			t.Fatalf("--workers=%d failed the gate: %+v", workers, report.Errors)
+		}
+		if report.RowsParquet != rows {
+			t.Errorf("--workers=%d counted %d rows, want %d", workers, report.RowsParquet, rows)
+		}
+		// Compare the per-column fingerprints, not just the verdict: a merge
+		// that lost or double-counted a row group could still pass.
+		var h strings.Builder
+		for _, c := range report.Columns {
+			h.WriteString(c.Name + "=" + c.Parquet.Hash + "/" + c.Parquet.Sum + ";")
+		}
+		if want == "" {
+			want = h.String()
+			continue
+		}
+		if h.String() != want {
+			t.Errorf("--workers=%d produced different Parquet-side fingerprints", workers)
+		}
+	}
+}
+
+// A corrupt output must still be caught when the gate reads it in parallel.
+func TestQualityGateParallelStillCatchesTruncation(t *testing.T) {
+	const rows = 20000
+	in := buildFixture(t, sampleTable(rows))
+	dir := t.TempDir()
+	full := filepath.Join(dir, "full.parquet")
+	short := filepath.Join(dir, "short.parquet")
+
+	opts := testOptions()
+	opts.Quality = QualityNone
+	opts.BatchRows = 512
+	opts.RowGroupRows = 512
+	if _, _, err := Run(context.Background(), in, full, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A file holding only the first half of the rows.
+	shortOpts := opts
+	if _, _, err := Run(context.Background(), in, short, &shortOpts, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	qf, rs, metrics := reconvert(t, in, &opts)
+	defer qf.Close()
+	// Verify the real file against metrics claiming twice the rows.
+	metrics.Rows *= 2
+
+	o := opts
+	o.Quality = QualityFull
+	o.Workers = 8
+	report, err := RunQualityGate(in, full, full, rs, metrics, &o, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Passed {
+		t.Error("a row count mismatch passed the parallel gate")
+	}
+}

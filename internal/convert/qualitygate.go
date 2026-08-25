@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -157,6 +158,13 @@ func compareSchemas(want, got *arrow.Schema) error {
 
 // readParquetMetrics reopens the written Parquet file and recomputes the same
 // metrics from its data, never reusing the in-memory batches from the writer.
+//
+// Row groups are read in parallel. They are independent, and both the metrics
+// and the full mode's fingerprint merge in any order -- that is what lets
+// parallel decoding validate without reordering -- so the gate can use the
+// machine the same way the conversion does. Each worker opens its own handle,
+// for the reason decode workers do: Windows serializes concurrent ReadAt on a
+// shared one.
 func readParquetMetrics(path string, rs *ResolvedSchema, opts *Options, logf Logf) (*Metrics, int64, *arrow.Schema, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -170,8 +178,8 @@ func readParquetMetrics(path string, rs *ResolvedSchema, opts *Options, logf Log
 	}
 	defer rdr.Close()
 
-	mem := memory.NewGoAllocator()
-	arrowRdr, err := pqarrow.NewFileReader(rdr, pqarrow.ArrowReadProperties{BatchSize: int64(opts.BatchRows)}, mem)
+	arrowRdr, err := pqarrow.NewFileReader(rdr,
+		pqarrow.ArrowReadProperties{BatchSize: int64(opts.BatchRows)}, memory.NewGoAllocator())
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("read Parquet output %s: %w", path, err)
 	}
@@ -180,33 +188,111 @@ func readParquetMetrics(path string, rs *ResolvedSchema, opts *Options, logf Log
 		return nil, 0, nil, fmt.Errorf("read Parquet schema from %s: %w", path, err)
 	}
 
-	metrics := NewMetrics(rs)
-	rr, err := arrowRdr.GetRecordReader(context.Background(), nil, nil)
-	if err != nil {
-		return nil, 0, nil, fmt.Errorf("read Parquet records from %s: %w", path, err)
-	}
-	defer rr.Release()
-
-	hash := opts.Quality == QualityFull
-	// The gate re-reads the whole output single-threaded, which on a wide file
-	// takes minutes. Report the same way conversion does, on the same
-	// --progress cadence, so the run does not look stalled.
+	groups := rdr.NumRowGroups()
 	totalRows := rdr.NumRows()
+	if groups == 0 {
+		return NewMetrics(rs), 0, schema, nil
+	}
+
+	// Contiguous blocks rather than round robin, so each worker reads forwards
+	// through its own span of the file.
+	workers := WorkerCount(opts.Workers, groups)
+	per := (groups + workers - 1) / workers
+	var assignments [][]int
+	for lo := 0; lo < groups; lo += per {
+		hi := lo + per
+		if hi > groups {
+			hi = groups
+		}
+		block := make([]int, 0, hi-lo)
+		for g := lo; g < hi; g++ {
+			block = append(block, g)
+		}
+		assignments = append(assignments, block)
+	}
+
+	// Progress is aggregated across workers, so it counts the whole gate
+	// rather than whichever worker happens to report.
+	hash := opts.Quality == QualityFull
 	gateStart := time.Now()
-	nextProgress := opts.ProgressEvery
-	report := func(rows int64) {
-		if logf == nil || opts.ProgressEvery <= 0 || rows < nextProgress {
+	var progMu sync.Mutex
+	var seen, nextProgress int64 = 0, opts.ProgressEvery
+	report := func(n int64) {
+		if logf == nil || opts.ProgressEvery <= 0 {
+			return
+		}
+		progMu.Lock()
+		defer progMu.Unlock()
+		seen += n
+		if seen < nextProgress {
 			return
 		}
 		el := time.Since(gateStart)
 		logf("quality gate %s: verified %d/%d rows in %s (%.0f rows/s)",
-			opts.Quality, rows, totalRows, el.Round(time.Millisecond),
-			float64(rows)/el.Seconds())
-		for rows >= nextProgress {
+			opts.Quality, seen, totalRows, el.Round(time.Millisecond),
+			float64(seen)/el.Seconds())
+		for seen >= nextProgress {
 			nextProgress += opts.ProgressEvery
 		}
 	}
 
+	partials := make([]*Metrics, len(assignments))
+	counts := make([]int64, len(assignments))
+	errs := make([]error, len(assignments))
+	var wg sync.WaitGroup
+	for i, block := range assignments {
+		wg.Add(1)
+		go func(i int, block []int) {
+			defer wg.Done()
+			partials[i], counts[i], errs[i] = readRowGroups(path, block, rs, opts, hash, report)
+		}(i, block)
+	}
+	wg.Wait()
+
+	metrics := NewMetrics(rs)
+	var rows int64
+	for i := range assignments {
+		if errs[i] != nil {
+			return nil, 0, nil, errs[i]
+		}
+		// Merged in worker order, so a report does not depend on which
+		// goroutine finished first.
+		metrics.Merge(partials[i])
+		rows += counts[i]
+	}
+	metrics.Rows = rows
+	return metrics, rows, schema, nil
+}
+
+// readRowGroups computes metrics over one worker's span of row groups, through
+// a handle of its own.
+func readRowGroups(path string, groups []int, rs *ResolvedSchema, opts *Options,
+	hash bool, report func(int64)) (*Metrics, int64, error) {
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, fmt.Errorf("open Parquet output %s: %w", path, err)
+	}
+	defer f.Close()
+
+	rdr, err := file.NewParquetReader(f)
+	if err != nil {
+		return nil, 0, fmt.Errorf("open Parquet output %s: %w", path, err)
+	}
+	defer rdr.Close()
+
+	arrowRdr, err := pqarrow.NewFileReader(rdr,
+		pqarrow.ArrowReadProperties{BatchSize: int64(opts.BatchRows)}, memory.NewGoAllocator())
+	if err != nil {
+		return nil, 0, fmt.Errorf("read Parquet output %s: %w", path, err)
+	}
+	rr, err := arrowRdr.GetRecordReader(context.Background(), nil, groups)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read Parquet records from %s: %w", path, err)
+	}
+	defer rr.Release()
+
+	metrics := NewMetrics(rs)
 	var rows int64
 	for {
 		rec, err := rr.Read()
@@ -216,21 +302,24 @@ func readParquetMetrics(path string, rs *ResolvedSchema, opts *Options, logf Log
 		if err != nil {
 			// Do not treat a read failure as end-of-data: that would compare
 			// partial metrics and could pass a corrupt file.
-			return nil, 0, nil, fmt.Errorf("read Parquet records from %s: %w", path, err)
+			return nil, 0, fmt.Errorf("read Parquet records from %s: %w", path, err)
 		}
 		if rec == nil {
 			break
 		}
-		rows += rec.NumRows()
+		// Read the count before releasing: the record's buffers are gone
+		// afterwards.
+		n := rec.NumRows()
+		rows += n
 		if err := observeRecord(metrics, rec, rs, hash); err != nil {
 			rec.Release()
-			return nil, 0, nil, err
+			return nil, 0, err
 		}
 		rec.Release()
-		report(rows)
+		report(n)
 	}
 	metrics.Rows = rows
-	return metrics, rows, schema, nil
+	return metrics, rows, nil
 }
 
 // observeRecord folds one Arrow record read back from Parquet into the metrics,
