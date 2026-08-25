@@ -430,3 +430,56 @@ func TestNewLogWriterCreatesItsDirectory(t *testing.T) {
 		t.Errorf("log not written: %v", err)
 	}
 }
+
+// A cancelled batch must report itself as cancelled, both per file and in the
+// summary's exit code. A raw context.Canceled carries no domain meaning and
+// maps to the generic input-error code, which tells the user their files
+// failed to read when in fact they were never attempted.
+func TestRunManyCancellationIsReportedAsCancelled(t *testing.T) {
+	src := folderFixture(t, true, false)
+	inputs, _ := FindInputs([]string{src}, true)
+	if len(inputs) == 0 {
+		t.Fatal("fixture produced no inputs")
+	}
+	outDir := filepath.Join(t.TempDir(), "out")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	opts := testOptions()
+	b, err := RunMany(ctx, inputs, &opts, &ManyOptions{OutDir: outDir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range b.Results {
+		if r.Err == nil {
+			t.Errorf("%s converted despite a cancelled context", r.Input)
+			continue
+		}
+		if !errors.Is(r.Err, ErrCanceled) {
+			t.Errorf("%s reported %v, want ErrCanceled", r.Input, r.Err)
+		}
+		if errors.Is(r.Err, ErrInput) {
+			t.Errorf("%s reported an input error, which reads as an unreadable file: %v", r.Input, r.Err)
+		}
+	}
+
+	// The same mapping the CLI applies, including its fallthrough.
+	codeFor := func(err error) int {
+		switch {
+		case errors.Is(err, ErrCanceled):
+			return 7
+		case errors.Is(err, ErrQualityGate):
+			return 6
+		case errors.Is(err, ErrSchemaPolicy):
+			return 3
+		case errors.Is(err, ErrInput):
+			return 4
+		default:
+			return 4
+		}
+	}
+	if got := b.ExitCode(codeFor); got != 7 {
+		t.Errorf("cancelled batch exited %d, want 7", got)
+	}
+}

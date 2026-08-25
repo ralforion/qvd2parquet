@@ -64,6 +64,9 @@ func rank(code int) int {
 	switch code {
 	case 0:
 		return 0
+	case 7: // cancelled: the summary is incomplete, which outranks any
+		// individual file's verdict, since the rest were never attempted
+		return 7
 	case 4: // input read/decode
 		return 1
 	case 5: // output/write
@@ -212,9 +215,15 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		select {
 		case <-ctx.Done():
 			// Record the remaining files as cancelled rather than silently
-			// dropping them from the summary.
+			// dropping them from the summary. ErrCanceled rather than the
+			// context's own error: a raw context.Canceled carries no domain
+			// meaning, so it maps to the generic input-error exit code and
+			// tells the user their files failed to read.
 			for j := i; j < len(inputs); j++ {
-				results[j] = FileResult{Input: inputs[j], Err: ctx.Err()}
+				results[j] = FileResult{
+					Input: inputs[j],
+					Err:   fmt.Errorf("%w before this file was converted", ErrCanceled),
+				}
 			}
 			i = len(inputs)
 		default:

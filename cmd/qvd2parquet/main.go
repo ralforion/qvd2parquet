@@ -418,7 +418,11 @@ func exitCodeFor(err error) int {
 		return exitSchema
 	case errors.Is(err, qvd.ErrUnsupported):
 		return exitUnsupported
-	case errors.Is(err, convert.ErrCanceled):
+	case errors.Is(err, convert.ErrCanceled),
+		// A bare context error from any path that has not wrapped it: still a
+		// cancellation, and must not fall through to the input-error code.
+		errors.Is(err, context.Canceled),
+		errors.Is(err, context.DeadlineExceeded):
 		return exitCanceled
 	case errors.Is(err, convert.ErrInput):
 		return exitInput

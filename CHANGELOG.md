@@ -152,6 +152,12 @@ minor one:
   routinely holds one for a moment on a file just written, so the first attempt
   can fail on a file that is about to be perfectly deletable.
 
+  In batch mode the files not yet started are recorded as cancelled too, rather
+  than carrying a bare `context.Canceled` that mapped to the input-error code
+  and reported unattempted files as unreadable ones. A cancelled batch
+  outranks any individual file's verdict in the summary, since the rest were
+  never tried.
+
   The signal handler is written against an explicit channel rather than
   `signal.NotifyContext`, whose stop function cancels the context as well as
   unregistering the handler: a goroutine waiting on `Done` cannot tell a real
