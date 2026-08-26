@@ -247,7 +247,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		go func(i int, in string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			results[i] = convertOne(ctx, in, opts, many, perFile, safeLogf)
+			results[i] = convertOne(ctx, in, opts, many, perFile, fileWorkers > 1, safeLogf)
 		}(i, in)
 	}
 	wg.Wait()
@@ -316,7 +316,12 @@ func displayAll(paths []string) []string {
 }
 
 // convertOne runs a single file, capturing rather than propagating its error.
-func convertOne(ctx context.Context, in string, opts *Options, many *ManyOptions, perFile int, logf Logf) FileResult {
+// prefixProgress reports whether files convert concurrently, in which case
+// every line has to name the file it belongs to. It is the effective
+// concurrency after splitWorkerBudget has clamped it, not the requested
+// --file-workers: asking for four and converting one file runs one at a time,
+// and prefixing there would contradict the "converting 1 file(s)" above it.
+func convertOne(ctx context.Context, in string, opts *Options, many *ManyOptions, perFile int, prefixProgress bool, logf Logf) FileResult {
 	r := FileResult{Input: in, Output: OutputPathFor(in, many.OutDir), Started: time.Now()}
 
 	// Each file gets its own copy, so a per-file report path cannot leak
@@ -333,7 +338,7 @@ func convertOne(ctx context.Context, in string, opts *Options, many *ManyOptions
 	// it belongs to; converting one at a time, nothing can interleave and the
 	// prefix would only be noise.
 	fileLogf := logf
-	if many.FileWorkers > 1 {
+	if prefixProgress {
 		name := DisplayPath(in)
 		fileLogf = func(format string, args ...any) {
 			// The name is passed as an argument rather than concatenated into

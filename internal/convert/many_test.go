@@ -567,3 +567,49 @@ func TestRunManyPrefixesConcurrentProgress(t *testing.T) {
 			prefixed, progress)
 	}
 }
+
+// The prefix follows the concurrency actually used, not the number asked for.
+// splitWorkerBudget clamps --file-workers to the file count, so requesting
+// four and converting one file runs one at a time: prefixing there would
+// contradict the "converting 1 file(s)" line above it.
+func TestRunManyPrefixFollowsEffectiveConcurrency(t *testing.T) {
+	src := t.TempDir()
+	if _, err := qvdtest.Build(filepath.Join(src, "only.qvd"), sampleTable(200)); err != nil {
+		t.Fatal(err)
+	}
+	inputs, _ := FindInputs([]string{src}, true)
+	if len(inputs) != 1 {
+		t.Fatalf("fixture has %d files, want 1", len(inputs))
+	}
+	outDir := filepath.Join(t.TempDir(), "out")
+
+	opts := testOptions()
+	opts.ProgressEvery = 1
+
+	var mu sync.Mutex
+	var lines []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	// Four requested, one file, so one at a time in practice.
+	if _, err := RunMany(context.Background(), inputs, &opts,
+		&ManyOptions{OutDir: outDir, FileWorkers: 4}, logf); err != nil {
+		t.Fatal(err)
+	}
+
+	var progress int
+	for _, l := range lines {
+		if !strings.Contains(l, "converted ") || strings.Contains(l, "file(s)") {
+			continue
+		}
+		progress++
+		if strings.Contains(l, ".qvd: converted") {
+			t.Errorf("prefixed a line although only one file converts at a time: %s", l)
+		}
+	}
+	if progress == 0 {
+		t.Fatalf("no progress lines at all:\n%s", strings.Join(lines, "\n"))
+	}
+}
