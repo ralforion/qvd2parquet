@@ -306,6 +306,16 @@ $ qvd2parquet --out-dir out --file-workers 4 ./qvds
 qvd2parquet: converting 50 file(s), 4 at a time, 2 decode worker(s) each
 ```
 
+Each file reports its own progress. Converting several at once, every line
+names the file it belongs to:
+
+```text
+qvd2parquet: qvds/CE10500.qvd: converted 1000000/20589661 rows in 43.493s (23099 rows/s)
+qvd2parquet: qvds/BSEG.qvd: converted 1000000/8402113 rows in 41.882s (23876 rows/s)
+```
+
+Converting one at a time, nothing can interleave and the prefix is left off.
+
 The default is `1`: one file at a time, decoding it with the default worker
 count. Raise it for many small files, where per-file parallelism beats
 per-chunk. This is the main reason folder conversion is built in rather than

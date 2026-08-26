@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
@@ -481,5 +483,87 @@ func TestRunManyCancellationIsReportedAsCancelled(t *testing.T) {
 	}
 	if got := b.ExitCode(codeFor); got != 7 {
 		t.Errorf("cancelled batch exited %d, want 7", got)
+	}
+}
+
+// A batch run reports each file's progress. It used to pass a nil logger to
+// the converter, so a folder holding one large table showed a line on starting
+// and nothing again until it finished, which on a twenty-million-row table is
+// a quarter of an hour of silence.
+func TestRunManyReportsPerFileProgress(t *testing.T) {
+	src := folderFixture(t, true, false)
+	inputs, _ := FindInputs([]string{src}, true)
+	outDir := filepath.Join(t.TempDir(), "out")
+
+	opts := testOptions()
+	opts.ProgressEvery = 1 // every row, so a small fixture still reports
+
+	var mu sync.Mutex
+	var lines []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	if _, err := RunMany(context.Background(), inputs, &opts,
+		&ManyOptions{OutDir: outDir}, logf); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"converted ", "conversion finished in"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("no %q line from a batch run:\n%s", want, joined)
+		}
+	}
+	// Converting one at a time, nothing can interleave, so no prefix is added.
+	for _, l := range lines {
+		if strings.Contains(l, ".qvd: converted") {
+			t.Errorf("sequential run prefixed a line that cannot interleave: %s", l)
+		}
+	}
+}
+
+// Converting several at once, every line names the file it belongs to, or the
+// output is unreadable.
+func TestRunManyPrefixesConcurrentProgress(t *testing.T) {
+	src := folderFixture(t, true, false)
+	inputs, _ := FindInputs([]string{src}, true)
+	if len(inputs) < 2 {
+		t.Skip("fixture has too few files to run concurrently")
+	}
+	outDir := filepath.Join(t.TempDir(), "out")
+
+	opts := testOptions()
+	opts.ProgressEvery = 1
+
+	var mu sync.Mutex
+	var lines []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	if _, err := RunMany(context.Background(), inputs, &opts,
+		&ManyOptions{OutDir: outDir, FileWorkers: len(inputs)}, logf); err != nil {
+		t.Fatal(err)
+	}
+
+	var progress, prefixed int
+	for _, l := range lines {
+		if !strings.Contains(l, "converted ") || strings.Contains(l, "file(s)") {
+			continue
+		}
+		progress++
+		if strings.Contains(l, ".qvd: converted") {
+			prefixed++
+		}
+	}
+	if progress == 0 {
+		t.Fatalf("no progress lines at all:\n%s", strings.Join(lines, "\n"))
+	}
+	if prefixed != progress {
+		t.Errorf("%d of %d progress lines named their file; all of them must",
+			prefixed, progress)
 	}
 }

@@ -206,6 +206,16 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		logf("converting %d file(s)", len(inputs))
 	}
 
+	// Files convert on their own goroutines and each now reports its own
+	// progress, so the writer needs serializing or two files interleave
+	// mid-line.
+	var logMu sync.Mutex
+	safeLogf := func(format string, args ...any) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		logf(format, args...)
+	}
+
 	start := time.Now()
 	results := make([]FileResult, len(inputs))
 	sem := make(chan struct{}, fileWorkers)
@@ -237,7 +247,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		go func(i int, in string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			results[i] = convertOne(ctx, in, opts, many, perFile, logf)
+			results[i] = convertOne(ctx, in, opts, many, perFile, safeLogf)
 		}(i, in)
 	}
 	wg.Wait()
@@ -316,7 +326,22 @@ func convertOne(ctx context.Context, in string, opts *Options, many *ManyOptions
 	o.SchemaReportPath = perFileReport(opts.SchemaReportPath, in, many.OutDir)
 	o.QualityReportPath = perFileReport(opts.QualityReportPath, in, many.OutDir)
 
-	stats, quality, err := Run(ctx, in, r.Output, &o, nil)
+	// A batch run used to discard everything the conversion said, so a single
+	// large file showed one line on starting and nothing again until it
+	// finished, which on a twenty-million-row table is a quarter of an hour of
+	// silence. Converting several at once, each line is prefixed with the file
+	// it belongs to; converting one at a time, nothing can interleave and the
+	// prefix would only be noise.
+	fileLogf := logf
+	if many.FileWorkers > 1 {
+		name := DisplayPath(in)
+		fileLogf = func(format string, args ...any) {
+			// The name is passed as an argument rather than concatenated into
+			// the format: a path may contain a percent sign.
+			logf("%s: %s", name, fmt.Sprintf(format, args...))
+		}
+	}
+	stats, quality, err := Run(ctx, in, r.Output, &o, fileLogf)
 	r.Elapsed = time.Since(r.Started)
 	r.Stats, r.Quality, r.Err = stats, quality, err
 

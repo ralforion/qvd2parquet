@@ -32,6 +32,16 @@ restarts from it.
   `decimalsNearLimit`, the names alone, since a record there is one line per
   file and stays that way.
 
+### Fixed
+
+- A batch run reports each file's progress. `--out-dir` passed a nil logger to
+  the converter, so it discarded the schema notes, the row counts and the
+  quality gate's progress: a folder holding one large table printed a line on
+  starting and nothing again until it finished, which on a twenty-million-row
+  table is a quarter of an hour of silence. Converting several files at once,
+  each line names the file it belongs to, and the writer is serialized so two
+  files cannot interleave mid-line.
+
 ### Changed
 
 - `--decimal-strict` reports up to three offending values per column instead of
