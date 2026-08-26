@@ -158,7 +158,7 @@ func ScaledFromFloatRounded(v float64, scale int32) (*big.Int, error) {
 
 func scaledFromFloat(v float64, scale int32, round bool) (*big.Int, error) {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return nil, fmt.Errorf("%w: %v is not finite", ErrDecimalInexact, v)
+		return nil, fmt.Errorf("%w: %s is not finite", ErrDecimalInexact, exactText(v))
 	}
 	scaled := v * math.Pow(10, float64(scale))
 	if math.Abs(scaled) >= 1e18 {
@@ -168,7 +168,8 @@ func scaledFromFloat(v float64, scale int32, round bool) (*big.Int, error) {
 	}
 	rounded := math.Round(scaled)
 	if !round && math.Abs(scaled-rounded) > decimalTolerance {
-		return nil, fmt.Errorf("%w: %v scaled by 10^%d is %v", ErrDecimalInexact, v, scale, scaled)
+		return nil, fmt.Errorf("%w: stored as %s, not a multiple of %s",
+			ErrDecimalInexact, storedText(v, scale), scaleStep(scale))
 	}
 	return big.NewInt(int64(rounded)), nil
 }
@@ -203,7 +204,8 @@ func scaledFromFloatBig(v float64, scale int32, round bool) (*big.Int, error) {
 		}
 		return i, nil
 	}
-	return nil, fmt.Errorf("%w: %v cannot be scaled by 10^%d exactly", ErrDecimalInexact, v, scale)
+	return nil, fmt.Errorf("%w: stored as %s, not a multiple of %s",
+		ErrDecimalInexact, storedText(v, scale), scaleStep(scale))
 }
 
 // DecimalExtractor converts the symbols of one column into scaled integers
@@ -404,6 +406,8 @@ func decimalsNeeded(v float64) (int32, bool) {
 func ResolveDecimalSpec(colName string, symbols []qvd.Symbol, ex *DecimalExtractor) (DecimalSpec, []*big.Int, error) {
 	scaled := make([]*big.Int, len(symbols))
 	var maxDigits int32 = 1
+	var examples []string
+	var inexact int
 	for i, s := range symbols {
 		v, err := ex.Scaled(s)
 		if errors.Is(err, errNonFinite) {
@@ -411,9 +415,24 @@ func ResolveDecimalSpec(colName string, symbols []qvd.Symbol, ex *DecimalExtract
 			continue // leaves scaled[i] nil, which is written as null
 		}
 		if err != nil {
-			return DecimalSpec{}, nil, fmt.Errorf(
-				"column %q symbol %d (%v %q): %w; relax with --decimal-strict=false to round to the declared scale, or pin the column with --schema",
-				colName, i, s.Kind, s.Text, err)
+			if !errors.Is(err, ErrDecimalInexact) {
+				// Not a scale problem: a symbol with no display string under
+				// --decimal-source=text cannot be fixed by rounding, so it
+				// must keep its own wording rather than be gathered under a
+				// heading about decimal scale and offered a flag that has no
+				// bearing on it.
+				return DecimalSpec{}, nil, fmt.Errorf("column %q symbol %d (%s): %w",
+					colName, i, symbolText(s), err)
+			}
+			// Keep scanning. One example rarely settles whether a column
+			// holds real extra decimals or float64 noise, and stopping at the
+			// first sent a reader to a Qlik script to find the rest.
+			inexact++
+			if len(examples) < StrictExamples {
+				examples = append(examples,
+					fmt.Sprintf("symbol %d (%s): %s", i, symbolText(s), detailOf(err)))
+			}
+			continue
 		}
 		scaled[i] = v
 		if v != nil {
@@ -421,6 +440,9 @@ func ResolveDecimalSpec(colName string, symbols []qvd.Symbol, ex *DecimalExtract
 				maxDigits = d
 			}
 		}
+	}
+	if inexact > 0 {
+		return DecimalSpec{}, nil, inexactError(colName, examples, inexact)
 	}
 	spec := DecimalSpec{Precision: maxDigits, Scale: ex.Scale}
 	if spec.Precision < spec.Scale {
@@ -453,4 +475,78 @@ func FormatScaled(v *big.Int, scale int32) string {
 		out = "-" + out
 	}
 	return out
+}
+
+// exactText renders a float in full decimal notation, using the shortest form
+// that round-trips. Not to be confused with floatText in valuerange.go, which
+// renders a float64 column's bound and does allow scientific notation. That is the representation the scale check reasons about,
+// and %v or %g would switch to scientific notation past seven digits, hiding
+// the very decimals in question behind 8.115022364865e+09.
+func exactText(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+// StrictExamples is how many offending values --decimal-strict reports per
+// column. Enough to tell real extra decimals from float64 noise, few enough
+// that a wide file does not answer with a wall of them.
+const StrictExamples = 3
+
+// inexactError reports up to StrictExamples offending values for one column,
+// and how many there were in total.
+func inexactError(colName string, examples []string, total int) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "column %q has %d such value(s)", colName, total)
+	if total > len(examples) {
+		fmt.Fprintf(&b, ", the first %d shown", len(examples))
+	}
+	for _, e := range examples {
+		b.WriteString("\n    ")
+		b.WriteString(e)
+	}
+	b.WriteString("\n  relax with --decimal-strict=false to round to the declared scale, or pin the column with --schema")
+	return fmt.Errorf("%w: %s", ErrDecimalInexact, b.String())
+}
+
+// storedText renders what the double actually holds, a few digits past the
+// scale. A value whose shortest form reads 8115022364.865 is stored as
+// 8115022364.864999771, and seeing both is what separates float64
+// representation error from a genuine third decimal in the source.
+func storedText(v float64, scale int32) string {
+	digits := int(scale) + 6
+	if digits < 6 {
+		digits = 6
+	}
+	return new(big.Rat).SetFloat64(v).FloatString(digits)
+}
+
+// scaleStep names the smallest value a scale can hold, so the message says
+// "not a multiple of 0.01" rather than naming a power of ten.
+func scaleStep(scale int32) string {
+	if scale <= 0 {
+		return "1"
+	}
+	return "0." + strings.Repeat("0", int(scale)-1) + "1"
+}
+
+// detailOf strips the sentinel's own sentence from a wrapped error, so a list
+// of examples does not repeat it on every line.
+func detailOf(err error) string {
+	return strings.TrimPrefix(err.Error(), ErrDecimalInexact.Error()+": ")
+}
+
+// symbolText renders a symbol for an error message. A pure numeric carries no
+// display string, so quoting its empty text said nothing; print the value it
+// actually holds, in full rather than in scientific notation.
+func symbolText(s qvd.Symbol) string {
+	switch s.Kind {
+	case qvd.SymbolInt:
+		return fmt.Sprintf("int %d", s.Int)
+	case qvd.SymbolFloat:
+		return "float " + exactText(s.Float)
+	case qvd.SymbolDualIntString:
+		return fmt.Sprintf("dual %d %q", s.Int, s.Text)
+	case qvd.SymbolDualFloatString:
+		return fmt.Sprintf("dual %s %q", exactText(s.Float), s.Text)
+	}
+	return fmt.Sprintf("%v %q", s.Kind, s.Text)
 }

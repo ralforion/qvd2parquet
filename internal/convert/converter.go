@@ -19,6 +19,10 @@ type Stats struct {
 	OutputBytes int64
 	Elapsed     time.Duration
 	SymbolsRead int64
+	// DecimalsNearLimit names decimal columns whose widest observed value
+	// already fills most of the type's range, so a later load carrying a
+	// larger one would not convert.
+	DecimalsNearLimit []string
 }
 
 // RowsPerSecond is the overall conversion throughput.
@@ -129,7 +133,7 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	}
 
 	if opts.SchemaReportPath != "" {
-		if err := WriteSchemaReport(opts.SchemaReportPath, inputPath, f, rs); err != nil {
+		if err := WriteSchemaReport(opts.SchemaReportPath, inputPath, f, rs, opts); err != nil {
 			return nil, nil, err
 		}
 		logf("wrote schema report to %s", opts.SchemaReportPath)
@@ -222,10 +226,11 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	committed = true
 
 	st := &Stats{
-		Rows:        metrics.Rows,
-		Columns:     len(rs.Columns),
-		Elapsed:     time.Since(start),
-		SymbolsRead: symbolsRead,
+		Rows:              metrics.Rows,
+		Columns:           len(rs.Columns),
+		Elapsed:           time.Since(start),
+		SymbolsRead:       symbolsRead,
+		DecimalsNearLimit: decimalsNearLimit(rs, f),
 	}
 	if fi, err := os.Stat(outputPath); err == nil {
 		st.OutputBytes = fi.Size()
@@ -263,8 +268,13 @@ type SchemaReportColumn struct {
 	ResolvedType string             `json:"resolvedType"`
 	Strategy     string             `json:"strategy"`
 	Nullable     bool               `json:"nullable"`
-	Decimal      *DecimalReport     `json:"decimal,omitempty"`
-	Note         string             `json:"note"`
+	// Range is the column's observed low and high values rendered in the type
+	// it is written as. The profile above holds the same span as the raw Qlik
+	// payload, where a date is a serial day number: 411241 rather than
+	// 3025-12-08.
+	Range   string         `json:"range,omitempty"`
+	Decimal *DecimalReport `json:"decimal,omitempty"`
+	Note    string         `json:"note"`
 }
 
 // DecimalReport documents how a decimal column was resolved.
@@ -277,10 +287,16 @@ type DecimalReport struct {
 	Rounded int64 `json:"roundedValues,omitempty"`
 	// NonFinite counts NaN and infinite values written as null.
 	NonFinite int64 `json:"nonFiniteNulls,omitempty"`
+	// Limit is the largest magnitude the type holds, and Used is the fraction
+	// of it the widest observed value occupies. Precision is inferred from the
+	// values, so the data always fits by construction; what varies is how much
+	// room a later load has before it does not.
+	Limit string  `json:"limit,omitempty"`
+	Used  float64 `json:"usedFraction,omitempty"`
 }
 
 // WriteSchemaReport saves the inferred schema and profiles as JSON.
-func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema) error {
+func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema, opts *Options) error {
 	rep := SchemaReport{
 		Input:          inputPath,
 		TableName:      f.Header.TableName,
@@ -317,6 +333,7 @@ func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema) 
 			ResolvedType: c.ArrowType.String(),
 			Strategy:     c.Strategy.String(),
 			Nullable:     c.Nullable,
+			Range:        ValueRange(c, f.Profiles[c.SourceIndex], opts),
 			Note:         noteBySource[c.SourceIndex],
 		}
 		if c.Strategy == StrategyDecimal {
@@ -327,6 +344,8 @@ func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema) 
 				FromNumeric: c.DecimalFromNumeric,
 				Rounded:     c.DecimalRounded,
 				NonFinite:   c.NonFiniteNulls,
+				Limit:       scaledText(scaledLimit(c.Decimal.Precision), c.Decimal.Scale),
+				Used:        DecimalHeadroom(c, f.Profiles[c.SourceIndex]),
 			}
 		}
 		rep.Columns = append(rep.Columns, rc)

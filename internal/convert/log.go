@@ -77,6 +77,12 @@ type fileRecord struct {
 	// Quality carries the gate's verdict when one ran, so a batch can be
 	// audited without opening every per-file report. QualityPassed is null
 	// when no gate ran, which is distinct from a gate that failed.
+	// DecimalsNearLimit names decimal columns whose widest value already fills
+	// most of the type's range. The full per-column detail belongs in
+	// --schema-report; a record here is one line per file and stays that way,
+	// so it carries only the signal a scheduled run would want to alert on.
+	DecimalsNearLimit []string `json:"decimalsNearLimit"`
+
 	QualityMode   string   `json:"qualityMode"`
 	QualityPassed *bool    `json:"qualityPassed"`
 	QualityErrors []string `json:"qualityErrors"`
@@ -88,13 +94,17 @@ func (w *LogWriter) File(r FileResult) {
 		return
 	}
 	rec := fileRecord{
-		Type:          "file",
-		QualityErrors: []string{},
-		Time:          r.Started.UTC().Format(time.RFC3339Nano),
-		Input:         r.Input,
-		Output:        r.Output,
-		Status:        "ok",
-		ElapsedMs:     r.Elapsed.Milliseconds(),
+		Type: "file",
+		// Both start empty rather than absent: a record's key set has to be
+		// the same on every line, or a query binding the field fails on the
+		// clean runs.
+		QualityErrors:     []string{},
+		DecimalsNearLimit: []string{},
+		Time:              r.Started.UTC().Format(time.RFC3339Nano),
+		Input:             r.Input,
+		Output:            r.Output,
+		Status:            "ok",
+		ElapsedMs:         r.Elapsed.Milliseconds(),
 	}
 	switch {
 	case r.Err != nil:
@@ -108,6 +118,9 @@ func (w *LogWriter) File(r FileResult) {
 		rec.OutputBytes = r.Stats.OutputBytes
 		rec.SymbolsRead = r.Stats.SymbolsRead
 		rec.RowsPerSec = int64(r.Stats.RowsPerSecond())
+		if len(r.Stats.DecimalsNearLimit) > 0 {
+			rec.DecimalsNearLimit = r.Stats.DecimalsNearLimit
+		}
 	}
 	if r.Quality != nil {
 		passed := r.Quality.Passed

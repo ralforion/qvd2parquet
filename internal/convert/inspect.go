@@ -134,7 +134,7 @@ func (r *InspectReport) Write(w io.Writer) error {
 // writeSchema prints one row per output column.
 func (r *InspectReport) writeSchema(w io.Writer) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "COLUMN\tQVD TYPE\tSYMBOLS\tNULLS\tPARQUET TYPE\tNOTES")
+	fmt.Fprintln(tw, "COLUMN\tQVD TYPE\tSYMBOLS\tNULLS\tPARQUET TYPE\tRANGE\tNOTES")
 
 	noteFor := r.notesBySource()
 	for i := range r.Schema.Columns {
@@ -165,8 +165,9 @@ func (r *InspectReport) writeSchema(w io.Writer) error {
 		if c.Comment != "" {
 			note = c.Comment
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			name, src.QlikType, syms, nulls, c.ArrowType, note)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			name, src.QlikType, syms, nulls, c.ArrowType,
+			ValueRange(c, prof, r.Options), note)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -179,6 +180,23 @@ func (r *InspectReport) writeSchema(w io.Writer) error {
 	if rounded > 0 {
 		fmt.Fprintf(w, "\n%s decimal value(s) would be rounded to their column's scale.\n",
 			withThousands(rounded))
+	}
+
+	// A decimal's precision is inferred from the values, so it always fits
+	// them exactly and "does it fit" is never the question. The question is
+	// what a later load has left, and that is what these columns are short of.
+	var tight []string
+	for i := range r.Schema.Columns {
+		c := &r.Schema.Columns[i]
+		if used := DecimalHeadroom(c, r.File.Profiles[c.SourceIndex]); used >= DecimalTightFraction {
+			tight = append(tight, fmt.Sprintf("%s (%s, %.0f%% used)",
+				c.Name, c.ArrowType, used*100))
+		}
+	}
+	if len(tight) > 0 {
+		fmt.Fprintf(w, "\nDecimal columns with little room left for larger values:\n  %s\n",
+			strings.Join(tight, "\n  "))
+		fmt.Fprintf(w, "Pin them with --schema if a later load may exceed the range.\n")
 	}
 	return nil
 }
