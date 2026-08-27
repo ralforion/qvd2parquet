@@ -64,15 +64,19 @@ restarts from it.
   in the symbol table reveals that order, so sampled rows are written through
   the real writer twice, once as the run would today and once with each
   candidate, and the compressed column chunks are compared. Three windows of
-  100,000 consecutive rows are enough to land within about a point of the whole
-  file, and the estimate converges from above, so it understates a win rather
-  than overselling one. On a 3M row key that arrives in document order the
+  100,000 consecutive rows, at head, middle and tail, land within about a point
+  of the whole file, and the estimate converges from above, so it understates a
+  win rather than overselling one; a file of 300,000 rows or fewer is measured
+  in full. On a 3M row key that arrives in document order the
   sample measured 31% and the conversion wrote 1.8 MiB against the default's
   6.2 MiB; on the same values shuffled nothing is adopted and the run says so.
   `--inspect --encoding auto` reports the measurement without converting, and
   is the only thing that makes inspect read records at all. Over `--out-dir`
   each file is measured on its own, since no pattern can know what a given
-  table's key looks like. An explicit rule always wins over a measurement.
+  table's key looks like. A column an explicit rule names is not measured at
+  all, so the tool never recommends against a decision already taken, and
+  `--schema-report` records the encoding each column is actually written with,
+  measured or pinned.
 - Progress lines say how far along a phase is and roughly how long is left:
   `converted 5000000/20589661 rows (24%) in 3m21s (24875 rows/s, about 10m26s
   left)`. The row total is read from the QVD header before a record is

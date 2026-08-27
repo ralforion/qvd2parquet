@@ -509,17 +509,19 @@ sample predicted before the conversion started.
 Details worth knowing:
 
 - Three windows of 100,000 consecutive rows are sampled, at the head, the
-  middle and the tail, or one window over everything on a smaller file. At that
-  size the measured ratio lands within about a point of the whole file, and it
-  converges from above, so a sample understates a win rather than overselling
-  it.
+  middle and the tail. At that size the measured ratio lands within about a
+  point of the whole file, and it converges from above, so a sample understates
+  a win rather than overselling it. A file of 300,000 rows or fewer is measured
+  in full, which costs no more than three windows would and leaves no room for
+  a sorted head to answer for a shuffled tail.
 - Only columns whose values would overflow the dictionary page are measured. On
   a 213 column extract that is a handful, and columns are measured in groups so
   a wide file does not hold every sample at once.
 - A candidate has to measure at 80% of the current size or better to be
   adopted. On a shuffled key nothing is adopted, and the run says so.
-- An explicit rule always wins. `--encoding 'auto,%*_PKEY=plain'` measures
-  everything except that column.
+- An explicit rule always wins, and a column it names is not measured at all.
+  `--encoding 'auto,%*_PKEY=plain'` measures everything except that column, and
+  `--inspect` will not recommend against a rule you have already written.
 - `--encoding auto` is the only thing that makes `--inspect` read records, and
   it reads only the sampled windows. Without it, inspect still touches nothing
   but the header and the symbol tables.

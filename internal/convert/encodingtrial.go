@@ -87,7 +87,14 @@ func (t EncodingTrial) Line() string {
 // The cost is bounded by the windows: on a 232 byte record that is about 23
 // MiB per window read, plus a few tens of milliseconds per trial write.
 func TrialEncodings(ctx context.Context, f *qvd.File, rs *ResolvedSchema, opts *Options) ([]EncodingTrial, error) {
-	candidates := encodingCandidates(rs, f)
+	// A column an explicit rule already names is not measured at all. A rule
+	// is a decision, so measuring it would only produce a recommendation
+	// nothing may act on, which reads as the tool arguing with itself.
+	pinned, err := ResolveEncodings(opts.Encodings.Rules, rs, f)
+	if err != nil {
+		return nil, err
+	}
+	candidates := encodingCandidates(rs, f, pinned.ByColumn)
 	if len(candidates) == 0 || f.NoOfRecords == 0 {
 		return nil, nil
 	}
@@ -137,30 +144,50 @@ func trialGroup(ctx context.Context, f *qvd.File, rs *ResolvedSchema, opts *Opti
 
 	var out []EncodingTrial
 	for i := range sub.Columns {
-		c := &sub.Columns[i]
-		colRecords, schema := sliceColumn(sub, records, i)
-		baseline, err := measure(schema, colRecords, base)
+		trial, err := measureColumn(sub, records, i, f, base, sampled)
 		if err != nil {
 			return nil, err
 		}
-		best := EncodingTrial{Column: c.Name, Original: originalName(f, c),
-			Baseline: baseline, Candidate: baseline, SampledRows: sampled}
-		for _, enc := range candidateEncodings(c.ArrowType) {
-			trialOpts := base
-			trialOpts.ColumnEncodings = map[string]parquetwrite.Encoding{c.Name: enc}
-			size, err := measure(schema, colRecords, trialOpts)
-			if err != nil {
-				return nil, err
-			}
-			if size < best.Candidate || best.Encoding == "" {
-				best.Candidate, best.Encoding = size, enc
-			}
-		}
-		if best.Encoding != "" {
-			out = append(out, best)
+		if trial.Encoding != "" {
+			out = append(out, trial)
 		}
 	}
 	return out, nil
+}
+
+// measureColumn measures one column's candidates against the way it would be
+// written today, and returns the best of them.
+func measureColumn(sub *ResolvedSchema, records []arrow.Record, i int, f *qvd.File,
+	base parquetwrite.Options, sampled int64) (EncodingTrial, error) {
+
+	c := &sub.Columns[i]
+	colRecords, schema := sliceColumn(sub, records, i)
+	// Each sliced record retains the column it was built from, so they have
+	// to be released whichever way this returns.
+	defer func() {
+		for _, r := range colRecords {
+			r.Release()
+		}
+	}()
+
+	baseline, err := measure(schema, colRecords, base)
+	if err != nil {
+		return EncodingTrial{}, err
+	}
+	best := EncodingTrial{Column: c.Name, Original: originalName(f, c),
+		Baseline: baseline, Candidate: baseline, SampledRows: sampled}
+	for _, enc := range candidateEncodings(c.ArrowType) {
+		trialOpts := base
+		trialOpts.ColumnEncodings = map[string]parquetwrite.Encoding{c.Name: enc}
+		size, err := measure(schema, colRecords, trialOpts)
+		if err != nil {
+			return EncodingTrial{}, err
+		}
+		if size < best.Candidate || best.Encoding == "" {
+			best.Candidate, best.Encoding = size, enc
+		}
+	}
+	return best, nil
 }
 
 // WorthwhileTrials keeps the measurements that justify acting on them.
@@ -177,10 +204,13 @@ func WorthwhileTrials(trials []EncodingTrial) []EncodingTrial {
 // encodingCandidates picks the columns worth measuring: those whose values
 // would overflow the dictionary page, since a column that fits its dictionary
 // is already encoded about as well as it can be.
-func encodingCandidates(rs *ResolvedSchema, f *qvd.File) []int {
+func encodingCandidates(rs *ResolvedSchema, f *qvd.File, pinned map[string]parquetwrite.Encoding) []int {
 	var out []int
 	for i := range rs.Columns {
 		c := &rs.Columns[i]
+		if _, decided := pinned[c.Name]; decided {
+			continue
+		}
 		if c.SourceIndex < 0 || c.SourceIndex >= len(f.Profiles) {
 			continue
 		}
@@ -221,26 +251,27 @@ func candidateEncodings(t arrow.DataType) []parquetwrite.Encoding {
 	return nil
 }
 
-// trialChunks places the sample windows: head, middle and tail, or fewer when
-// the file is too small to hold three that do not overlap.
+// trialChunks places the sample windows: head, middle and tail on a file large
+// enough for three that do not overlap, and otherwise a single window over
+// every row.
+//
+// Sampling the whole file below that size costs no more than three windows
+// would, since three windows are 300k rows either way, and it closes the gap
+// where a file of 150k rows would have been judged on its first 100k alone.
+// Row order is the thing being measured, so a sorted head and a shuffled tail
+// must not be able to answer for each other.
 func trialChunks(f *qvd.File) []DecodeChunk {
 	rows := f.NoOfRecords
 	if rows <= 0 {
 		return nil
 	}
 	window := int64(trialWindowRows)
-	if window > rows {
-		window = rows
+	if rows <= window*trialWindows {
+		return []DecodeChunk{{RowCount: int(rows), ByteOffset: f.RecordStart}}
 	}
-	starts := []int64{0}
-	if rows >= window*trialWindows {
-		starts = []int64{0, rows/2 - window/2, rows - window}
-	}
+	starts := []int64{0, rows/2 - window/2, rows - window}
 	out := make([]DecodeChunk, 0, len(starts))
 	for i, start := range starts {
-		if start < 0 {
-			start = 0
-		}
 		out = append(out, DecodeChunk{
 			Index:      int64(i),
 			StartRow:   start,
@@ -370,9 +401,6 @@ func applyMeasuredEncodings(ctx context.Context, f *qvd.File, rs *ResolvedSchema
 
 	var adopted, rejected int
 	for _, t := range trials {
-		if _, pinned := enc.ByColumn[t.Column]; pinned {
-			continue
-		}
 		if !t.Worthwhile() {
 			rejected++
 			continue
