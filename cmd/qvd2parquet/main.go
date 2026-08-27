@@ -382,6 +382,14 @@ func runInspect(inputPath string, opts *convert.Options) int {
 	if rep.SchemaErr != nil {
 		return exitCodeFor(rep.SchemaErr)
 	}
+	// So does a command line the conversion would refuse. Inspect is a
+	// preflight check, and one that reports a problem and exits 0 is worse
+	// than none: a script gating on it would go on to start the conversion
+	// that is about to fail.
+	if rep.EncodingErr != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, rep.EncodingErr)
+		return exitCodeFor(rep.EncodingErr)
+	}
 	return exitOK
 }
 
