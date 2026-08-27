@@ -109,9 +109,14 @@ func (qf *File) SelectColumns(names []string) error {
 // matched against the field's original QVD name, before any renaming, so they
 // describe what is visible in the source file.
 //
-// It returns the names that were excluded, in header order. Excluding every
-// column is an error, since the output would have no columns.
-func (qf *File) ExcludeColumns(patterns []string) ([]string, error) {
+// It returns the names that were excluded, in header order, and the patterns
+// that matched no selected field. A pattern matching nothing is not an error:
+// one command line is often pointed at a folder of tables that do not all
+// carry the same fields. It is worth reporting, though, because the two ways
+// to write a pattern wrongly ("%" for "%*", or the renamed field instead of
+// the original) both look exactly like success. Excluding every column is an
+// error, since the output would have no columns.
+func (qf *File) ExcludeColumns(patterns []string) (dropped, unmatched []string, err error) {
 	var pats []string
 	for _, p := range patterns {
 		if p = strings.TrimSpace(p); p != "" {
@@ -119,9 +124,29 @@ func (qf *File) ExcludeColumns(patterns []string) ([]string, error) {
 		}
 	}
 	if len(pats) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	var dropped []string
+	// Each pattern is judged against the columns selected on entry, not
+	// against what earlier patterns have left, so two patterns covering the
+	// same field do not make the second one look useless.
+	var candidates []string
+	for i := range qf.Columns {
+		if qf.Columns[i].Selected {
+			candidates = append(candidates, qf.Columns[i].Name)
+		}
+	}
+	for _, p := range pats {
+		matched := false
+		for _, name := range candidates {
+			if MatchGlob(p, name) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			unmatched = append(unmatched, p)
+		}
+	}
 	for i := range qf.Columns {
 		if !qf.Columns[i].Selected {
 			continue
@@ -132,10 +157,10 @@ func (qf *File) ExcludeColumns(patterns []string) ([]string, error) {
 		}
 	}
 	if len(qf.SelectedColumns()) == 0 {
-		return nil, fmt.Errorf("--exclude %s removed every column from %s",
+		return nil, nil, fmt.Errorf("--exclude %s removed every column from %s",
 			strings.Join(pats, ", "), qf.Path)
 	}
-	return dropped, nil
+	return dropped, unmatched, nil
 }
 
 // ColumnNames returns every field name in header order.

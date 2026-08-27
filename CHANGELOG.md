@@ -15,6 +15,24 @@ restarts from it.
 
 ### Added
 
+- An `--exclude` pattern that matches no field is reported instead of passing
+  silently. `--columns` already fails on a name that matches nothing, while
+  `--exclude` accepted anything, and both ways of writing a pattern wrongly
+  look exactly like success: `%` is not the wildcard `%*` and matches only a
+  field named `%`, and the name `--field-regex` produces is never what
+  `--exclude` sees, since exclusion is decided first. It stays a note rather
+  than an error, because one command line is often pointed at a folder of
+  tables that do not all carry the same fields. The patterns appear in
+  `--inspect`, in the run log, and in a `--log` record as `excludeNoMatch`.
+- `--field-regex` says which fields it left alone. A field the expression does
+  not match keeps its original name, which is what lets a rule target a subset,
+  but on a 213 column SAP extract the two fields that stayed behind are
+  invisible among the renamed ones. Runs now close the schema notes with
+  `2 of 3 field(s) renamed, 1 unchanged: PlainField`, naming at most five.
+  `--schema-report` carries the full list under `fieldRegex`, and a `--log`
+  record carries `fieldsRenamed` and `fieldsUnchanged` as counts, since a
+  record there is one line per file.
+
 - `--inspect` and `--schema-report` show each column's value range, rendered in
   the type the column is written as. A QVD stores a date as a serial day
   number, so a profile reported `WADAT` as 38365..411241 and a goods-issue date

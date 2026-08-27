@@ -2,8 +2,12 @@ package convert
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -264,5 +268,187 @@ func TestExcludeKeepsRemainingValuesCorrect(t *testing.T) {
 		if strings.Join(a, ",") != strings.Join(b, ",") {
 			t.Errorf("column %q differs after exclusion: %v vs %v", col, a, b)
 		}
+	}
+}
+
+// A pattern that drops nothing must say so. Both mistakes below look exactly
+// like success today: "%" without the asterisk matches only a field named
+// "%", and the renamed name is never what --exclude sees.
+func TestExcludePatternMatchingNothingIsReported(t *testing.T) {
+	in := buildFixture(t, sapStyleTable())
+	renamer, err := NewFieldRenamer(sapRegex, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		exclude []string
+		want    []string
+	}{
+		{"wildcard forgotten", []string{"%"}, []string{"%"}},
+		{"renamed name, not the original", []string{"DATBI"}, []string{"DATBI"}},
+		{"one of two patterns is dead", []string{"%*", "Nothing*"}, []string{"Nothing*"}},
+		{"both patterns hit the same field", []string{"%A057*", "%A*"}, nil},
+		{"every pattern matches", []string{"%*"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := testOptions()
+			opts.Exclude = tc.exclude
+			opts.Renamer = renamer
+
+			var lines []string
+			logf := func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			}
+			out := filepath.Join(t.TempDir(), "out.parquet")
+			stats, _, err := Run(context.Background(), in, out, &opts, logf)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if strings.Join(stats.ExcludeNoMatch, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("ExcludeNoMatch = %v, want %v", stats.ExcludeNoMatch, tc.want)
+			}
+
+			noted := false
+			for _, l := range lines {
+				if strings.Contains(l, "matched no field") {
+					noted = true
+					for _, p := range tc.want {
+						if !strings.Contains(l, strconv.Quote(p)) {
+							t.Errorf("note %q does not name pattern %q", l, p)
+						}
+					}
+				}
+			}
+			if noted != (len(tc.want) > 0) {
+				t.Errorf("note printed = %v, want %v; lines: %v", noted, len(tc.want) > 0, lines)
+			}
+		})
+	}
+}
+
+// The exclusion check must not be confused by --columns having already
+// narrowed the field list.
+func TestExcludeNoMatchWithColumnSelection(t *testing.T) {
+	in := buildFixture(t, sapStyleTable())
+	opts := testOptions()
+	opts.Columns = []string{"PlainField", "A057-||-DATBI-||-Ende Gültigkeit"}
+	opts.Exclude = []string{"A057*"}
+
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	stats, _, err := Run(context.Background(), in, out, &opts, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(stats.ExcludeNoMatch) != 0 {
+		t.Errorf("ExcludeNoMatch = %v, want none", stats.ExcludeNoMatch)
+	}
+	if stats.Columns != 1 {
+		t.Errorf("got %d columns, want 1", stats.Columns)
+	}
+}
+
+// The fields a --field-regex leaves alone are the ones worth naming: on a
+// wide extract they are invisible among the renamed ones.
+func TestFieldRegexReportsWhatItLeftAlone(t *testing.T) {
+	in := buildFixture(t, sapStyleTable())
+	renamer, err := NewFieldRenamer(sapRegex, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.Renamer = renamer
+	opts.SchemaReportPath = filepath.Join(t.TempDir(), "schema.json")
+
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	stats, _, err := Run(context.Background(), in, out, &opts, logf)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The two "-||-" fields are renamed; the key, the timestamp and the plain
+	// field are not, which is what surprised a user on a 213 column extract.
+	want := []string{"%A057_PKEY", "%SYS_TS", "PlainField"}
+	if strings.Join(stats.Renames.Unchanged, ",") != strings.Join(want, ",") {
+		t.Errorf("unchanged = %v, want %v", stats.Renames.Unchanged, want)
+	}
+	if stats.Renames.Renamed != 2 || stats.Renames.Fields != 5 {
+		t.Errorf("renamed %d of %d, want 2 of 5", stats.Renames.Renamed, stats.Renames.Fields)
+	}
+
+	var summary string
+	for _, l := range lines {
+		if strings.HasPrefix(l, "field-regex: ") {
+			summary = l
+		}
+	}
+	if !strings.Contains(summary, "2 of 5 field(s) renamed, 3 unchanged: %A057_PKEY") {
+		t.Errorf("summary line = %q", summary)
+	}
+
+	b, err := os.ReadFile(opts.SchemaReportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep SchemaReport
+	if err := json.Unmarshal(b, &rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.FieldRegex == nil {
+		t.Fatal("schema report carries no fieldRegex section")
+	}
+	if rep.FieldRegex.Renamed != 2 || strings.Join(rep.FieldRegex.Unchanged, ",") != strings.Join(want, ",") {
+		t.Errorf("report fieldRegex = %+v", rep.FieldRegex)
+	}
+}
+
+// Without --field-regex there is nothing to report, and the log and the
+// report must stay quiet rather than claim nothing was renamed.
+func TestNoFieldRegexReportsNothing(t *testing.T) {
+	in := buildFixture(t, sapStyleTable())
+	opts := testOptions()
+	opts.SchemaReportPath = filepath.Join(t.TempDir(), "schema.json")
+
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	if _, _, err := Run(context.Background(), in, out, &opts, logf); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, l := range lines {
+		if strings.HasPrefix(l, "field-regex: ") {
+			t.Errorf("unexpected summary without --field-regex: %q", l)
+		}
+	}
+	b, _ := os.ReadFile(opts.SchemaReportPath)
+	var rep SchemaReport
+	if err := json.Unmarshal(b, &rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.FieldRegex != nil {
+		t.Errorf("fieldRegex section = %+v, want absent", rep.FieldRegex)
+	}
+}
+
+// A long list of untouched fields must not print two hundred names.
+func TestRenameSummaryCapsTheNamesItPrints(t *testing.T) {
+	s := RenameSummary{Fields: 9, Renamed: 1, Unchanged: []string{"a", "b", "c", "d", "e", "f", "g", "h"}}
+	got := s.Line(5)
+	want := "1 of 9 field(s) renamed, 8 unchanged: a, b, c, d, e and 3 more"
+	if got != want {
+		t.Errorf("Line(5) = %q, want %q", got, want)
+	}
+	if all := s.Line(0); !strings.HasSuffix(all, "a, b, c, d, e, f, g, h") {
+		t.Errorf("Line(0) = %q, want every name", all)
+	}
+	if none := (RenameSummary{}).Line(5); none != "" {
+		t.Errorf("zero summary Line = %q, want empty", none)
+	}
+	full := RenameSummary{Fields: 2, Renamed: 2}
+	if got := full.Line(5); got != "2 of 2 field(s) renamed" {
+		t.Errorf("Line with nothing unchanged = %q", got)
 	}
 }

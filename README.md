@@ -339,7 +339,9 @@ duckdb -c "select input, error from read_json_auto('run.jsonl') where status='fa
 ```
 
 Each file record carries the row and column counts, output size, elapsed time,
-throughput, and the quality gate's verdict with any errors — so a batch can be
+throughput, `excludeNoMatch` with any pattern that dropped nothing from that
+file, `fieldsRenamed` and `fieldsUnchanged`, and the quality gate's verdict with
+any errors — so a batch can be
 audited without opening every per-file report. `--schema-report` and
 `--quality-report` also work in batch mode; each file gets its own document,
 named after the input.
@@ -377,18 +379,26 @@ a conversion would write — including `--exclude` and `--field-regex`:
 
 ```sh
 qvd2parquet --inspect \
-  --exclude '%*' \
+  --exclude '%*,COUNTER' \
   --field-regex '^[^-]*-\|\|-(?P<name>[^-]*)-\|\|-(?P<comment>.*)$' \
   A057.qvd
 ```
 
 ```text
-Fields          4 of 6 selected (2 excluded: %A057_PKEY, %SYS_TS)
+Fields          3 of 5 selected (2 excluded: %A057_PKEY, %SYS_TS)
+Exclude         "COUNTER" matched no field
+Field regex     2 of 3 field(s) renamed, 1 unchanged: PlainField
 
-COLUMN                                    QVD TYPE  SYMBOLS  NULLS  PARQUET TYPE   NOTES
-DATBI (A057-||-DATBI-||-Ende Gültigkeit)  INTEGER   2        0      int64          Ende Gültigkeit
-KBETR (A057-||-KBETR-||-Betrag)           REAL      2        0      decimal(4, 2)  Betrag
+COLUMN                                    QVD TYPE  SYMBOLS  NULLS  PARQUET TYPE  RANGE           NOTES
+DATBI (A057-||-DATBI-||-Ende Gültigkeit)  INTEGER   2        0      int64         45000 .. 45001  Ende Gültigkeit
+KSCHL (A057-||-KSCHL-||-Konditionsart)    ASCII     2        0      utf8                          Konditionsart
+PlainField                                ASCII     2        0      utf8                          2 text symbols, written as utf8
 ```
+
+The two middle lines appear only when there is something to say. A pattern that
+matched no field and a field the expression left alone are both invisible in the
+conversion itself, and both are usually a mistake worth catching before a run
+that lasts a quarter of an hour.
 
 When the type policy rejects a column, `--inspect` prints the reason and falls
 back to the raw symbol profiles that explain it, then exits `3`:
@@ -418,6 +428,19 @@ qvd2parquet --exclude '%*' A057.qvd a057.parquet
 Patterns match the field's **original** QVD name, before any renaming, so they
 describe what you see in the source file. Excluding every column is an error.
 
+A pattern that matches nothing is **not** an error, since one command line is
+often pointed at a folder of tables that do not all carry the same fields, but
+it is reported:
+
+```text
+qvd2parquet: note: --exclude "%" matched no field; patterns are wildcards over
+the original QVD names, before --field-regex renames anything
+```
+
+Both ways of getting a pattern wrong look exactly like success otherwise. `%`
+is not the wildcard `%*` and matches only a field named `%`, and a name that
+`--field-regex` produces is never what `--exclude` sees.
+
 QVD field names from SAP extracts are often composite, packing the table, the
 technical name and a description into one string:
 
@@ -439,7 +462,14 @@ qvd2parquet \
 qvd2parquet: excluded 2 column(s) by pattern: %A057_PKEY, %SYS_TS
 qvd2parquet: schema: A057-||-DATBI-||-Ende Gültigkeit: INTEGER with 2 integer symbols, written as int64; written as "DATBI" with comment "Ende Gültigkeit"
 qvd2parquet: schema: A057-||-KBETR-||-Betrag: REAL with 2 double symbols promoted to decimal(4,2); scale 2 inferred from values; written as "KBETR" with comment "Betrag"
+qvd2parquet: field-regex: 2 of 3 field(s) renamed, 1 unchanged: PlainField
 ```
+
+A field the expression does not match keeps its original name, which is what
+makes a rule aimed at a subset possible. The closing line says which fields
+those were, because on a 213 column extract nobody spots the two that stayed
+behind. At most five are named; `--schema-report` carries the full list under
+`fieldRegex`, and a `--log` record carries the counts.
 
 The result carries the description as Parquet field metadata, and keeps the
 original QVD name so nothing is lost:

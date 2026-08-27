@@ -364,6 +364,7 @@ func TestLogSchemaIsStableOnACleanRun(t *testing.T) {
 		"type", "time", "input", "output", "status", "error", "elapsedMs",
 		"rows", "columns", "outputBytes", "symbolsRead", "rowsPerSecond",
 		"qualityMode", "qualityPassed", "qualityErrors",
+		"excludeNoMatch", "fieldsRenamed", "fieldsUnchanged",
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		var rec map[string]any

@@ -98,6 +98,10 @@ type ResolvedSchema struct {
 	Arrow   *arrow.Schema
 	// Notes explains, per source column, how the type was chosen.
 	Notes []string
+	// Renames records what --field-regex did to the selected fields, so a run
+	// can say which ones it left alone. The zero value means no renaming was
+	// configured.
+	Renames RenameSummary
 }
 
 // SchemaOverride is the --schema JSON document.
@@ -269,7 +273,14 @@ func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*Resol
 	rs := &ResolvedSchema{}
 	tsType := &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: arrowTimeZoneName(opts)}
 
-	for _, idx := range f.SelectedColumns() {
+	selected := f.SelectedColumns()
+	sourceNames := make([]string, 0, len(selected))
+	for _, idx := range selected {
+		sourceNames = append(sourceNames, f.Columns[idx].Name)
+	}
+	rs.Renames = SummarizeRenames(opts.Renamer, sourceNames)
+
+	for _, idx := range selected {
 		col := f.Columns[idx]
 		prof := f.Profiles[idx]
 		syms := f.Symbols[idx]

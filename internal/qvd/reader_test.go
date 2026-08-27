@@ -265,3 +265,56 @@ func TestSymbolDoubleRoundTrip(t *testing.T) {
 		t.Errorf("double = %v, want %v", syms[0].Float, want)
 	}
 }
+
+// A pattern that drops nothing has to be reported, because the two ways of
+// getting one wrong both look like success: "%" is not the wildcard "%*", and
+// --exclude never sees the name --field-regex would produce.
+func TestExcludeColumnsReportsPatternsThatMatchNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		patterns      []string
+		wantDropped   string
+		wantUnmatched string
+	}{
+		{"wildcard forgotten", []string{"%"}, "", "%"},
+		{"wildcard present", []string{"%*"}, "%KEY", ""},
+		{"case is ignored", []string{"counter"}, "Counter", ""},
+		{"two patterns, one dead", []string{"%*", "nope"}, "%KEY", "nope"},
+		{"both cover the same field", []string{"%*", "%KE*"}, "%KEY", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &File{Path: "t.qvd", Columns: []Column{
+				{Name: "%KEY", Selected: true},
+				{Name: "Counter", Selected: true},
+				{Name: "Value", Selected: true},
+			}}
+			dropped, unmatched, err := f.ExcludeColumns(tc.patterns)
+			if err != nil {
+				t.Fatalf("ExcludeColumns: %v", err)
+			}
+			if got := strings.Join(dropped, ","); got != tc.wantDropped {
+				t.Errorf("dropped = %q, want %q", got, tc.wantDropped)
+			}
+			if got := strings.Join(unmatched, ","); got != tc.wantUnmatched {
+				t.Errorf("unmatched = %q, want %q", got, tc.wantUnmatched)
+			}
+		})
+	}
+}
+
+// A pattern is judged against the columns selected on entry, so --columns
+// having already dropped a field does not turn a working pattern into a
+// reported one.
+func TestExcludeColumnsIgnoresAlreadyDeselectedFields(t *testing.T) {
+	f := &File{Path: "t.qvd", Columns: []Column{
+		{Name: "%KEY", Selected: false},
+		{Name: "Value", Selected: true},
+	}}
+	_, unmatched, err := f.ExcludeColumns([]string{"%*"})
+	if err != nil {
+		t.Fatalf("ExcludeColumns: %v", err)
+	}
+	if strings.Join(unmatched, ",") != "%*" {
+		t.Errorf("unmatched = %v, want [%%*]: the field was not in the selection", unmatched)
+	}
+}
