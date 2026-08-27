@@ -2,8 +2,10 @@ package convert
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -199,6 +201,65 @@ func TestExplicitRuleBeatsTheMeasurement(t *testing.T) {
 	}
 }
 
+// An explicit rule is a decision, so the measurement must not even offer an
+// opinion on that column: a recommendation nothing may act on reads as the
+// tool arguing with itself.
+func TestPinnedColumnsAreNotMeasured(t *testing.T) {
+	in := buildFixture(t, keyTable(30000, true))
+	opts := testOptions()
+	opts.Encodings, _ = ParseEncodingSpec("auto,%*_PKEY=plain")
+
+	rep, err := Inspect(in, &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rep.Close()
+	for _, tr := range rep.Trials {
+		if tr.Column == "%CE10500_PKEY" {
+			t.Errorf("a pinned column was measured and would be recommended: %+v", tr)
+		}
+	}
+	var sb strings.Builder
+	if err := rep.Write(&sb); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sb.String(), "%CE10500_PKEY  delta_byte_array") {
+		t.Errorf("inspect recommended against an explicit rule:\n%s", sb.String())
+	}
+}
+
+// A measured encoding has to reach the schema report. The report used to be
+// written before the measurement ran, so a conversion could write a column one
+// way while its report described another.
+func TestSchemaReportCarriesAMeasuredEncoding(t *testing.T) {
+	in := buildFixture(t, keyTable(30000, true))
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Encodings, _ = ParseEncodingSpec("auto")
+	opts.SchemaReportPath = filepath.Join(t.TempDir(), "schema.json")
+
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	b, err := os.ReadFile(opts.SchemaReportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep SchemaReport
+	if err := json.Unmarshal(b, &rep); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range rep.Columns {
+		want := ""
+		if c.Name == "%CE10500_PKEY" {
+			want = "delta_byte_array"
+		}
+		if c.Encoding != want {
+			t.Errorf("report encoding for %s = %q, want %q", c.Name, c.Encoding, want)
+		}
+	}
+}
+
 // The windows are where the measurement gets its evidence, so their placement
 // is worth pinning: three spread across a large file, one on a small one.
 func TestTrialWindowPlacement(t *testing.T) {
@@ -225,11 +286,20 @@ func TestTrialWindowPlacement(t *testing.T) {
 	}
 
 	// A file smaller than three windows is sampled once, over everything it
-	// has, rather than three overlapping views of the same rows.
-	small := &qvd.File{NoOfRecords: 5000, RecordByteSize: 8, RecordStart: 100}
-	chunks = trialChunks(small)
-	if len(chunks) != 1 || chunks[0].RowCount != 5000 {
-		t.Errorf("small file windows = %+v", chunks)
+	// has. Row order is what the measurement turns on, so a sorted head and a
+	// shuffled tail must never answer for each other: a 150,000 row file
+	// judged on its first 100,000 alone could adopt the wrong encoding.
+	for _, rows := range []int64{5000, 100_001, 150_000, 299_999, 300_000} {
+		small := &qvd.File{NoOfRecords: rows, RecordByteSize: 8, RecordStart: 100}
+		chunks = trialChunks(small)
+		if len(chunks) != 1 {
+			t.Errorf("%d rows gave %d windows, want one over everything", rows, len(chunks))
+			continue
+		}
+		if int64(chunks[0].RowCount) != rows || chunks[0].StartRow != 0 {
+			t.Errorf("%d rows: window covers %d rows from %d, want all of them",
+				rows, chunks[0].RowCount, chunks[0].StartRow)
+		}
 	}
 	if empty := trialChunks(&qvd.File{}); empty != nil {
 		t.Errorf("an empty file has nothing to sample: %+v", empty)
