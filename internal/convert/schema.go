@@ -268,19 +268,25 @@ var (
 	arrowTime32 = arrow.FixedWidthTypes.Time32ms
 )
 
+// selectedNames lists the original QVD names of the fields a run will convert,
+// in header order.
+func selectedNames(f *qvd.File) []string {
+	selected := f.SelectedColumns()
+	names := make([]string, 0, len(selected))
+	for _, idx := range selected {
+		names = append(names, f.Columns[idx].Name)
+	}
+	return names
+}
+
 // ResolveSchema turns profiled QVD columns into the output Parquet schema.
 func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*ResolvedSchema, error) {
 	rs := &ResolvedSchema{}
 	tsType := &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: arrowTimeZoneName(opts)}
 
-	selected := f.SelectedColumns()
-	sourceNames := make([]string, 0, len(selected))
-	for _, idx := range selected {
-		sourceNames = append(sourceNames, f.Columns[idx].Name)
-	}
-	rs.Renames = SummarizeRenames(opts.Renamer, sourceNames)
+	rs.Renames = SummarizeRenames(opts.Renamer, selectedNames(f))
 
-	for _, idx := range selected {
+	for _, idx := range f.SelectedColumns() {
 		col := f.Columns[idx]
 		prof := f.Profiles[idx]
 		syms := f.Symbols[idx]

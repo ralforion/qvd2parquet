@@ -1,0 +1,128 @@
+package convert
+
+import (
+	"fmt"
+	"strings"
+	"time"
+)
+
+// progressETA renders a progress line for a phase whose total is known before
+// it starts. The row total comes from the QVD header, so the share done and
+// the time left are arithmetic on numbers already in hand, and on a table that
+// takes a quarter of an hour they are the difference between watching a
+// counter and knowing whether to wait.
+type progressETA struct {
+	total int64
+	start time.Time
+	// lastAt and lastRows are the previous observation, so each report can be
+	// costed on its own interval.
+	lastAt   time.Time
+	lastRows int64
+	// rate is an exponentially weighted rows per second, used only for the
+	// estimate. The rate a run settles at differs from its average, because
+	// the first batches carry the cost of starting up, and a projection from
+	// the average stays pessimistic long after the run has found its speed.
+	rate float64
+}
+
+// etaSmoothing weights the newest interval against the accumulated rate. Low
+// enough that one slow batch does not swing the estimate, high enough that a
+// genuine change in speed reaches it within a few reports.
+const etaSmoothing = 0.4
+
+func newProgressETA(total int64, start time.Time) *progressETA {
+	return &progressETA{total: total, start: start, lastAt: start}
+}
+
+// Report records a cumulative row count and renders the shared part of a
+// progress line: rows, share done, elapsed, throughput, and the estimate.
+//
+// The throughput shown is the average since the phase started, which is what
+// it has always been. The estimate is not: it comes from the recent rate, so
+// the two can disagree, and while a run is speeding up the estimate is the
+// more accurate of them.
+func (p *progressETA) Report(rows int64, now time.Time) string {
+	p.observe(rows, now)
+
+	elapsed := now.Sub(p.start)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d", rows)
+	if p.total > 0 {
+		fmt.Fprintf(&sb, "/%d", p.total)
+	}
+	sb.WriteString(" rows")
+	if pct := p.percent(rows); pct != "" {
+		fmt.Fprintf(&sb, " (%s)", pct)
+	}
+	fmt.Fprintf(&sb, " in %s", elapsed.Round(time.Millisecond))
+
+	var avg float64
+	if elapsed > 0 {
+		avg = float64(rows) / elapsed.Seconds()
+	}
+	fmt.Fprintf(&sb, " (%.0f rows/s", avg)
+	if left := p.remaining(rows); left != "" {
+		fmt.Fprintf(&sb, ", about %s left", left)
+	}
+	sb.WriteString(")")
+	return sb.String()
+}
+
+// observe folds one interval into the smoothed rate.
+func (p *progressETA) observe(rows int64, now time.Time) {
+	dt := now.Sub(p.lastAt).Seconds()
+	drows := rows - p.lastRows
+	if dt > 0 && drows > 0 {
+		inst := float64(drows) / dt
+		if p.rate == 0 {
+			p.rate = inst
+		} else {
+			p.rate = etaSmoothing*inst + (1-etaSmoothing)*p.rate
+		}
+	}
+	p.lastAt, p.lastRows = now, rows
+}
+
+// percent is the share of the total done, blank when there is no total to
+// measure against.
+func (p *progressETA) percent(rows int64) string {
+	if p.total <= 0 || rows < 0 {
+		return ""
+	}
+	pct := float64(rows) * 100 / float64(p.total)
+	if pct > 100 {
+		pct = 100
+	}
+	return fmt.Sprintf("%.0f%%", pct)
+}
+
+// remaining projects the time left from the recent rate. It is blank when
+// there is nothing to project from: no total, no rate yet, or a phase that has
+// reached its last row.
+func (p *progressETA) remaining(rows int64) string {
+	if p.total <= 0 || p.rate <= 0 || rows >= p.total {
+		return ""
+	}
+	left := time.Duration(float64(p.total-rows) / p.rate * float64(time.Second))
+	return shortDuration(left)
+}
+
+// shortDuration renders an estimate at the precision it deserves. Go's own
+// formatting keeps every unit, so an hour long conversion would report
+// "1h2m0s"; and a projection is not worth sub-second precision.
+func shortDuration(d time.Duration) string {
+	if d < time.Second {
+		return "under 1s"
+	}
+	d = d.Round(time.Second)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		d = d.Round(time.Second)
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	default:
+		d = d.Round(time.Minute)
+		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+}

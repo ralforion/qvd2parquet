@@ -270,3 +270,52 @@ func TestInspectWriteStaysQuietWhenEveryPatternMatches(t *testing.T) {
 		t.Errorf("unexpected reporting:\n%s", out)
 	}
 }
+
+// A file the type policy rejects has no resolved schema, and that is exactly
+// when the rest of the command line wants checking: the run has to be fixed
+// and repeated, so a pattern or an expression that is also wrong should not
+// wait for the next attempt to show itself.
+func TestInspectReportsSelectionEvenWhenTheSchemaFails(t *testing.T) {
+	tbl := qvdtest.Table{Name: "Bad", Fields: []qvdtest.Field{
+		{Name: "%BAD_PKEY", Type: "ASCII", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Str("k1"), qvdtest.Str("k2")}},
+		{Name: "Bad-||-CustomerID-||-Kunde", Type: "ASCII", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Int(42), qvdtest.Str("N/A")}},
+	}}
+	in := buildFixture(t, tbl)
+	renamer, err := NewFieldRenamer(sapRegex, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.Renamer = renamer
+	opts.Exclude = []string{"COUNTER"}
+
+	rep, err := Inspect(in, &opts)
+	if err != nil {
+		t.Fatalf("Inspect should not return the policy error: %v", err)
+	}
+	defer rep.Close()
+
+	if rep.SchemaErr == nil {
+		t.Fatal("this fixture should fail the mixed-type policy")
+	}
+	if rep.Schema != nil {
+		t.Fatal("fixture assumption wrong: a rejected file has no resolved schema")
+	}
+
+	var sb strings.Builder
+	if err := rep.Write(&sb); err != nil {
+		t.Fatal(err)
+	}
+	out := sb.String()
+	for _, want := range []string{
+		`Exclude         "COUNTER" matched no field`,
+		"Field regex     1 of 2 field(s) renamed, 1 unchanged: %BAD_PKEY",
+		"Schema could not be resolved",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report should contain %q:\n%s", want, out)
+		}
+	}
+}
