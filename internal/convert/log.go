@@ -87,7 +87,10 @@ type fileRecord struct {
 	// file, which over a folder of tables is how a mistyped pattern shows up.
 	// The rename counts are counts only: the names belong in --schema-report,
 	// since a record here is one line per file.
-	ExcludeNoMatch  []string `json:"excludeNoMatch"`
+	ExcludeNoMatch []string `json:"excludeNoMatch"`
+	// Encodings names the columns written with an encoding other than the
+	// default, as "NAME=encoding", whether pinned or measured.
+	Encodings       []string `json:"encodings"`
 	FieldsRenamed   int      `json:"fieldsRenamed"`
 	FieldsUnchanged int      `json:"fieldsUnchanged"`
 
@@ -109,6 +112,7 @@ func (w *LogWriter) File(r FileResult) {
 		QualityErrors:     []string{},
 		DecimalsNearLimit: []string{},
 		ExcludeNoMatch:    []string{},
+		Encodings:         []string{},
 		Time:              r.Started.UTC().Format(time.RFC3339Nano),
 		Input:             r.Input,
 		Output:            r.Output,
@@ -132,6 +136,9 @@ func (w *LogWriter) File(r FileResult) {
 		}
 		if len(r.Stats.ExcludeNoMatch) > 0 {
 			rec.ExcludeNoMatch = r.Stats.ExcludeNoMatch
+		}
+		if len(r.Stats.Encodings) > 0 {
+			rec.Encodings = r.Stats.Encodings
 		}
 		rec.FieldsRenamed = r.Stats.Renames.Renamed
 		rec.FieldsUnchanged = len(r.Stats.Renames.Unchanged)

@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -38,7 +39,10 @@ type InspectReport struct {
 	// pin that would fail the run has to fail here too.
 	Encodings   *ResolvedEncodings
 	EncodingErr error
-	Elapsed     time.Duration
+	// Trials holds the encoding measurements --encoding auto asks for, best
+	// saving first. Empty unless it was asked for.
+	Trials  []EncodingTrial
+	Elapsed time.Duration
 
 	Schema *ResolvedSchema
 	File   *qvd.File
@@ -111,7 +115,13 @@ func Inspect(inputPath string, opts *Options) (*InspectReport, error) {
 	}
 	rep.Schema, rep.SchemaErr = ResolveSchema(f, opts, override)
 	if rep.Schema != nil {
-		rep.Encodings, rep.EncodingErr = ResolveEncodings(opts.Encodings, rep.Schema, f)
+		rep.Encodings, rep.EncodingErr = ResolveEncodings(opts.Encodings.Rules, rep.Schema, f)
+		if opts.Encodings.Auto && rep.EncodingErr == nil {
+			// The one place inspect reads records. It is asked for
+			// explicitly, so the promise that inspect touches only a prefix
+			// of the file holds unless you want the measurement.
+			rep.Trials, rep.EncodingErr = TrialEncodings(context.Background(), f, rep.Schema, opts)
+		}
 	}
 	rep.Elapsed = time.Since(start)
 	return rep, nil
@@ -234,7 +244,34 @@ func (r *InspectReport) writeSchema(w io.Writer) error {
 			strings.Join(tight, "\n  "))
 		fmt.Fprintf(w, "Pin them with --schema if a later load may exceed the range.\n")
 	}
+	r.writeTrials(w)
 	return nil
+}
+
+// writeTrials reports what the encoding measurement found. Columns that gain
+// nothing are counted rather than named: the answer worth reading is the short
+// list of columns where a different encoding is measurably smaller.
+func (r *InspectReport) writeTrials(w io.Writer) {
+	if len(r.Trials) == 0 {
+		return
+	}
+	worthwhile := WorthwhileTrials(r.Trials)
+	if len(worthwhile) == 0 {
+		fmt.Fprintf(w, "\nMeasured %d column(s) against other encodings on %s sampled rows: "+
+			"none is worth changing.\n", len(r.Trials), withThousands(r.Trials[0].SampledRows))
+		return
+	}
+	fmt.Fprintf(w, "\nColumns that would compress better with a different encoding:\n")
+	var rules []string
+	for _, t := range worthwhile {
+		fmt.Fprintf(w, "  %s\n", t.Line())
+		rules = append(rules, fmt.Sprintf("%s=%s", t.Column, t.Encoding))
+	}
+	if rest := len(r.Trials) - len(worthwhile); rest > 0 {
+		fmt.Fprintf(w, "%d other column(s) measured no better than the default.\n", rest)
+	}
+	fmt.Fprintf(w, "Apply with --encoding %q, or --encoding auto to measure every file.\n",
+		strings.Join(rules, ","))
 }
 
 // writeProfiles prints raw symbol profiles, which is what is useful when the

@@ -20,30 +20,48 @@ type EncodingRule struct {
 	Encoding parquetwrite.Encoding
 }
 
-// ParseEncodingRules reads the --encoding value: a comma-separated list of
-// PATTERN=ENCODING.
-func ParseEncodingRules(spec string) ([]EncodingRule, error) {
+// EncodingSpec is the parsed --encoding value: explicit rules, and whether to
+// measure. The two compose, and an explicit rule wins over a measurement, so
+// "auto,%*_PKEY=plain" measures every candidate column except that one.
+type EncodingSpec struct {
+	// Auto asks for the encoding to be measured per file rather than named.
+	// A pattern cannot know what a table's key looks like, and over a folder
+	// of tables it is the only form that can answer per file.
+	Auto  bool
+	Rules []EncodingRule
+}
+
+// AutoKeyword requests the measurement instead of naming an encoding.
+const AutoKeyword = "auto"
+
+// ParseEncodingSpec reads the --encoding value: a comma-separated list of
+// PATTERN=ENCODING, the word "auto", or both.
+func ParseEncodingSpec(spec string) (EncodingSpec, error) {
+	var out EncodingSpec
 	if strings.TrimSpace(spec) == "" {
-		return nil, nil
+		return out, nil
 	}
-	var rules []EncodingRule
 	for _, part := range strings.Split(spec, ",") {
 		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(part), AutoKeyword) {
+			out.Auto = true
 			continue
 		}
 		pattern, name, ok := strings.Cut(part, "=")
 		pattern = strings.TrimSpace(pattern)
 		if !ok || pattern == "" {
-			return nil, fmt.Errorf("invalid --encoding %q: want PATTERN=ENCODING, "+
-				"for example '%%*_PKEY=delta_byte_array'", part)
+			return EncodingSpec{}, fmt.Errorf("invalid --encoding %q: want PATTERN=ENCODING "+
+				"or %s, for example '%%*_PKEY=delta_byte_array'", part, AutoKeyword)
 		}
 		enc, err := parquetwrite.ParseEncoding(name)
 		if err != nil {
-			return nil, fmt.Errorf("invalid --encoding %q: %w", part, err)
+			return EncodingSpec{}, fmt.Errorf("invalid --encoding %q: %w", part, err)
 		}
-		rules = append(rules, EncodingRule{Pattern: pattern, Encoding: enc})
+		out.Rules = append(out.Rules, EncodingRule{Pattern: pattern, Encoding: enc})
 	}
-	return rules, nil
+	return out, nil
 }
 
 // ResolvedEncodings is the outcome of applying the rules to a resolved schema.
@@ -53,6 +71,9 @@ type ResolvedEncodings struct {
 	// Pinned describes each pinned column as "NAME=encoding", in schema
 	// order, for a log line.
 	Pinned []string
+	// Measured holds the trials a measurement adopted, so a run can report
+	// what it chose and on what evidence.
+	Measured []EncodingTrial
 	// Unmatched holds patterns that reached no column. As with --exclude a
 	// pattern matching nothing is reported rather than rejected, since one
 	// command line covers a folder of tables with differing fields.

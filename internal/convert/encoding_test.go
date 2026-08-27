@@ -16,12 +16,13 @@ import (
 )
 
 func TestParseEncodingRules(t *testing.T) {
-	rules, err := ParseEncodingRules("%*_PKEY=delta_byte_array, Belege*=plain")
+	spec, err := ParseEncodingSpec("%*_PKEY=delta_byte_array, Belege*=plain")
 	if err != nil {
 		t.Fatalf("ParseEncodingRules: %v", err)
 	}
-	if len(rules) != 2 {
-		t.Fatalf("got %d rules, want 2: %+v", len(rules), rules)
+	rules := spec.Rules
+	if len(rules) != 2 || spec.Auto {
+		t.Fatalf("got %d rules (auto=%v), want 2 and no auto: %+v", len(rules), spec.Auto, spec)
 	}
 	if rules[0].Pattern != "%*_PKEY" || rules[0].Encoding != parquetwrite.EncodingDeltaByteArray {
 		t.Errorf("first rule = %+v", rules[0])
@@ -29,12 +30,18 @@ func TestParseEncodingRules(t *testing.T) {
 	if rules[1].Pattern != "Belege*" || rules[1].Encoding != parquetwrite.EncodingPlain {
 		t.Errorf("second rule = %+v", rules[1])
 	}
-	if rules, err := ParseEncodingRules("  "); err != nil || rules != nil {
-		t.Errorf("empty spec = %v, %v; want no rules and no error", rules, err)
+	if spec, err := ParseEncodingSpec("  "); err != nil || spec.Rules != nil || spec.Auto {
+		t.Errorf("empty spec = %+v, %v; want nothing and no error", spec, err)
+	}
+
+	// "auto" composes with explicit rules, and an explicit rule wins.
+	spec, err = ParseEncodingSpec("auto, %*_PKEY=plain")
+	if err != nil || !spec.Auto || len(spec.Rules) != 1 {
+		t.Errorf("ParseEncodingSpec(auto plus a rule) = %+v, %v", spec, err)
 	}
 
 	for _, bad := range []string{"nopattern", "=plain", "KEY=nosuchencoding", "KEY="} {
-		if _, err := ParseEncodingRules(bad); err == nil {
+		if _, err := ParseEncodingSpec(bad); err == nil {
 			t.Errorf("ParseEncodingRules(%q) should fail", bad)
 		}
 	}
@@ -67,11 +74,11 @@ func TestResolveEncodingsMatchesEitherName(t *testing.T) {
 
 	// %A057_PKEY keeps its name; KSCHL is reached only under its output name,
 	// since the original is "A057-||-KSCHL-||-Konditionsart".
-	rules, err := ParseEncodingRules("%*_PKEY=delta_byte_array,KSCHL=plain,Nothing*=plain")
+	spec, err := ParseEncodingSpec("%*_PKEY=delta_byte_array,KSCHL=plain,Nothing*=plain")
 	if err != nil {
 		t.Fatal(err)
 	}
-	enc, err := ResolveEncodings(rules, rs, f)
+	enc, err := ResolveEncodings(spec.Rules, rs, f)
 	if err != nil {
 		t.Fatalf("ResolveEncodings: %v", err)
 	}
@@ -97,11 +104,11 @@ func TestResolveEncodingsLastRuleWins(t *testing.T) {
 	}}
 	f := &qvd.File{Columns: []qvd.Column{{Name: "A"}}}
 
-	rules, err := ParseEncodingRules("*=delta_byte_array,B=plain")
+	spec, err := ParseEncodingSpec("*=delta_byte_array,B=plain")
 	if err != nil {
 		t.Fatal(err)
 	}
-	enc, err := ResolveEncodings(rules, rs, f)
+	enc, err := ResolveEncodings(spec.Rules, rs, f)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,8 +128,8 @@ func TestResolveEncodingsRejectsAMismatchedType(t *testing.T) {
 	}}
 	f := &qvd.File{Columns: []qvd.Column{{Name: "DATBI"}}}
 
-	rules, _ := ParseEncodingRules("DATBI=delta_byte_array")
-	_, err := ResolveEncodings(rules, rs, f)
+	spec, _ := ParseEncodingSpec("DATBI=delta_byte_array")
+	_, err := ResolveEncodings(spec.Rules, rs, f)
 	if err == nil {
 		t.Fatal("delta_byte_array on an int64 column should be refused")
 	}
@@ -138,8 +145,8 @@ func TestResolveEncodingsRejectsAMismatchedType(t *testing.T) {
 		{Name: "S", ArrowType: arrowString, SourceIndex: 0},
 		{Name: "D", ArrowType: arrowDate32, SourceIndex: 0},
 	}}
-	rules, _ = ParseEncodingRules("S=delta_byte_array,D=delta_binary_packed")
-	if _, err := ResolveEncodings(rules, ok, f); err != nil {
+	spec, _ = ParseEncodingSpec("S=delta_byte_array,D=delta_binary_packed")
+	if _, err := ResolveEncodings(spec.Rules, ok, f); err != nil {
 		t.Errorf("ResolveEncodings: %v", err)
 	}
 }
@@ -153,11 +160,11 @@ func TestPinnedEncodingReachesTheFile(t *testing.T) {
 	opts := testOptions()
 	opts.Quality = QualityFull
 	opts.SchemaReportPath = filepath.Join(t.TempDir(), "schema.json")
-	rules, err := ParseEncodingRules("%A057_PKEY=delta_byte_array")
+	spec, err := ParseEncodingSpec("%A057_PKEY=delta_byte_array")
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts.Encodings = rules
+	opts.Encodings = spec
 
 	var lines []string
 	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
@@ -233,7 +240,7 @@ func TestEncodingPatternMatchingNothingIsANote(t *testing.T) {
 	in := buildFixture(t, sapStyleTable())
 	out := filepath.Join(t.TempDir(), "out.parquet")
 	opts := testOptions()
-	opts.Encodings, _ = ParseEncodingRules("NoSuchColumn*=plain")
+	opts.Encodings, _ = ParseEncodingSpec("NoSuchColumn*=plain")
 
 	var lines []string
 	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
@@ -256,7 +263,7 @@ func TestEncodingPatternMatchingNothingIsANote(t *testing.T) {
 func TestInspectShowsEncodings(t *testing.T) {
 	in := buildFixture(t, sapStyleTable())
 	opts := testOptions()
-	opts.Encodings, _ = ParseEncodingRules("%A057_PKEY=delta_byte_array,Dead*=plain")
+	opts.Encodings, _ = ParseEncodingSpec("%A057_PKEY=delta_byte_array,Dead*=plain")
 
 	rep, err := Inspect(in, &opts)
 	if err != nil {
@@ -278,7 +285,7 @@ func TestInspectShowsEncodings(t *testing.T) {
 	}
 
 	bad := testOptions()
-	bad.Encodings, _ = ParseEncodingRules("%SYS_TS=delta_byte_array")
+	bad.Encodings, _ = ParseEncodingSpec("%SYS_TS=delta_byte_array")
 	badRep, err := Inspect(in, &bad)
 	if err != nil {
 		t.Fatal(err)

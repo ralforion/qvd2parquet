@@ -31,6 +31,9 @@ type Stats struct {
 	// that worked.
 	ExcludeNoMatch []string
 	Renames        RenameSummary
+	// Encodings names the columns written with a pinned or measured encoding,
+	// as "NAME=encoding".
+	Encodings []string
 }
 
 // maxNamedFields caps how many field names a single log line will list. A run
@@ -181,12 +184,19 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	if err != nil {
 		return nil, nil, err
 	}
-	enc, err := ResolveEncodings(opts.Encodings, rs, f)
+	enc, err := ResolveEncodings(opts.Encodings.Rules, rs, f)
 	if err != nil {
 		return nil, nil, err
 	}
+	// Pins are reported before any measurement, since a measurement that
+	// follows must leave them alone. What it adopts reports itself.
 	if len(enc.Pinned) > 0 {
 		logf("encoding: %s", strings.Join(enc.Pinned, ", "))
+	}
+	if opts.Encodings.Auto {
+		if err := applyMeasuredEncodings(ctx, f, rs, opts, enc, logf); err != nil {
+			return nil, nil, err
+		}
 	}
 	if len(enc.Unmatched) > 0 {
 		logf("note: --encoding %s matched no column; patterns are wildcards over "+
@@ -268,6 +278,7 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 		DecimalsNearLimit: decimalsNearLimit(rs, f),
 		ExcludeNoMatch:    unmatchedExcludes,
 		Renames:           rs.Renames,
+		Encodings:         enc.Pinned,
 	}
 	if fi, err := os.Stat(outputPath); err == nil {
 		st.OutputBytes = fi.Size()
@@ -351,7 +362,7 @@ func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema, 
 	// Resolution errors are reported by the conversion itself, which fails on
 	// them; a report should still describe everything it can.
 	pinned := map[string]parquetwrite.Encoding{}
-	if enc, err := ResolveEncodings(opts.Encodings, rs, f); err == nil {
+	if enc, err := ResolveEncodings(opts.Encodings.Rules, rs, f); err == nil {
 		pinned = enc.ByColumn
 	}
 	rep := SchemaReport{
