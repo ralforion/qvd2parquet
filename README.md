@@ -125,7 +125,7 @@ qvd2parquet --inspect [options] input.qvd
   -decimal-source auto       Decimal extraction: auto|text|numeric
   -decimal-strict            Fail instead of rounding when a value does not fit its scale
   -compression zstd          Parquet compression: zstd|snappy|gzip|uncompressed
-  -encoding 'PAT=ENC,...'    Pin column encodings, e.g. '%*_PKEY=delta_byte_array'
+  -encoding 'PAT=ENC,...'    Pin column encodings, or 'auto' to measure per file
   -batch-rows 0              Rows per Arrow batch, 0 sizes it from the column
                              count to hold in-flight memory steady
   -row-group-rows 65536      Rows per Parquet row group
@@ -356,8 +356,8 @@ duckdb -c "select input, error from read_json_auto('run.jsonl') where status='fa
 
 Each file record carries the row and column counts, output size, elapsed time,
 throughput, `excludeNoMatch` with any pattern that dropped nothing from that
-file, `fieldsRenamed` and `fieldsUnchanged`, and the quality gate's verdict with
-any errors — so a batch can be
+file, `fieldsRenamed` and `fieldsUnchanged`, `encodings` with any column not
+written the default way, and the quality gate's verdict with any errors — so a batch can be
 audited without opening every per-file report. `--schema-report` and
 `--quality-report` also work in batch mode; each file gets its own document,
 named after the input.
@@ -474,11 +474,57 @@ starts, naming the ones that fit. Pinning a column also turns its dictionary
 off, since leaving it on would mean the pinned encoding took over only once the
 dictionary page overflowed.
 
+### Measuring instead of guessing
+
 Whether `delta_byte_array` pays depends on the order the rows arrive in, since
 it stores each value against the one before it. On a key that arrives in
-document order it can cut the column to a third; on the same values shuffled it
-saves almost nothing. Measure before adopting it: convert once with and once
-without, and compare.
+document order it cuts the column to about a third; on the same values shuffled
+it saves nothing. Nothing in the symbol table reveals that order, so the choice
+has to be measured rather than reasoned about.
+
+`--encoding auto` measures it. Sampled rows are written through the real writer
+twice, once as the run would today and once with each candidate, and the
+compressed size of the column chunk is compared:
+
+```sh
+qvd2parquet --inspect --encoding auto CE10500.qvd
+```
+
+```text
+Columns that would compress better with a different encoding:
+  %CE10500_PKEY  delta_byte_array, measured 31% of current size on 300,000 sampled rows
+Apply with --encoding "%CE10500_PKEY=delta_byte_array", or --encoding auto to measure every file.
+```
+
+On a conversion it also applies what it measured, per file:
+
+```text
+qvd2parquet: encoding: measured 1 column(s) on 300,000 sampled rows in 91ms: 1 adopted, 0 left as they are
+qvd2parquet: encoding: %CE10500_PKEY  delta_byte_array, measured 31% of current size on 300,000 sampled rows
+```
+
+That run wrote 1.8 MiB where the default wrote 6.2 MiB, which is what the
+sample predicted before the conversion started.
+
+Details worth knowing:
+
+- Three windows of 100,000 consecutive rows are sampled, at the head, the
+  middle and the tail, or one window over everything on a smaller file. At that
+  size the measured ratio lands within about a point of the whole file, and it
+  converges from above, so a sample understates a win rather than overselling
+  it.
+- Only columns whose values would overflow the dictionary page are measured. On
+  a 213 column extract that is a handful, and columns are measured in groups so
+  a wide file does not hold every sample at once.
+- A candidate has to measure at 80% of the current size or better to be
+  adopted. On a shuffled key nothing is adopted, and the run says so.
+- An explicit rule always wins. `--encoding 'auto,%*_PKEY=plain'` measures
+  everything except that column.
+- `--encoding auto` is the only thing that makes `--inspect` read records, and
+  it reads only the sampled windows. Without it, inspect still touches nothing
+  but the header and the symbol tables.
+- Over `--out-dir` every file is measured on its own, which is the point: no
+  pattern can know what each table's key looks like.
 
 ## Selecting and renaming fields
 
