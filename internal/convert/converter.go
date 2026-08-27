@@ -200,10 +200,11 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	}()
 
 	decodeStart := time.Now()
+	// The row total is known from the header before a single record is read,
+	// so every progress line can carry the share done and the time left.
+	prog := newProgressETA(f.NoOfRecords, decodeStart)
 	metrics, err := conv.Run(ctx, w, func(rows int64) {
-		el := time.Since(decodeStart)
-		logf("converted %d/%d rows in %s (%.0f rows/s)",
-			rows, f.NoOfRecords, el.Round(time.Millisecond), float64(rows)/el.Seconds())
+		logf("converted %s", prog.Report(rows, time.Now()))
 	})
 	if err != nil {
 		return nil, nil, err

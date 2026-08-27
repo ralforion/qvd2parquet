@@ -209,6 +209,21 @@ routinely the larger half. Those two lines are printed whatever `--progress` is
 set to; `--progress` only controls the running `converted N/M rows` and
 `verified N/M rows` lines in between.
 
+Those running lines carry the share done and an estimate of the time left:
+
+```text
+qvd2parquet: converted 5000000/20589661 rows (24%) in 3m21s (24875 rows/s, about 10m26s left)
+```
+
+The row total comes from the QVD header before a single record is decoded, so
+both are arithmetic on numbers the run already has. The throughput shown is the
+average since the phase started; the estimate is not, it follows the recent
+rate, so the two can disagree while a run is speeding up. That is deliberate: a
+run carries the cost of starting up in its average long after it has found its
+speed, and projecting from the average stays pessimistic for the rest of the
+file. The quality gate has its own total and its own speed, so it projects
+separately rather than continuing the conversion's estimate.
+
 Everything goes to stderr, so `2> run.log` captures it all and leaves stdout
 empty.
 
@@ -310,8 +325,8 @@ Each file reports its own progress. Converting several at once, every line
 names the file it belongs to:
 
 ```text
-qvd2parquet: qvds/CE10500.qvd: converted 1000000/20589661 rows in 43.493s (23099 rows/s)
-qvd2parquet: qvds/BSEG.qvd: converted 1000000/8402113 rows in 41.882s (23876 rows/s)
+qvd2parquet: qvds/CE10500.qvd: converted 1000000/20589661 rows (5%) in 43.493s (23099 rows/s, about 14m11s left)
+qvd2parquet: qvds/BSEG.qvd: converted 1000000/8402113 rows (12%) in 41.882s (23876 rows/s, about 5m10s left)
 ```
 
 Converting one at a time, nothing can interleave and the prefix is left off.

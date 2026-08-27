@@ -32,7 +32,6 @@ restarts from it.
   `--schema-report` carries the full list under `fieldRegex`, and a `--log`
   record carries `fieldsRenamed` and `fieldsUnchanged` as counts, since a
   record there is one line per file.
-
 - `--inspect` and `--schema-report` show each column's value range, rendered in
   the type the column is written as. A QVD stores a date as a serial day
   number, so a profile reported `WADAT` as 38365..411241 and a goods-issue date
@@ -49,6 +48,14 @@ restarts from it.
   `usedFraction` per column, and the `--log` record carries
   `decimalsNearLimit`, the names alone, since a record there is one line per
   file and stays that way.
+- Progress lines say how far along a phase is and roughly how long is left:
+  `converted 5000000/20589661 rows (24%) in 3m21s (24875 rows/s, about 10m26s
+  left)`. The row total is read from the QVD header before a record is
+  decoded, so both come from numbers the run already holds. The throughput
+  shown is still the average since the phase started, while the estimate
+  follows the recent rate, because a run carries its startup cost in the
+  average long after it has found its speed. The quality gate projects
+  separately, having its own total and its own speed.
 
 ### Fixed
 
