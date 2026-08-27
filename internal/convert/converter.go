@@ -181,9 +181,22 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	if err != nil {
 		return nil, nil, err
 	}
+	enc, err := ResolveEncodings(opts.Encodings, rs, f)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(enc.Pinned) > 0 {
+		logf("encoding: %s", strings.Join(enc.Pinned, ", "))
+	}
+	if len(enc.Unmatched) > 0 {
+		logf("note: --encoding %s matched no column; patterns are wildcards over "+
+			"the output column names and the original QVD names",
+			quotedList(enc.Unmatched))
+	}
 	w, err := parquetwrite.Create(outputPath, rs.Arrow, parquetwrite.Options{
-		Compression:  codec,
-		RowGroupRows: int64(opts.RowGroupRows),
+		Compression:     codec,
+		RowGroupRows:    int64(opts.RowGroupRows),
+		ColumnEncodings: enc.ByColumn,
 	}, opts.Force)
 	if err != nil {
 		return nil, nil, err
@@ -307,9 +320,12 @@ type SchemaReportColumn struct {
 	// it is written as. The profile above holds the same span as the raw Qlik
 	// payload, where a date is a serial day number: 411241 rather than
 	// 3025-12-08.
-	Range   string         `json:"range,omitempty"`
-	Decimal *DecimalReport `json:"decimal,omitempty"`
-	Note    string         `json:"note"`
+	Range string `json:"range,omitempty"`
+	// Encoding is set only when --encoding pins this column; otherwise the
+	// writer's default applies and there is nothing to record.
+	Encoding string         `json:"encoding,omitempty"`
+	Decimal  *DecimalReport `json:"decimal,omitempty"`
+	Note     string         `json:"note"`
 }
 
 // DecimalReport documents how a decimal column was resolved.
@@ -332,6 +348,12 @@ type DecimalReport struct {
 
 // WriteSchemaReport saves the inferred schema and profiles as JSON.
 func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema, opts *Options) error {
+	// Resolution errors are reported by the conversion itself, which fails on
+	// them; a report should still describe everything it can.
+	pinned := map[string]parquetwrite.Encoding{}
+	if enc, err := ResolveEncodings(opts.Encodings, rs, f); err == nil {
+		pinned = enc.ByColumn
+	}
 	rep := SchemaReport{
 		Input:          inputPath,
 		TableName:      f.Header.TableName,
@@ -376,6 +398,7 @@ func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema, 
 			Strategy:     c.Strategy.String(),
 			Nullable:     c.Nullable,
 			Range:        ValueRange(c, f.Profiles[c.SourceIndex], opts),
+			Encoding:     string(pinned[c.Name]),
 			Note:         noteBySource[c.SourceIndex],
 		}
 		if c.Strategy == StrategyDecimal {

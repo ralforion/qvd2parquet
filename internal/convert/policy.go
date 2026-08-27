@@ -208,6 +208,9 @@ type Options struct {
 	DecimalSource       DecimalSource
 	DecimalStrict       bool
 	Compression         string
+	// Encodings pins named columns to a Parquet encoding. Empty leaves every
+	// column on the writer's default.
+	Encodings []EncodingRule
 	// BatchRows is how many rows one Arrow batch holds. 0 means automatic:
 	// see EffectiveBatchRows.
 	BatchRows int

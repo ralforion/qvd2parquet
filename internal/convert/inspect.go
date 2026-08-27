@@ -33,7 +33,12 @@ type InspectReport struct {
 	// rejects has no resolved schema, and a run that fails on one column is
 	// exactly when the rest of the command line wants checking.
 	Renames RenameSummary
-	Elapsed time.Duration
+	// Encodings reports the columns --encoding pins, and EncodingErr the
+	// reason a pin cannot be applied. Inspect predicts the conversion, so a
+	// pin that would fail the run has to fail here too.
+	Encodings   *ResolvedEncodings
+	EncodingErr error
+	Elapsed     time.Duration
 
 	Schema *ResolvedSchema
 	File   *qvd.File
@@ -105,6 +110,9 @@ func Inspect(inputPath string, opts *Options) (*InspectReport, error) {
 		}
 	}
 	rep.Schema, rep.SchemaErr = ResolveSchema(f, opts, override)
+	if rep.Schema != nil {
+		rep.Encodings, rep.EncodingErr = ResolveEncodings(opts.Encodings, rep.Schema, f)
+	}
 	rep.Elapsed = time.Since(start)
 	return rep, nil
 }
@@ -138,6 +146,17 @@ func (r *InspectReport) Write(w io.Writer) error {
 	}
 	if line := r.Renames.Line(maxNamedFields); line != "" {
 		fmt.Fprintf(w, "Field regex     %s\n", line)
+	}
+	switch {
+	case r.EncodingErr != nil:
+		fmt.Fprintf(w, "Encoding        cannot be applied: %v\n", r.EncodingErr)
+	case r.Encodings != nil:
+		if len(r.Encodings.Pinned) > 0 {
+			fmt.Fprintf(w, "Encoding        %s\n", strings.Join(r.Encodings.Pinned, ", "))
+		}
+		if len(r.Encodings.Unmatched) > 0 {
+			fmt.Fprintf(w, "Encoding        %s matched no column\n", quotedList(r.Encodings.Unmatched))
+		}
 	}
 	fmt.Fprintln(w)
 

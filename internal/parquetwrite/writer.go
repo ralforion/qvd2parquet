@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,11 +37,107 @@ func ParseCompression(s string) (compress.Compression, error) {
 	return 0, fmt.Errorf("invalid --compression %q: want zstd|snappy|gzip|uncompressed", s)
 }
 
+// Encoding names a Parquet column encoding a column can be pinned to. The
+// zero value leaves the writer's default in place: a dictionary, falling back
+// to plain when the dictionary page overflows.
+type Encoding string
+
+// The encodings a column can be pinned to. Only those with a plausible use on
+// QVD data are offered; the rest of the Parquet catalogue would be noise.
+const (
+	EncodingDefault              Encoding = ""
+	EncodingDictionary           Encoding = "dictionary"
+	EncodingPlain                Encoding = "plain"
+	EncodingDeltaByteArray       Encoding = "delta_byte_array"
+	EncodingDeltaLengthByteArray Encoding = "delta_length_byte_array"
+	EncodingDeltaBinaryPacked    Encoding = "delta_binary_packed"
+)
+
+// EncodingNames lists the accepted values, for flag help and error messages.
+var EncodingNames = []string{
+	string(EncodingDictionary), string(EncodingPlain),
+	string(EncodingDeltaByteArray), string(EncodingDeltaLengthByteArray),
+	string(EncodingDeltaBinaryPacked),
+}
+
+// ParseEncoding maps a written encoding name.
+func ParseEncoding(s string) (Encoding, error) {
+	e := Encoding(strings.ToLower(strings.TrimSpace(s)))
+	switch e {
+	case EncodingDictionary, EncodingPlain, EncodingDeltaByteArray,
+		EncodingDeltaLengthByteArray, EncodingDeltaBinaryPacked:
+		return e, nil
+	}
+	return "", fmt.Errorf("invalid encoding %q: want %s", s, strings.Join(EncodingNames, "|"))
+}
+
+// parquetEncoding maps to the writer's own constant. Dictionary is not one of
+// them: it is requested by leaving dictionary encoding enabled, not by naming
+// an encoding for the data pages.
+func (e Encoding) parquetEncoding() (parquet.Encoding, bool) {
+	switch e {
+	case EncodingPlain:
+		return parquet.Encodings.Plain, true
+	case EncodingDeltaByteArray:
+		return parquet.Encodings.DeltaByteArray, true
+	case EncodingDeltaLengthByteArray:
+		return parquet.Encodings.DeltaLengthByteArray, true
+	case EncodingDeltaBinaryPacked:
+		return parquet.Encodings.DeltaBinaryPacked, true
+	}
+	return 0, false
+}
+
 // Options configures the Parquet writer.
 type Options struct {
 	Compression compress.Compression
 	// RowGroupRows caps how many rows go into one row group.
 	RowGroupRows int64
+	// ColumnEncodings pins named output columns to an encoding. A column not
+	// named here keeps the writer's default. A dictionary is worth little on a
+	// column whose values are nearly all distinct: the dictionary page
+	// overflows, the writer falls back to plain, and the column is stored as
+	// raw bytes with only the compressor working on it.
+	ColumnEncodings map[string]Encoding
+}
+
+// Properties builds the writer properties for these options. It is exported so
+// a measurement can write a sample exactly as the real conversion would,
+// rather than approximating it.
+func Properties(opts Options) *parquet.WriterProperties {
+	props := []parquet.WriterProperty{
+		parquet.WithCompression(opts.Compression),
+		parquet.WithDictionaryDefault(true),
+		parquet.WithStats(true),
+		parquet.WithDataPageVersion(parquet.DataPageV2),
+	}
+	if opts.RowGroupRows > 0 {
+		props = append(props, parquet.WithMaxRowGroupLength(opts.RowGroupRows))
+	}
+	// Sorted, so two runs with the same options build the same properties.
+	names := make([]string, 0, len(opts.ColumnEncodings))
+	for name := range opts.ColumnEncodings {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		enc := opts.ColumnEncodings[name]
+		if enc == EncodingDictionary || enc == EncodingDefault {
+			continue
+		}
+		pe, ok := enc.parquetEncoding()
+		if !ok {
+			continue
+		}
+		// The dictionary has to go with it. Left on, it would be built first
+		// and the pinned encoding would only take over once the dictionary
+		// page overflowed, which is neither what was asked for nor
+		// measurable.
+		props = append(props,
+			parquet.WithDictionaryFor(name, false),
+			parquet.WithEncodingFor(name, pe))
+	}
+	return parquet.NewWriterProperties(props...)
 }
 
 // Writer writes Arrow records to a Parquet file through a temporary path.
@@ -72,16 +169,7 @@ func Create(finalPath string, schema *arrow.Schema, opts Options, force bool) (*
 		return nil, fmt.Errorf("%w: create %s: %v", ErrOutput, tmpPath, err)
 	}
 
-	props := []parquet.WriterProperty{
-		parquet.WithCompression(opts.Compression),
-		parquet.WithDictionaryDefault(true),
-		parquet.WithStats(true),
-		parquet.WithDataPageVersion(parquet.DataPageV2),
-	}
-	if opts.RowGroupRows > 0 {
-		props = append(props, parquet.WithMaxRowGroupLength(opts.RowGroupRows))
-	}
-	wp := parquet.NewWriterProperties(props...)
+	wp := Properties(opts)
 	// StoreSchema writes the Arrow schema into the Parquet footer so readers
 	// round-trip types such as time32[ms] faithfully.
 	ap := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema())

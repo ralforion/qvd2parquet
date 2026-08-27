@@ -125,6 +125,7 @@ qvd2parquet --inspect [options] input.qvd
   -decimal-source auto       Decimal extraction: auto|text|numeric
   -decimal-strict            Fail instead of rounding when a value does not fit its scale
   -compression zstd          Parquet compression: zstd|snappy|gzip|uncompressed
+  -encoding 'PAT=ENC,...'    Pin column encodings, e.g. '%*_PKEY=delta_byte_array'
   -batch-rows 0              Rows per Arrow batch, 0 sizes it from the column
                              count to hold in-flight memory steady
   -row-group-rows 65536      Rows per Parquet row group
@@ -429,6 +430,55 @@ CustomerID  ASCII     2        0      1     0       1        0
 That makes it a cheap pre-flight check in a pipeline: inspect first, and only
 convert once the schema is what you expect. `--schema-report` works in inspect
 mode too, for the same information as JSON.
+
+## Column encodings
+
+Every column is written with a dictionary by default, which is right for the
+columns a QVD is usually full of: a field with twenty-seven thousand distinct
+values across twenty million rows costs almost nothing that way.
+
+It is worth nothing on a column whose values are nearly all distinct. The
+dictionary page overflows, the writer falls back to `PLAIN`, and the column
+ends up as raw bytes with only the compressor working on it. A Qlik composite
+primary key is exactly that column: one distinct value per row.
+
+`--encoding` pins such a column to something better:
+
+```sh
+qvd2parquet --encoding '%*_PKEY=delta_byte_array' CE10500.qvd ce10500.parquet
+```
+
+```text
+qvd2parquet: encoding: %CE10500_PKEY=delta_byte_array
+```
+
+Patterns are wildcards, matched against **both** the output column name and the
+original QVD name, so one rule covers a folder of SAP tables whose keys are
+named per table. A later rule wins over an earlier one, so `'*=plain,KEY=delta_byte_array'`
+sets a default and an exception. A pattern that matches no column is reported
+rather than rejected, for the same reason `--exclude` does that: one command
+line is often pointed at tables that do not all carry the same fields.
+
+The encodings on offer, and what they suit:
+
+| encoding | for |
+|---|---|
+| `dictionary` | the default: repeated values of any type |
+| `plain` | values with no structure to exploit |
+| `delta_byte_array` | text whose consecutive rows share a prefix, such as a sorted composite key |
+| `delta_length_byte_array` | text of varying length with no shared prefix |
+| `delta_binary_packed` | integers, dates and timestamps that move in small steps |
+
+An encoding the column's type cannot carry is refused before the conversion
+starts, naming the ones that fit. Pinning a column also turns its dictionary
+off, since leaving it on would mean the pinned encoding took over only once the
+dictionary page overflowed.
+
+Whether `delta_byte_array` pays depends on the order the rows arrive in, since
+it stores each value against the one before it. On a key that arrives in
+document order it can cut the column to a third; on the same values shuffled it
+saves almost nothing. Measure before adopting it: convert once with and once
+without, and compare.
 
 ## Selecting and renaming fields
 

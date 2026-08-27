@@ -48,6 +48,17 @@ restarts from it.
   `usedFraction` per column, and the `--log` record carries
   `decimalsNearLimit`, the names alone, since a record there is one line per
   file and stays that way.
+- `--encoding` pins a column to a Parquet encoding, as
+  `--encoding '%*_PKEY=delta_byte_array'`. A column whose values are nearly all
+  distinct gets nothing from the default dictionary: the dictionary page
+  overflows, the writer falls back to `PLAIN`, and the column is stored as raw
+  bytes with only the compressor working on it. A Qlik composite primary key is
+  that column, one distinct value per row. Patterns are wildcards over both the
+  output name and the original QVD name, so one rule covers a folder of SAP
+  tables whose keys are named per table, and a later rule wins over an earlier
+  one. An encoding the column's type cannot carry is refused before the
+  conversion starts, naming the ones that fit, and `--inspect` shows what a run
+  would pin. Nothing changes without the flag.
 - Progress lines say how far along a phase is and roughly how long is left:
   `converted 5000000/20589661 rows (24%) in 3m21s (24875 rows/s, about 10m26s
   left)`. The row total is read from the QVD header before a record is
