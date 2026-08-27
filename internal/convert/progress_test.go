@@ -53,6 +53,53 @@ func TestProgressEstimateFollowsRecentRate(t *testing.T) {
 	}
 }
 
+// A phase that is nearly done is not done. Rounding the share let the last
+// stretch print "100%" beside an estimate of the time still left, which is a
+// line arguing with itself.
+func TestProgressReachesFullOnlyWhenFinished(t *testing.T) {
+	start := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
+	p := newProgressETA(1000, start)
+
+	line := p.Report(995, start.Add(10*time.Second))
+	if !strings.Contains(line, "(99%)") {
+		t.Errorf("995 of 1000 rows should read 99%%: %q", line)
+	}
+	if !strings.Contains(line, "left") {
+		t.Errorf("a line short of the total should still project: %q", line)
+	}
+
+	line = p.Report(1000, start.Add(11*time.Second))
+	if !strings.Contains(line, "(100%)") || strings.Contains(line, "left") {
+		t.Errorf("the last report should read 100%% with nothing left: %q", line)
+	}
+}
+
+// The estimate must never be negative, and the way it could become one is
+// overflow: a rate low enough to project past roughly 292 years wraps a
+// time.Duration around into a negative number. A stalled phase produces
+// exactly such a rate.
+func TestProgressRefusesAnAbsurdProjection(t *testing.T) {
+	start := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
+	p := newProgressETA(20_000_000, start)
+
+	// One row in three hours: 20M rows at that rate is about seven thousand
+	// years, which as nanoseconds does not fit an int64.
+	line := p.Report(1, start.Add(3*time.Hour))
+	if strings.Contains(line, "left") {
+		t.Errorf("a stalled phase should project nothing: %q", line)
+	}
+	if !strings.Contains(line, "(0%)") {
+		t.Errorf("the share should still be reported: %q", line)
+	}
+
+	// Nothing the tracker can be fed produces a negative estimate.
+	for _, rows := range []int64{0, 1, 19_999_999, 20_000_000, 20_000_001} {
+		if d, ok := p.remaining(rows); ok && d < 0 {
+			t.Errorf("remaining(%d) = %s, which is in the past", rows, d)
+		}
+	}
+}
+
 // An estimate below a second is not worth a number, and "about under 1s" is
 // not a sentence.
 func TestProgressPhrasesASubSecondEstimate(t *testing.T) {

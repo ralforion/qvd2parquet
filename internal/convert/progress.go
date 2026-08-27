@@ -2,6 +2,7 @@ package convert
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -91,25 +92,44 @@ func (p *progressETA) observe(rows int64, now time.Time) {
 
 // percent is the share of the total done, blank when there is no total to
 // measure against.
+//
+// The share is floored rather than rounded, so 100% means finished. Rounding
+// let 995 of 1000 rows print "100%" on a line that also said how long was
+// left, which is a line contradicting itself.
 func (p *progressETA) percent(rows int64) string {
 	if p.total <= 0 || rows < 0 {
 		return ""
 	}
-	pct := float64(rows) * 100 / float64(p.total)
+	pct := math.Floor(float64(rows) * 100 / float64(p.total))
 	if pct > 100 {
 		pct = 100
 	}
 	return fmt.Sprintf("%.0f%%", pct)
 }
 
+// maxProjection bounds what will be printed as an estimate. A rate low enough
+// to project beyond this comes from a stalled or barely started phase, and the
+// number would be noise; past roughly 292 years it would also overflow a
+// time.Duration and come out negative.
+const maxProjection = 48 * time.Hour
+
 // remaining projects the time left from the recent rate. The second result is
-// false when there is nothing to project from: no total, no rate yet, or a
-// phase that has reached its last row.
+// false when there is nothing to project from: no total, no rate yet, a phase
+// that has reached its last row, or a projection too long to mean anything.
+//
+// The value cannot come out negative. Rows past the total return early rather
+// than subtracting into a negative remainder, the rate only ever takes
+// positive samples, and an absurd projection is refused above instead of
+// wrapping a Duration around.
 func (p *progressETA) remaining(rows int64) (time.Duration, bool) {
 	if p.total <= 0 || p.rate <= 0 || rows >= p.total {
 		return 0, false
 	}
-	return time.Duration(float64(p.total-rows) / p.rate * float64(time.Second)), true
+	seconds := float64(p.total-rows) / p.rate
+	if seconds <= 0 || seconds > maxProjection.Seconds() {
+		return 0, false
+	}
+	return time.Duration(seconds * float64(time.Second)), true
 }
 
 // shortDuration renders an estimate of a second or more at the precision it
