@@ -151,13 +151,24 @@ type Writer struct {
 	renamed   bool
 }
 
+// CheckOutput reports whether a conversion may write to finalPath. Create
+// applies it too, so this is a preflight rather than the guarantee: a caller
+// that would otherwise spend minutes before reaching the writer can fail in
+// milliseconds instead.
+func CheckOutput(finalPath string, force bool) error {
+	if _, err := os.Stat(finalPath); err == nil && !force {
+		return fmt.Errorf("%w: %s already exists; pass --force to overwrite", ErrOutput, finalPath)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: stat %s: %v", ErrOutput, finalPath, err)
+	}
+	return nil
+}
+
 // Create opens a temporary Parquet output next to finalPath. If force is false
 // and finalPath already exists, it fails without touching anything.
 func Create(finalPath string, schema *arrow.Schema, opts Options, force bool) (*Writer, error) {
-	if _, err := os.Stat(finalPath); err == nil && !force {
-		return nil, fmt.Errorf("%w: %s already exists; pass --force to overwrite", ErrOutput, finalPath)
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("%w: stat %s: %v", ErrOutput, finalPath, err)
+	if err := CheckOutput(finalPath, force); err != nil {
+		return nil, err
 	}
 
 	tmpPath := fmt.Sprintf("%s.tmp-%d", finalPath, os.Getpid())

@@ -493,8 +493,12 @@ qvd2parquet --inspect --encoding auto CE10500.qvd
 ```text
 Columns that would compress better with a different encoding:
   %CE10500_PKEY  delta_byte_array, measured 31% of current size on 300,000 sampled rows
-Apply with --encoding "%CE10500_PKEY=delta_byte_array", or --encoding auto to measure every file.
+A conversion with --encoding auto writes them that way; pin them instead with --encoding "%CE10500_PKEY=delta_byte_array".
 ```
+
+`--schema-report` written from that same inspect carries the measured encoding
+per column, so a scripted preflight reads the same decisions the conversion
+will make.
 
 On a conversion it also applies what it measured, per file:
 
