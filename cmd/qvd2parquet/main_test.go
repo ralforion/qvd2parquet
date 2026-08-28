@@ -216,6 +216,11 @@ func TestValidateBatchLogPath(t *testing.T) {
 	input := filepath.Join(dir, "in", "sales.qvd")
 	inputs := []string{input}
 
+	// A path FindInputs could not examine is still an input: the run reports it
+	// as a failed file and writes it to the log.
+	missing := filepath.Join(dir, "in", "gone.qvd")
+	problems := []convert.InputProblem{{Path: missing, Err: convert.ErrInput}}
+
 	collisions := []struct {
 		name    string
 		logPath string
@@ -224,6 +229,10 @@ func TestValidateBatchLogPath(t *testing.T) {
 		{
 			name:    "an expanded input",
 			logPath: input,
+		},
+		{
+			name:    "an input FindInputs could not examine",
+			logPath: missing,
 		},
 		{
 			name:    "a derived output",
@@ -251,7 +260,7 @@ func TestValidateBatchLogPath(t *testing.T) {
 	}
 	for _, tc := range collisions {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := validateBatchLogPath(tc.logPath, inputs, outDir, &tc.opts); err == nil {
+			if err := validateBatchLogPath(tc.logPath, inputs, problems, outDir, &tc.opts); err == nil {
 				t.Fatal("collision accepted")
 			}
 		})
@@ -260,7 +269,7 @@ func TestValidateBatchLogPath(t *testing.T) {
 	// The guard must not reject a log that merely sits beside the outputs,
 	// which is where a batch log normally goes.
 	var opts convert.Options
-	if err := validateBatchLogPath(filepath.Join(outDir, "run.jsonl"), inputs, outDir, &opts); err != nil {
+	if err := validateBatchLogPath(filepath.Join(outDir, "run.jsonl"), inputs, problems, outDir, &opts); err != nil {
 		t.Errorf("log beside the outputs rejected: %v", err)
 	}
 }
@@ -305,6 +314,33 @@ func TestBatchLogDoesNotTruncateInput(t *testing.T) {
 	}
 	if !bytes.Equal(after, original) {
 		t.Fatalf("input truncated: %d bytes before, %d after", len(original), len(after))
+	}
+}
+
+// A path that could not be examined never reaches the inputs list, so the guard
+// used to let the log take it. The run then named the file as missing and
+// created it in the same breath: exit 4, "no such file", and a JSON Lines log
+// sitting at that very path whose first record reports its own failure.
+func TestBatchLogDoesNotTakeAFailedInputPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.qvd")
+
+	cmd := exec.Command(bin, "--progress", "0", "--out-dir", filepath.Join(dir, "out"),
+		"--log", missing, missing)
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--log path must differ from the input") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("log created at the path the run reported as a missing input: %v", err)
 	}
 }
 

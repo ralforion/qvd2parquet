@@ -390,11 +390,26 @@ func validateLogPath(logPath, inputPath, outputPath string, opts *convert.Option
 //
 // The message names the offending file rather than its role, because a batch
 // may have found hundreds and "the input path" would not say which one.
-func validateBatchLogPath(logPath string, inputs []string, outDir string, opts *convert.Options) error {
+func validateBatchLogPath(logPath string, inputs []string, problems []convert.InputProblem,
+	outDir string, opts *convert.Options) error {
+
 	if err := checkLogCollisions(logPath, []logCollision{
 		{"--schema", opts.SchemaOverridePath},
 	}); err != nil {
 		return err
+	}
+	// A path FindInputs could not examine is still an input: the run reports it
+	// as a failed file and writes it to the log. Letting the log take that path
+	// produced a run that named the file as missing and created it in the same
+	// breath, the log's first record reporting the failure of the path it was
+	// being written to. No output or report is derived from one, so the path
+	// itself is the whole check.
+	for _, p := range problems {
+		if err := checkLogCollisions(logPath, []logCollision{
+			{"the input " + p.Path, p.Path},
+		}); err != nil {
+			return err
+		}
 	}
 	for _, in := range inputs {
 		out := convert.OutputPathFor(in, outDir)
@@ -501,7 +516,7 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 
 	var log *convert.LogWriter
 	if logPath != "" {
-		if err := validateBatchLogPath(logPath, inputs, outDir, opts); err != nil {
+		if err := validateBatchLogPath(logPath, inputs, problems, outDir, opts); err != nil {
 			return usageErr(err)
 		}
 		var err error

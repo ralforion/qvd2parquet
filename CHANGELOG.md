@@ -99,7 +99,10 @@ restarts from it.
   under `--out-dir`. Pointing `--log` at an input truncated a 17 KiB QVD to a
   few hundred bytes of JSON Lines reporting that the file it had just destroyed
   was not a QVD, and pointing it at a generated output exited 0 having written
-  the Parquet and no log at all.
+  the Parquet and no log at all. An input the run could not examine counts as
+  an input here too: it is reported as a failed file and written to the log, so
+  a log allowed to take its path named the file as missing and created it in
+  the same breath.
 - A batch run reports each file's progress. `--out-dir` passed a nil logger to
   the converter, so it discarded the schema notes, the row counts and the
   quality gate's progress: a folder holding one large table printed a line on
