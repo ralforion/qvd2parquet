@@ -69,15 +69,44 @@ type ResolvedEncodings struct {
 	// ByColumn maps output column name to the encoding it is pinned to.
 	ByColumn map[string]parquetwrite.Encoding
 	// Pinned describes each pinned column as "NAME=encoding", in schema
-	// order, for a log line.
-	Pinned []string
-	// Measured holds the trials a measurement adopted, so a run can report
-	// what it chose and on what evidence.
-	Measured []EncodingTrial
+	// order, for a log line. The first Explicit of them come from rules; any
+	// after that were adopted from a measurement.
+	Pinned   []string
+	Explicit int
+	// Trials holds every measurement taken, adopted or not, so a report can
+	// show the evidence and not only the decision.
+	Trials []EncodingTrial
 	// Unmatched holds patterns that reached no column. As with --exclude a
 	// pattern matching nothing is reported rather than rejected, since one
 	// command line covers a folder of tables with differing fields.
 	Unmatched []string
+}
+
+// Adopted reports whether a trial's encoding is what the column will be
+// written with, which is what separates a measurement acted on from one that
+// was only taken.
+func (r *ResolvedEncodings) Adopted(t EncodingTrial) bool {
+	return r != nil && r.ByColumn[t.Column] == t.Encoding
+}
+
+// AdoptTrials takes on the measurements worth acting on. A column an explicit
+// rule already names is left alone, which the trial itself also enforces by
+// not measuring such a column at all.
+func (r *ResolvedEncodings) AdoptTrials(trials []EncodingTrial) (adopted, rejected int) {
+	r.Trials = trials
+	for _, t := range trials {
+		if _, pinned := r.ByColumn[t.Column]; pinned {
+			continue
+		}
+		if !t.Worthwhile() {
+			rejected++
+			continue
+		}
+		r.ByColumn[t.Column] = t.Encoding
+		r.Pinned = append(r.Pinned, fmt.Sprintf("%s=%s", t.Column, t.Encoding))
+		adopted++
+	}
+	return adopted, rejected
 }
 
 // ResolveEncodings applies the rules to the schema. A later rule wins over an
@@ -110,6 +139,7 @@ func ResolveEncodings(rules []EncodingRule, rs *ResolvedSchema, f *qvd.File) (*R
 			out.Pinned = append(out.Pinned, fmt.Sprintf("%s=%s", rs.Columns[i].Name, enc))
 		}
 	}
+	out.Explicit = len(out.Pinned)
 	for ri, r := range rules {
 		if !used[ri] {
 			out.Unmatched = append(out.Unmatched, r.Pattern)

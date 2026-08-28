@@ -68,6 +68,14 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	}
 	defer f.Close()
 
+	// Refuse an output that cannot be written before doing any work for it.
+	// The writer checks again when it creates the file, which is what
+	// actually guarantees it; this only means a missing --force costs
+	// milliseconds rather than a symbol pass and an encoding measurement.
+	if err := parquetwrite.CheckOutput(outputPath, opts.Force); err != nil {
+		return nil, nil, err
+	}
+
 	if err := f.SelectColumns(opts.Columns); err != nil {
 		return nil, nil, err
 	}

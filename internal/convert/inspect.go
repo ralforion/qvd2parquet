@@ -37,12 +37,12 @@ type InspectReport struct {
 	// Encodings reports the columns --encoding pins, and EncodingErr the
 	// reason a pin cannot be applied. Inspect predicts the conversion, so a
 	// pin that would fail the run has to fail here too.
+	// The measurements --encoding auto asks for are held on Encodings, along
+	// with what they led to, so this report and a conversion describe the
+	// same decisions.
 	Encodings   *ResolvedEncodings
 	EncodingErr error
-	// Trials holds the encoding measurements --encoding auto asks for, best
-	// saving first. Empty unless it was asked for.
-	Trials  []EncodingTrial
-	Elapsed time.Duration
+	Elapsed     time.Duration
 
 	Schema *ResolvedSchema
 	File   *qvd.File
@@ -120,7 +120,15 @@ func Inspect(inputPath string, opts *Options) (*InspectReport, error) {
 			// The one place inspect reads records. It is asked for
 			// explicitly, so the promise that inspect touches only a prefix
 			// of the file holds unless you want the measurement.
-			rep.Trials, rep.EncodingErr = TrialEncodings(context.Background(), f, rep.Schema, opts)
+			var trials []EncodingTrial
+			trials, rep.EncodingErr = TrialEncodings(context.Background(), f, rep.Schema, opts)
+			if rep.EncodingErr == nil {
+				// Adopted here as a conversion with these same options would
+				// adopt them, because predicting that conversion is what
+				// inspect is for. The schema report it writes is then the
+				// same document the run would write.
+				rep.Encodings.AdoptTrials(trials)
+			}
 		}
 	}
 	rep.Elapsed = time.Since(start)
@@ -161,8 +169,11 @@ func (r *InspectReport) Write(w io.Writer) error {
 	case r.EncodingErr != nil:
 		fmt.Fprintf(w, "Encoding        cannot be applied: %v\n", r.EncodingErr)
 	case r.Encodings != nil:
-		if len(r.Encodings.Pinned) > 0 {
-			fmt.Fprintf(w, "Encoding        %s\n", strings.Join(r.Encodings.Pinned, ", "))
+		// Only the pins written as rules. A measured one reports itself
+		// below, with the evidence that chose it.
+		if r.Encodings.Explicit > 0 {
+			fmt.Fprintf(w, "Encoding        %s\n",
+				strings.Join(r.Encodings.Pinned[:r.Encodings.Explicit], ", "))
 		}
 		if len(r.Encodings.Unmatched) > 0 {
 			fmt.Fprintf(w, "Encoding        %s matched no column\n", quotedList(r.Encodings.Unmatched))
@@ -252,13 +263,14 @@ func (r *InspectReport) writeSchema(w io.Writer) error {
 // nothing are counted rather than named: the answer worth reading is the short
 // list of columns where a different encoding is measurably smaller.
 func (r *InspectReport) writeTrials(w io.Writer) {
-	if len(r.Trials) == 0 {
+	if r.Encodings == nil || len(r.Encodings.Trials) == 0 {
 		return
 	}
-	worthwhile := WorthwhileTrials(r.Trials)
+	trials := r.Encodings.Trials
+	worthwhile := WorthwhileTrials(trials)
 	if len(worthwhile) == 0 {
 		fmt.Fprintf(w, "\nMeasured %d column(s) against other encodings on %s sampled rows: "+
-			"none is worth changing.\n", len(r.Trials), withThousands(r.Trials[0].SampledRows))
+			"none is worth changing.\n", len(trials), withThousands(trials[0].SampledRows))
 		return
 	}
 	fmt.Fprintf(w, "\nColumns that would compress better with a different encoding:\n")
@@ -267,11 +279,11 @@ func (r *InspectReport) writeTrials(w io.Writer) {
 		fmt.Fprintf(w, "  %s\n", t.Line())
 		rules = append(rules, fmt.Sprintf("%s=%s", t.Column, t.Encoding))
 	}
-	if rest := len(r.Trials) - len(worthwhile); rest > 0 {
+	if rest := len(trials) - len(worthwhile); rest > 0 {
 		fmt.Fprintf(w, "%d other column(s) measured no better than the default.\n", rest)
 	}
-	fmt.Fprintf(w, "Apply with --encoding %q, or --encoding auto to measure every file.\n",
-		strings.Join(rules, ","))
+	fmt.Fprintf(w, "A conversion with --encoding auto writes them that way; "+
+		"pin them instead with --encoding %q.\n", strings.Join(rules, ","))
 }
 
 // writeProfiles prints raw symbol profiles, which is what is useful when the

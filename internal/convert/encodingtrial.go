@@ -399,22 +399,14 @@ func applyMeasuredEncodings(ctx context.Context, f *qvd.File, rs *ResolvedSchema
 		return nil
 	}
 
-	var adopted, rejected int
-	for _, t := range trials {
-		if !t.Worthwhile() {
-			rejected++
-			continue
-		}
-		enc.ByColumn[t.Column] = t.Encoding
-		enc.Pinned = append(enc.Pinned, fmt.Sprintf("%s=%s", t.Column, t.Encoding))
-		enc.Measured = append(enc.Measured, t)
-		adopted++
-	}
+	adopted, rejected := enc.AdoptTrials(trials)
 	logf("encoding: measured %d column(s) on %s sampled rows in %s: %d adopted, %d left as they are",
 		len(trials), withThousands(trials[0].SampledRows),
 		time.Since(start).Round(time.Millisecond), adopted, rejected)
-	for _, t := range enc.Measured {
-		logf("encoding: %s", t.Line())
+	for _, t := range trials {
+		if enc.Adopted(t) {
+			logf("encoding: %s", t.Line())
+		}
 	}
 	return nil
 }

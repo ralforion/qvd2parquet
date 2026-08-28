@@ -58,11 +58,11 @@ func TestTrialFindsAWinOnAnOrderedKey(t *testing.T) {
 		t.Fatalf("trial failed: %v", rep.EncodingErr)
 	}
 
-	if len(rep.Trials) != 1 {
+	if len(rep.Encodings.Trials) != 1 {
 		t.Fatalf("trials = %+v, want only the key column: a five symbol integer "+
-			"column cannot overflow a dictionary", rep.Trials)
+			"column cannot overflow a dictionary", rep.Encodings.Trials)
 	}
-	got := rep.Trials[0]
+	got := rep.Encodings.Trials[0]
 	if got.Column != "%CE10500_PKEY" || got.Encoding != "delta_byte_array" {
 		t.Errorf("trial = %+v", got)
 	}
@@ -81,7 +81,7 @@ func TestTrialFindsAWinOnAnOrderedKey(t *testing.T) {
 	for _, want := range []string{
 		"Columns that would compress better with a different encoding:",
 		"%CE10500_PKEY  delta_byte_array, measured ",
-		`Apply with --encoding "%CE10500_PKEY=delta_byte_array"`,
+		`pin them instead with --encoding "%CE10500_PKEY=delta_byte_array"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("inspect output missing %q:\n%s", want, out)
@@ -103,11 +103,11 @@ func TestTrialDeclinesOnAScrambledKey(t *testing.T) {
 	}
 	defer rep.Close()
 
-	if len(rep.Trials) != 1 {
-		t.Fatalf("trials = %+v", rep.Trials)
+	if len(rep.Encodings.Trials) != 1 {
+		t.Fatalf("trials = %+v", rep.Encodings.Trials)
 	}
-	if rep.Trials[0].Worthwhile() {
-		t.Errorf("ratio %.2f on a shuffled key should not be recommended", rep.Trials[0].Ratio())
+	if rep.Encodings.Trials[0].Worthwhile() {
+		t.Errorf("ratio %.2f on a shuffled key should not be recommended", rep.Encodings.Trials[0].Ratio())
 	}
 	var sb strings.Builder
 	if err := rep.Write(&sb); err != nil {
@@ -129,8 +129,8 @@ func TestInspectReadsNoRecordsWithoutAuto(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rep.Close()
-	if len(rep.Trials) != 0 {
-		t.Errorf("inspect measured without being asked: %+v", rep.Trials)
+	if len(rep.Encodings.Trials) != 0 {
+		t.Errorf("inspect measured without being asked: %+v", rep.Encodings.Trials)
 	}
 	var sb strings.Builder
 	if err := rep.Write(&sb); err != nil {
@@ -214,7 +214,7 @@ func TestPinnedColumnsAreNotMeasured(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rep.Close()
-	for _, tr := range rep.Trials {
+	for _, tr := range rep.Encodings.Trials {
 		if tr.Column == "%CE10500_PKEY" {
 			t.Errorf("a pinned column was measured and would be recommended: %+v", tr)
 		}
@@ -362,5 +362,84 @@ func TestTrialGroupsDoNotChangeTheAnswer(t *testing.T) {
 		if tr.SampledRows != int64(rows) {
 			t.Errorf("%s sampled %d rows, want %d", tr.Column, tr.SampledRows, rows)
 		}
+	}
+}
+
+// The inspect JSON has to describe the same file the conversion would write,
+// measurement included. It is what a scripted preflight reads, and a report
+// that omits the measured encoding says the column is written a way it is not.
+func TestInspectSchemaReportCarriesTheMeasurement(t *testing.T) {
+	in := buildFixture(t, keyTable(30000, true))
+	opts := testOptions()
+	opts.Encodings, _ = ParseEncodingSpec("auto")
+	opts.SchemaReportPath = filepath.Join(t.TempDir(), "inspect-schema.json")
+
+	rep, err := Inspect(in, &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rep.Close()
+	if err := WriteSchemaReport(opts.SchemaReportPath, in, rep.File, rep.Schema, &opts, rep.Encodings); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := os.ReadFile(opts.SchemaReportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report SchemaReport
+	if err := json.Unmarshal(b, &report); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range report.Columns {
+		want := ""
+		if c.Name == "%CE10500_PKEY" {
+			want = "delta_byte_array"
+		}
+		if c.Encoding != want {
+			t.Errorf("inspect report encoding for %s = %q, want %q", c.Name, c.Encoding, want)
+		}
+	}
+
+	// A conversion with the same options must agree, which is the whole
+	// claim inspect makes.
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	convOpts := testOptions()
+	convOpts.Encodings, _ = ParseEncodingSpec("auto")
+	stats, _, err := Run(context.Background(), in, out, &convOpts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(stats.Encodings, ",") != "%CE10500_PKEY=delta_byte_array" {
+		t.Errorf("the conversion chose %v, inspect predicted delta_byte_array", stats.Encodings)
+	}
+}
+
+// An output that cannot be written must be refused before the work is done for
+// it. Measuring first would spend a symbol pass and several sample windows to
+// arrive at "already exists".
+func TestExistingOutputIsRefusedBeforeMeasuring(t *testing.T) {
+	in := buildFixture(t, keyTable(30000, true))
+	out := filepath.Join(t.TempDir(), "taken.parquet")
+	if err := os.WriteFile(out, []byte("not parquet"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := testOptions()
+	opts.Encodings, _ = ParseEncodingSpec("auto")
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+
+	_, _, err := Run(context.Background(), in, out, &opts, logf)
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("err = %v, want an already-exists output error", err)
+	}
+	for _, l := range lines {
+		if strings.Contains(l, "measured") || strings.Contains(l, "read ") {
+			t.Errorf("work was done before refusing the output: %q", l)
+		}
+	}
+	if b, _ := os.ReadFile(out); string(b) != "not parquet" {
+		t.Error("the existing output was touched")
 	}
 }
