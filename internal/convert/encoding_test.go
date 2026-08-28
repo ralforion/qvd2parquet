@@ -265,7 +265,7 @@ func TestInspectShowsEncodings(t *testing.T) {
 	opts := testOptions()
 	opts.Encodings, _ = ParseEncodingSpec("%A057_PKEY=delta_byte_array,Dead*=plain")
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestInspectShowsEncodings(t *testing.T) {
 
 	bad := testOptions()
 	bad.Encodings, _ = ParseEncodingSpec("%SYS_TS=delta_byte_array")
-	badRep, err := Inspect(in, &bad)
+	badRep, err := Inspect(context.Background(), in, &bad)
 	if err != nil {
 		t.Fatal(err)
 	}

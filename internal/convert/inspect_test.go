@@ -16,7 +16,7 @@ func TestInspectResolvesSchemaWithoutReadingRecords(t *testing.T) {
 	in := buildFixture(t, sampleTable(5000))
 	opts := testOptions()
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestInspectMatchesConversionSchema(t *testing.T) {
 	in := buildFixture(t, sampleTable(500))
 	opts := testOptions()
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestInspectHonoursExcludeAndRename(t *testing.T) {
 	opts.Exclude = []string{"%*"}
 	opts.Renamer = renamer
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestInspectReportsSchemaFailureWithProfiles(t *testing.T) {
 	in := buildFixture(t, tbl)
 	opts := testOptions()
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatalf("Inspect should not return the policy error: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestInspectReportsSchemaFailureWithProfiles(t *testing.T) {
 func TestInspectWriteRendersSchemaTable(t *testing.T) {
 	in := buildFixture(t, sampleTable(120))
 	opts := testOptions()
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestInspectWriteRendersSchemaTable(t *testing.T) {
 
 func TestInspectMissingFile(t *testing.T) {
 	opts := testOptions()
-	if _, err := Inspect(filepath.Join(t.TempDir(), "nope.qvd"), &opts); err == nil {
+	if _, err := Inspect(context.Background(), filepath.Join(t.TempDir(), "nope.qvd"), &opts); err == nil {
 		t.Fatal("expected an error for a missing file")
 	}
 }
@@ -183,7 +183,7 @@ func TestInspectWritesNoFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := testOptions()
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestInspectWriteReportsDeadPatternsAndUntouchedFields(t *testing.T) {
 	opts.Exclude = []string{"%SYS*", "COUNTER"}
 	opts.Renamer = renamer
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestInspectWriteStaysQuietWhenEveryPatternMatches(t *testing.T) {
 	opts := testOptions()
 	opts.Exclude = []string{"%*"}
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestInspectReportsSelectionEvenWhenTheSchemaFails(t *testing.T) {
 	opts.Renamer = renamer
 	opts.Exclude = []string{"COUNTER"}
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatalf("Inspect should not return the policy error: %v", err)
 	}

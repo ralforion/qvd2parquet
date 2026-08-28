@@ -62,7 +62,10 @@ type InspectReport struct {
 //
 // A schema policy failure is reported in the result rather than returned, so
 // the caller can still show the profiles that explain it.
-func Inspect(inputPath string, opts *Options) (*InspectReport, error) {
+// The context is honoured by the encoding measurement, which is the only part
+// of inspect that does open-ended work; everything else reads a bounded prefix
+// of the file.
+func Inspect(ctx context.Context, inputPath string, opts *Options) (*InspectReport, error) {
 	if err := opts.Validate(); err != nil {
 		return nil, err
 	}
@@ -121,7 +124,7 @@ func Inspect(inputPath string, opts *Options) (*InspectReport, error) {
 			// explicitly, so the promise that inspect touches only a prefix
 			// of the file holds unless you want the measurement.
 			var trials []EncodingTrial
-			trials, rep.EncodingErr = TrialEncodings(context.Background(), f, rep.Schema, opts)
+			trials, rep.EncodingErr = TrialEncodings(ctx, f, rep.Schema, opts)
 			if rep.EncodingErr == nil {
 				// Adopted here as a conversion with these same options would
 				// adopt them, because predicting that conversion is what
