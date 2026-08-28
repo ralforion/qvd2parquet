@@ -328,8 +328,8 @@ func convertOne(ctx context.Context, in string, opts *Options, many *ManyOptions
 	// between goroutines.
 	o := *opts
 	o.Workers = perFile
-	o.SchemaReportPath = perFileReport(opts.SchemaReportPath, in, many.OutDir)
-	o.QualityReportPath = perFileReport(opts.QualityReportPath, in, many.OutDir)
+	o.SchemaReportPath = PerFileReportPath(opts.SchemaReportPath, in, many.OutDir)
+	o.QualityReportPath = PerFileReportPath(opts.QualityReportPath, in, many.OutDir)
 
 	// A batch run used to discard everything the conversion said, so a single
 	// large file showed one line on starting and nothing again until it
@@ -361,9 +361,11 @@ func convertOne(ctx context.Context, in string, opts *Options, many *ManyOptions
 	return r
 }
 
-// perFileReport turns a single report path into a per-file one, so a batch does
-// not have every file overwrite the same document.
-func perFileReport(path, input, outDir string) string {
+// PerFileReportPath turns a single report path into a per-file one, so a batch
+// does not have every file overwrite the same document. It is exported because
+// the command has to know every path a batch will write before it opens the
+// log, so the log cannot be pointed at one of them.
+func PerFileReportPath(path, input, outDir string) string {
 	if path == "" {
 		return ""
 	}

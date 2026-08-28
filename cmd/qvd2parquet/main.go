@@ -351,22 +351,62 @@ func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.
 	return exitOK
 }
 
+// logCollision is a path the log must not share with another file, paired with
+// the name to report it under.
+type logCollision struct {
+	name string
+	path string
+}
+
+// checkLogCollisions reports the first path the log would collide with.
+// NewLogWriter creates its file with O_TRUNC, so a collision destroys whichever
+// of the two is written second while the run still reports writing both.
+func checkLogCollisions(logPath string, paths []logCollision) error {
+	for _, p := range paths {
+		if p.path != "" && samePath(logPath, p.path) {
+			return fmt.Errorf("--log path must differ from %s", p.name)
+		}
+	}
+	return nil
+}
+
 // validateLogPath prevents NewLogWriter from truncating a conversion input or
 // sharing a destination with another output.
 func validateLogPath(logPath, inputPath, outputPath string, opts *convert.Options) error {
-	paths := []struct {
-		name string
-		path string
-	}{
+	return checkLogCollisions(logPath, []logCollision{
 		{"the input path", inputPath},
 		{"the output path", outputPath},
 		{"--schema", opts.SchemaOverridePath},
 		{"--schema-report", opts.SchemaReportPath},
 		{"--quality-report", opts.QualityReportPath},
+	})
+}
+
+// validateBatchLogPath is the same guard for a batch, where none of the paths
+// at risk were typed on the command line: the inputs come from expanding
+// directories, and every output and per-file report is derived from an input
+// under --out-dir. It has to run after FindInputs for that reason, and before
+// NewLogWriter, which truncates whatever it opens.
+//
+// The message names the offending file rather than its role, because a batch
+// may have found hundreds and "the input path" would not say which one.
+func validateBatchLogPath(logPath string, inputs []string, outDir string, opts *convert.Options) error {
+	if err := checkLogCollisions(logPath, []logCollision{
+		{"--schema", opts.SchemaOverridePath},
+	}); err != nil {
+		return err
 	}
-	for _, p := range paths {
-		if p.path != "" && samePath(logPath, p.path) {
-			return fmt.Errorf("--log path must differ from %s", p.name)
+	for _, in := range inputs {
+		out := convert.OutputPathFor(in, outDir)
+		if err := checkLogCollisions(logPath, []logCollision{
+			{"the input " + in, in},
+			{"the output " + out, out},
+			{"the --schema-report for " + in,
+				convert.PerFileReportPath(opts.SchemaReportPath, in, outDir)},
+			{"the --quality-report for " + in,
+				convert.PerFileReportPath(opts.QualityReportPath, in, outDir)},
+		}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -461,6 +501,9 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 
 	var log *convert.LogWriter
 	if logPath != "" {
+		if err := validateBatchLogPath(logPath, inputs, outDir, opts); err != nil {
+			return usageErr(err)
+		}
 		var err error
 		if log, err = convert.NewLogWriter(logPath); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)

@@ -317,16 +317,16 @@ func TestLogWriterRecords(t *testing.T) {
 
 // A per-file report path must not have every file overwrite one document.
 func TestPerFileReportPaths(t *testing.T) {
-	got := perFileReport(filepath.Join("reports", "schema.json"), filepath.Join("in", "sales.qvd"), "out")
+	got := PerFileReportPath(filepath.Join("reports", "schema.json"), filepath.Join("in", "sales.qvd"), "out")
 	want := filepath.Join("reports", "sales.schema.json")
 	if got != want {
-		t.Errorf("perFileReport = %q, want %q", got, want)
+		t.Errorf("PerFileReportPath = %q, want %q", got, want)
 	}
 	// A bare filename lands beside the outputs.
-	if got := perFileReport("quality.json", "sales.qvd", "out"); got != filepath.Join("out", "sales.quality.json") {
+	if got := PerFileReportPath("quality.json", "sales.qvd", "out"); got != filepath.Join("out", "sales.quality.json") {
 		t.Errorf("bare name = %q", got)
 	}
-	if got := perFileReport("", "sales.qvd", "out"); got != "" {
+	if got := PerFileReportPath("", "sales.qvd", "out"); got != "" {
 		t.Errorf("no report configured should stay empty, got %q", got)
 	}
 }

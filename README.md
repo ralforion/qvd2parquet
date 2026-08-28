@@ -355,6 +355,14 @@ qvd2parquet --log run.jsonl input.qvd output.parquet
 A single-file conversion writes exactly two records: its file record and the
 summary. Folder conversion writes one file record per input before the summary.
 
+The log path has to differ from every file the run writes or reads: the inputs,
+the outputs, `--schema`, and the schema and quality reports. In batch mode that
+covers the whole expanded input list and the output and per-file report paths
+derived from it under `--out-dir`, since none of those are named on the command
+line. The log is created by truncating, so a collision would otherwise destroy
+whichever file was written second. Two spellings that differ only by case count
+as the same path, because the filesystem may well agree.
+
 ```sh
 duckdb -c "select status, count(*), sum(rows) from read_json_auto('run.jsonl')
            where type='file' group by 1"

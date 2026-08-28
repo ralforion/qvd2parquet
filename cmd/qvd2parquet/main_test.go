@@ -205,6 +205,135 @@ func TestValidateLogPath(t *testing.T) {
 	}
 }
 
+// A batch derives its paths instead of taking them from the command line, so
+// the single-file guard cannot see them: the inputs come from expanding
+// directories and every output and per-file report is generated under
+// --out-dir. Without a guard of its own, --log truncated whichever of them it
+// named.
+func TestValidateBatchLogPath(t *testing.T) {
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "out")
+	input := filepath.Join(dir, "in", "sales.qvd")
+	inputs := []string{input}
+
+	collisions := []struct {
+		name    string
+		logPath string
+		opts    convert.Options
+	}{
+		{
+			name:    "an expanded input",
+			logPath: input,
+		},
+		{
+			name:    "a derived output",
+			logPath: filepath.Join(outDir, "sales.parquet"),
+		},
+		{
+			name:    "a derived output under another casing",
+			logPath: filepath.Join(outDir, "SALES.PARQUET"),
+		},
+		{
+			name:    "a per-file schema report",
+			logPath: filepath.Join(outDir, "sales.schema.json"),
+			opts:    convert.Options{SchemaReportPath: filepath.Join(outDir, "schema.json")},
+		},
+		{
+			name:    "a per-file quality report",
+			logPath: filepath.Join(outDir, "sales.quality.json"),
+			opts:    convert.Options{QualityReportPath: filepath.Join(outDir, "quality.json")},
+		},
+		{
+			name:    "the schema override",
+			logPath: filepath.Join(dir, "schema.json"),
+			opts:    convert.Options{SchemaOverridePath: filepath.Join(dir, "schema.json")},
+		},
+	}
+	for _, tc := range collisions {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateBatchLogPath(tc.logPath, inputs, outDir, &tc.opts); err == nil {
+				t.Fatal("collision accepted")
+			}
+		})
+	}
+
+	// The guard must not reject a log that merely sits beside the outputs,
+	// which is where a batch log normally goes.
+	var opts convert.Options
+	if err := validateBatchLogPath(filepath.Join(outDir, "run.jsonl"), inputs, outDir, &opts); err != nil {
+		t.Errorf("log beside the outputs rejected: %v", err)
+	}
+}
+
+// The end the batch guard protects. Pointing --log at an input used to truncate
+// it before conversion: a 17 KiB QVD became a few hundred bytes of JSON Lines
+// reporting that the file it had just destroyed was not a QVD.
+func TestBatchLogDoesNotTruncateInput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	original, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	dir := t.TempDir()
+	inDir := filepath.Join(dir, "in")
+	if err := os.Mkdir(inDir, 0o755); err != nil {
+		t.Fatalf("create input directory: %v", err)
+	}
+	input := filepath.Join(inDir, "sample-small.qvd")
+	if err := os.WriteFile(input, original, 0o600); err != nil {
+		t.Fatalf("copy fixture: %v", err)
+	}
+
+	cmd := exec.Command(bin, "--progress", "0", "--out-dir", filepath.Join(dir, "out"),
+		"--log", input, inDir)
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--log path must differ from the input") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+	after, err := os.ReadFile(input)
+	if err != nil {
+		t.Fatalf("read input after rejection: %v", err)
+	}
+	if !bytes.Equal(after, original) {
+		t.Fatalf("input truncated: %d bytes before, %d after", len(original), len(after))
+	}
+}
+
+// Pointing --log at a path a batch will write its Parquet to used to exit 0 and
+// report writing both, leaving the output in place and no log at all.
+func TestBatchLogDoesNotCollideWithOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "out")
+	cmd := exec.Command(bin, "--force", "--progress", "0", "--quality-gate", "none",
+		"--out-dir", outDir, "--log", filepath.Join(outDir, "sample-small.parquet"), fixture)
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--log path must differ from the output") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+	if entries, err := os.ReadDir(outDir); err == nil && len(entries) > 0 {
+		t.Errorf("output directory written despite rejection: %v", entries)
+	}
+}
+
 func TestSamePathResolvesSymlinkedParent(t *testing.T) {
 	dir := t.TempDir()
 	realDir := filepath.Join(dir, "real")

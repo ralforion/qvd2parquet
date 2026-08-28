@@ -90,6 +90,16 @@ restarts from it.
 
 - `--log` now writes a file record and summary for single-file conversions. It
   was accepted but silently ignored outside `--out-dir` mode.
+- `--log` is refused when it names a file the run itself writes, in batch mode
+  as well as for a single conversion. The log is created with `O_TRUNC`, so a
+  collision destroyed whichever of the two was written second while the run
+  still reported writing both. A batch was the worse case because none of the
+  paths at risk are typed on the command line: the inputs come from expanding
+  directories, and every output and per-file report is derived from an input
+  under `--out-dir`. Pointing `--log` at an input truncated a 17 KiB QVD to a
+  few hundred bytes of JSON Lines reporting that the file it had just destroyed
+  was not a QVD, and pointing it at a generated output exited 0 having written
+  the Parquet and no log at all.
 - A batch run reports each file's progress. `--out-dir` passed a nil logger to
   the converter, so it discarded the schema notes, the row counts and the
   quality gate's progress: a folder holding one large table printed a line on
