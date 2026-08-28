@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
+	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
 
 // FileResult is the outcome of converting one input file.
@@ -90,17 +91,72 @@ type InputProblem struct {
 	Err  error
 }
 
+// InputSelection narrows what a folder conversion picks up: whether to descend
+// into subdirectories, and which file names to take. The name patterns apply
+// to what a directory contributes, not to a file named on the command line,
+// since a path you typed you meant.
+type InputSelection struct {
+	// Recursive descends into subdirectories when expanding a directory.
+	Recursive bool
+	// Include keeps only the files whose name matches one of these
+	// shell-style wildcard patterns. Empty keeps everything the walk finds.
+	Include []string
+	// Exclude drops the files whose name matches, and wins over Include, so a
+	// broad Include can be narrowed by a specific Exclude.
+	Exclude []string
+}
+
+// Patterns lists the selection's name patterns as they were given, quoted, so
+// a message about them can show a pattern the shell mangled on the way in.
+func (s InputSelection) Patterns() string {
+	return quotedList(append(append([]string{}, s.Include...), s.Exclude...))
+}
+
+// FoundInputs is what the command line expanded to.
+type FoundInputs struct {
+	// Files are the .qvd files to convert, sorted and deduplicated.
+	Files []string
+	// Problems are paths that could not be examined.
+	Problems []InputProblem
+	// Filtered counts the files a directory offered that Include or Exclude
+	// dropped. Without it a mistyped pattern is indistinguishable from a
+	// folder that really did hold only the files converted.
+	Filtered int
+	// Unmatched holds the name patterns that reached no file, in the order
+	// Include then Exclude.
+	Unmatched []string
+}
+
+// Notes describes how the selection went, for the caller to report. A pattern
+// that matches nothing is reported rather than rejected, as --exclude and
+// --encoding do, since one command line is often pointed at a folder of tables
+// that do not all carry the same files.
+func (f *FoundInputs) Notes() []string {
+	var out []string
+	if len(f.Unmatched) > 0 {
+		out = append(out, fmt.Sprintf("--include-files/--exclude-files %s matched no file; "+
+			"patterns are wildcards over the file name, with or without the .qvd extension",
+			quotedList(f.Unmatched)))
+	}
+	if f.Filtered > 0 {
+		out = append(out, fmt.Sprintf("%d file(s) dropped by --include-files/--exclude-files, %d left",
+			f.Filtered, len(f.Files)))
+	}
+	return out
+}
+
 // FindInputs expands the command line into a sorted list of .qvd files. A
-// directory contributes the QVD files it contains, recursively when asked; any
-// other path is taken literally, so an oddly named file can still be converted.
+// directory contributes the QVD files it contains, recursively when asked and
+// narrowed by the selection's name patterns; any other path is taken
+// literally, so an oddly named file can still be converted.
 //
 // A path that cannot be examined is returned as a problem, not an error: the
 // batch guarantee is that every input is attempted, and aborting here would
 // discard the valid inputs listed beside a mistyped one.
-func FindInputs(paths []string, recursive bool) ([]string, []InputProblem) {
+func FindInputs(paths []string, sel InputSelection) FoundInputs {
+	var found FoundInputs
+	filter := newNameFilter(sel)
 	seen := make(map[string]bool)
-	var out []string
-	var problems []InputProblem
 	add := func(p string) {
 		if abs, err := filepath.Abs(p); err == nil {
 			if seen[abs] {
@@ -108,26 +164,152 @@ func FindInputs(paths []string, recursive bool) ([]string, []InputProblem) {
 			}
 			seen[abs] = true
 		}
-		out = append(out, p)
+		found.Files = append(found.Files, p)
+	}
+	// Only what a directory offers is filtered; an expanded wildcard is the
+	// user naming files, at one remove.
+	addFromDir := func(p string) {
+		if !filter.keep(filepath.Base(p)) {
+			found.Filtered++
+			return
+		}
+		add(p)
 	}
 
-	for _, p := range paths {
+	var take func(p string, fromWildcard bool)
+	take = func(p string, fromWildcard bool) {
 		info, err := os.Stat(p)
 		if err != nil {
-			problems = append(problems, InputProblem{Path: p, Err: fmt.Errorf("%w: %v", ErrInput, err)})
-			continue
+			// A wildcard the shell did not expand reaches us verbatim, which
+			// is what happens on Windows: cmd.exe expands nothing, and
+			// PowerShell does not expand for an external command. Without
+			// this the pattern would be reported as a missing file.
+			if !fromWildcard && hasWildcard(p) {
+				matches, err := expandWildcard(p)
+				if err != nil {
+					found.Problems = append(found.Problems, InputProblem{Path: p, Err: err})
+					return
+				}
+				for _, m := range matches {
+					take(m, true)
+				}
+				return
+			}
+			found.Problems = append(found.Problems, InputProblem{Path: p, Err: fmt.Errorf("%w: %v", ErrInput, err)})
+			return
 		}
 		if !info.IsDir() {
 			add(p)
-			continue
+			return
 		}
-		if err := walkQVDs(p, recursive, add); err != nil {
-			problems = append(problems, InputProblem{Path: p, Err: err})
+		if err := walkQVDs(p, sel.Recursive, addFromDir); err != nil {
+			found.Problems = append(found.Problems, InputProblem{Path: p, Err: err})
 		}
 	}
-	sort.Strings(out)
-	sort.Slice(problems, func(i, j int) bool { return problems[i].Path < problems[j].Path })
-	return out, problems
+
+	for _, p := range paths {
+		take(p, false)
+	}
+	found.Unmatched = filter.unmatched()
+	sort.Strings(found.Files)
+	sort.Slice(found.Problems, func(i, j int) bool { return found.Problems[i].Path < found.Problems[j].Path })
+	return found
+}
+
+// hasWildcard reports whether a path element carries a pattern rather than a
+// name. Only the two wildcards the tool matches with count.
+func hasWildcard(s string) bool { return strings.ContainsAny(s, "*?") }
+
+// expandWildcard resolves a pattern in the last element of a path against the
+// directory holding it, matching case-insensitively as every other pattern in
+// the tool does. It takes .qvd files and directories, so "qvds/*" does not
+// sweep up the .parquet files written beside them.
+func expandWildcard(pattern string) ([]string, error) {
+	dir, base := filepath.Split(pattern)
+	if hasWildcard(dir) {
+		return nil, fmt.Errorf("%w: %s: a wildcard is expanded only in the last element of a path",
+			ErrInput, pattern)
+	}
+	if dir == "" {
+		dir = "."
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInput, err)
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() && !strings.EqualFold(filepath.Ext(e.Name()), ".qvd") {
+			continue
+		}
+		if qvd.MatchGlob(base, e.Name()) {
+			out = append(out, filepath.Join(dir, e.Name()))
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: %s matched no .qvd file or directory", ErrInput, pattern)
+	}
+	return out, nil
+}
+
+// nameFilter applies the selection's patterns to a file name and remembers
+// which of them ever matched, so one that reached nothing can be reported.
+type nameFilter struct {
+	include, exclude         []string
+	usedInclude, usedExclude []bool
+}
+
+func newNameFilter(sel InputSelection) *nameFilter {
+	return &nameFilter{
+		include:     sel.Include,
+		exclude:     sel.Exclude,
+		usedInclude: make([]bool, len(sel.Include)),
+		usedExclude: make([]bool, len(sel.Exclude)),
+	}
+}
+
+// keep reports whether a file survives the patterns. Each is matched against
+// the name with and without its extension, so "CE*", "CE*.qvd" and "*.qvd" all
+// behave as they look, the way an encoding rule matches a column under both
+// its names. Exclude and Include are both evaluated before either decides, so
+// a pattern that only ever matched an excluded file still counts as used.
+func (f *nameFilter) keep(name string) bool {
+	if f == nil {
+		return true
+	}
+	included := f.hit(f.include, f.usedInclude, name)
+	excluded := f.hit(f.exclude, f.usedExclude, name)
+	if excluded {
+		return false
+	}
+	return len(f.include) == 0 || included
+}
+
+func (f *nameFilter) hit(patterns []string, used []bool, name string) bool {
+	stem := strings.TrimSuffix(name, filepath.Ext(name))
+	any := false
+	for i, p := range patterns {
+		if qvd.MatchGlob(p, name) || qvd.MatchGlob(p, stem) {
+			used[i] = true
+			any = true
+		}
+	}
+	return any
+}
+
+func (f *nameFilter) unmatched() []string {
+	var out []string
+	for i, p := range f.include {
+		if !f.usedInclude[i] {
+			out = append(out, p)
+		}
+	}
+	for i, p := range f.exclude {
+		if !f.usedExclude[i] {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func walkQVDs(dir string, recursive bool, add func(string)) error {

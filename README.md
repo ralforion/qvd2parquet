@@ -110,6 +110,8 @@ qvd2parquet --inspect [options] input.qvd
   -out-dir DIR               Convert every input into this directory
   -file-workers 1            Files to convert at once; decode workers are divided
   -recursive                 With --out-dir, descend into subdirectories
+  -include-files 'CE*'       With --out-dir, convert only files matching these patterns
+  -exclude-files '*_TMP'     With --out-dir, skip files matching these patterns
   -log path.jsonl            Write one JSON Lines record per input, then a summary
   -columns name1,name2       Convert only these columns
   -exclude '%*,*_TMP'        Skip fields matching these wildcard patterns
@@ -305,6 +307,59 @@ descend into subdirectories.
 Two inputs whose names would produce the same output file are refused **before
 anything is written**, since `--force` would otherwise silently overwrite the
 first result.
+
+### Selecting which files convert
+
+A wildcard in the last element of an input path is expanded, so a subset of a
+folder can be named directly:
+
+```sh
+qvd2parquet --out-dir ./parquet ./qvds/CE*.qvd
+```
+
+bash and zsh expand that themselves and always did. The expansion here is what
+makes the same line work in `cmd.exe`, which expands nothing, and in
+PowerShell, which does not expand for an external command. It takes `.qvd`
+files and directories, so `./qvds/*` does not sweep up the `.parquet` files
+written beside them, and a wildcard in a directory element is refused rather
+than half-supported: use `--recursive` for a tree.
+
+`--include-files` and `--exclude-files` filter what a directory contributes,
+which is what `--recursive` needs since no path expansion can reach into a
+tree:
+
+```sh
+qvd2parquet --out-dir ./parquet --recursive --include-files 'CE*,BSEG' ./qvds
+```
+
+- Patterns are the same wildcards as everywhere else: `*` and `?`,
+  case-insensitive.
+- Each is matched against the file name **with and without** the `.qvd`
+  extension, so `CE*`, `CE*.qvd` and `*.qvd` all behave as they look.
+- `--exclude-files` wins over `--include-files`, so a broad include can be
+  narrowed by a specific exclude.
+- They filter what a **directory** offers. A file named on the command line was
+  meant, and is converted whatever the patterns say.
+
+Both the files dropped and a pattern that reached nothing are reported, since a
+mistyped pattern otherwise looks exactly like a folder that held only what
+converted:
+
+```text
+qvd2parquet: note: --include-files/--exclude-files "ZZ*" matched no file; patterns
+are wildcards over the file name, with or without the .qvd extension
+qvd2parquet: note: 1 file(s) dropped by --include-files/--exclude-files, 2 left
+```
+
+A selection that leaves nothing is a usage error naming the reason, rather than
+the empty-folder message it would otherwise share:
+
+```text
+qvd2parquet: --include-files/--exclude-files "ZZ*" left none of the 3 .qvd file(s) found in ./qvds
+```
+
+On Windows a pattern starting with `%` runs into
+[the `cmd.exe` expansion](#percent-signs-on-windows) covered above.
 
 ### Parallelism
 

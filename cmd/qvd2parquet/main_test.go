@@ -468,6 +468,74 @@ func TestInspectExitsNonZeroOnAnEncodingItCannotApply(t *testing.T) {
 	}
 }
 
+// The file selection has to hold end to end: the flags reach the walk, an
+// unexpanded wildcard survives the trip through the argument list, and a
+// pattern that selects nothing says so rather than looking like an empty
+// folder.
+func TestBatchSelectsFilesByName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("fixture missing, this test would otherwise pass by skipping: %v", err)
+	}
+	src := t.TempDir()
+	for _, name := range []string{"CE10500.qvd", "CE10501.qvd", "BSEG.qvd"} {
+		if err := os.WriteFile(filepath.Join(src, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	outDir := filepath.Join(t.TempDir(), "included")
+	cmd := exec.Command(bin, "--out-dir", outDir, "--include-files", "CE*", src)
+	combined, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, combined)
+	}
+	written, err := filepath.Glob(filepath.Join(outDir, "*.parquet"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(written) != 2 {
+		t.Errorf("--include-files 'CE*' wrote %v, want the two CE files", written)
+	}
+	// The file the pattern dropped is reported, or a mistyped pattern would
+	// look like a folder that held only what converted.
+	if !strings.Contains(string(combined), "1 file(s) dropped") {
+		t.Errorf("the dropped file was not reported:\n%s", combined)
+	}
+
+	// An unexpanded wildcard is what cmd.exe and PowerShell hand over.
+	outDir = filepath.Join(t.TempDir(), "wildcard")
+	cmd = exec.Command(bin, "--out-dir", outDir, filepath.Join(src, "CE*.qvd"))
+	if combined, err = cmd.CombinedOutput(); err != nil {
+		t.Fatalf("wildcard path failed: %v\n%s", err, combined)
+	}
+	if written, err = filepath.Glob(filepath.Join(outDir, "*.parquet")); err != nil {
+		t.Fatal(err)
+	}
+	if len(written) != 2 {
+		t.Errorf("wildcard path wrote %v, want the two CE files", written)
+	}
+
+	// Selecting nothing is a usage error that names the reason.
+	cmd = exec.Command(bin, "--out-dir", filepath.Join(t.TempDir(), "none"),
+		"--include-files", "ZZ*", src)
+	combined, err = cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("a selection matching nothing exited 0:\n%s", combined)
+	}
+	if got := cmd.ProcessState.ExitCode(); got != exitUsage {
+		t.Errorf("exit code = %d, want %d (usage)", got, exitUsage)
+	}
+	if !strings.Contains(string(combined), `--include-files/--exclude-files "ZZ*" left none of the 3 .qvd file(s)`) {
+		t.Errorf("output should blame the patterns, not an empty folder:\n%s", combined)
+	}
+}
+
 // A pin inspect accepts must leave it exiting 0, or the gate would be useless
 // in the other direction.
 func TestInspectExitsZeroOnAnEncodingItAccepts(t *testing.T) {

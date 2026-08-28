@@ -142,6 +142,8 @@ func run() int {
 		outDir        = fs.String("out-dir", "", "Convert every input into this directory, one .parquet per .qvd")
 		fileWorkers   = fs.Int("file-workers", 1, "Files to convert at once; decode workers are divided between them")
 		recursive     = fs.Bool("recursive", false, "With --out-dir, descend into subdirectories")
+		includeFiles  = fs.String("include-files", "", "With --out-dir, convert only the files matching these comma-separated wildcard patterns, e.g. 'CE*'")
+		excludeFiles  = fs.String("exclude-files", "", "With --out-dir, skip the files matching these comma-separated wildcard patterns")
 		logPath       = fs.String("log", "", "Write one JSON Lines record per input, then a summary")
 		inspect       = fs.Bool("inspect", false, "Read only the header and symbol tables, print the schema, and exit")
 		showVersion   = fs.Bool("version", false, "Print the version and exit")
@@ -294,7 +296,12 @@ func run() int {
 		return runInspect(ctx, inputPath, &opts)
 	}
 	if batch {
-		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, *recursive, *logPath, logf)
+		sel := convert.InputSelection{
+			Recursive: *recursive,
+			Include:   splitList(*includeFiles),
+			Exclude:   splitList(*excludeFiles),
+		}
+		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, sel, *logPath, logf)
 	}
 
 	return runSingle(ctx, inputPath, outputPath, &opts, *logPath, logf)
@@ -498,13 +505,26 @@ func canonicalPath(path string) string {
 // runBatch converts every input into --out-dir, continuing past a failure so
 // one bad file does not hide the state of the rest.
 func runBatch(ctx context.Context, paths []string, opts *convert.Options,
-	outDir string, fileWorkers int, recursive bool, logPath string, logf convert.Logf) int {
+	outDir string, fileWorkers int, sel convert.InputSelection, logPath string, logf convert.Logf) int {
 
-	inputs, problems := convert.FindInputs(paths, recursive)
+	found := convert.FindInputs(paths, sel)
+	inputs, problems := found.Files, found.Problems
 	if len(inputs) == 0 && len(problems) == 0 {
-		fmt.Fprintf(os.Stderr, "%s: no .qvd files found in %s\n",
-			programName, strings.Join(paths, ", "))
+		// Saying only that nothing was found would read as an empty folder
+		// when it was the patterns that emptied it.
+		if found.Filtered > 0 {
+			fmt.Fprintf(os.Stderr, "%s: --include-files/--exclude-files %s left none of the %d .qvd file(s) found in %s\n",
+				programName, sel.Patterns(), found.Filtered, strings.Join(paths, ", "))
+		} else {
+			fmt.Fprintf(os.Stderr, "%s: no .qvd files found in %s\n",
+				programName, strings.Join(paths, ", "))
+		}
 		return exitUsage
+	}
+	// A mistyped pattern otherwise looks exactly like a folder that held only
+	// the files converted.
+	for _, note := range found.Notes() {
+		logf("note: %s", note)
 	}
 
 	// The output directory has to exist before the log, which commonly lives
@@ -530,7 +550,7 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	result, err := convert.RunMany(ctx, inputs, opts, &convert.ManyOptions{
 		OutDir:      outDir,
 		FileWorkers: fileWorkers,
-		Recursive:   recursive,
+		Recursive:   sel.Recursive,
 		Log:         log,
 		Problems:    problems,
 	}, logf)

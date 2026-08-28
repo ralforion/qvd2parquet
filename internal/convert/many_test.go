@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -50,7 +52,8 @@ func folderFixture(t *testing.T, withNested, withBroken bool) string {
 func TestFindInputs(t *testing.T) {
 	src := folderFixture(t, true, false)
 
-	flat, problems := FindInputs([]string{src}, false)
+	foundFlat := FindInputs([]string{src}, InputSelection{})
+	flat, problems := foundFlat.Files, foundFlat.Problems
 	if len(problems) != 0 {
 		t.Fatalf("unexpected problems: %v", problems)
 	}
@@ -58,7 +61,7 @@ func TestFindInputs(t *testing.T) {
 		t.Errorf("non-recursive found %d files, want 2 (and no notes.txt): %v", len(flat), flat)
 	}
 
-	deep, _ := FindInputs([]string{src}, true)
+	deep := FindInputs([]string{src}, InputSelection{Recursive: true}).Files
 	if len(deep) != 3 {
 		t.Errorf("recursive found %d files, want 3: %v", len(deep), deep)
 	}
@@ -68,25 +71,163 @@ func TestFindInputs(t *testing.T) {
 	if _, err := qvdtest.Build(other, sampleTable(5)); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := FindInputs([]string{other}, false)
+	got := FindInputs([]string{other}, InputSelection{}).Files
 	if len(got) != 1 {
 		t.Errorf("explicit file: %v", got)
 	}
 
 	// The same file named twice is converted once.
-	dup, _ := FindInputs([]string{other, other}, false)
+	dup := FindInputs([]string{other, other}, InputSelection{}).Files
 	if len(dup) != 1 {
 		t.Errorf("duplicate inputs: %v", dup)
 	}
 
 	// A missing path is a reported problem, not an abort: the inputs beside it
 	// must still convert.
-	found, problems := FindInputs([]string{filepath.Join(src, "nope")}, false)
+	foundFound := FindInputs([]string{filepath.Join(src, "nope")}, InputSelection{})
+	found, problems := foundFound.Files, foundFound.Problems
 	if len(found) != 0 || len(problems) != 1 {
 		t.Errorf("missing path gave %v, %v", found, problems)
 	}
 	if !errors.Is(problems[0].Err, ErrInput) {
 		t.Errorf("problem err = %v, want ErrInput", problems[0].Err)
+	}
+}
+
+func TestFindInputsNamePatterns(t *testing.T) {
+	src := folderFixture(t, true, false)
+
+	// A pattern is matched against the name with and without the extension,
+	// so all three of these forms reach the same file.
+	for _, pat := range []string{"a", "a.qvd", "A*"} {
+		got := FindInputs([]string{src}, InputSelection{Include: []string{pat}})
+		if len(got.Files) != 1 || filepath.Base(got.Files[0]) != "a.qvd" {
+			t.Errorf("--include-files %q gave %v", pat, got.Files)
+		}
+		if got.Filtered != 1 {
+			t.Errorf("--include-files %q filtered %d, want 1", pat, got.Filtered)
+		}
+	}
+
+	// Exclude wins over include, so a broad include can be narrowed.
+	got := FindInputs([]string{src}, InputSelection{
+		Recursive: true,
+		Include:   []string{"*"},
+		Exclude:   []string{"b"},
+	})
+	if len(got.Files) != 2 {
+		t.Errorf("include * exclude b gave %v", got.Files)
+	}
+	for _, f := range got.Files {
+		if filepath.Base(f) == "b.qvd" {
+			t.Errorf("excluded file survived: %v", got.Files)
+		}
+	}
+
+	// A file named on the command line was meant, so the patterns leave it
+	// alone; only what a directory offers is filtered.
+	named := filepath.Join(src, "b.qvd")
+	if got := FindInputs([]string{named}, InputSelection{Include: []string{"a"}}); len(got.Files) != 1 {
+		t.Errorf("named file was filtered: %v", got.Files)
+	}
+}
+
+func TestFindInputsReportsPatternsThatMatchedNothing(t *testing.T) {
+	src := folderFixture(t, false, false)
+
+	got := FindInputs([]string{src}, InputSelection{
+		Include: []string{"a", "ZZ*"},
+		Exclude: []string{"QQ*"},
+	})
+	if len(got.Files) != 1 {
+		t.Fatalf("files = %v, want just a.qvd", got.Files)
+	}
+	want := []string{"ZZ*", "QQ*"}
+	if !reflect.DeepEqual(got.Unmatched, want) {
+		t.Errorf("unmatched = %v, want %v", got.Unmatched, want)
+	}
+	notes := got.Notes()
+	if len(notes) != 2 {
+		t.Fatalf("notes = %v, want a pattern note and a dropped-count note", notes)
+	}
+	if !strings.Contains(notes[0], `"ZZ*"`) || !strings.Contains(notes[1], "1 file(s) dropped") {
+		t.Errorf("notes = %v", notes)
+	}
+
+	// A pattern that only ever matched a file another pattern excluded still
+	// counts as used: it is not the one that is wrong.
+	both := FindInputs([]string{src}, InputSelection{Include: []string{"a"}, Exclude: []string{"a"}})
+	if len(both.Files) != 0 {
+		t.Errorf("exclude did not win: %v", both.Files)
+	}
+	if len(both.Unmatched) != 0 {
+		t.Errorf("unmatched = %v, want none", both.Unmatched)
+	}
+}
+
+func TestFindInputsExpandsWildcardPath(t *testing.T) {
+	src := folderFixture(t, true, false)
+
+	// What cmd.exe and PowerShell hand over verbatim, since neither expands
+	// for an external command.
+	got := FindInputs([]string{filepath.Join(src, "*.qvd")}, InputSelection{})
+	if len(got.Problems) != 0 {
+		t.Fatalf("unexpected problems: %v", got.Problems)
+	}
+	if len(got.Files) != 2 {
+		t.Errorf("expanded to %v, want a.qvd and b.qvd", got.Files)
+	}
+
+	// Case-insensitively, as every other pattern in the tool matches.
+	if got := FindInputs([]string{filepath.Join(src, "*.QVD")}, InputSelection{}); len(got.Files) != 2 {
+		t.Errorf("uppercase pattern expanded to %v", got.Files)
+	}
+
+	// A wildcard takes .qvd files and directories, so it does not sweep up
+	// the notes.txt or the .parquet files written beside them.
+	star := FindInputs([]string{filepath.Join(src, "*")}, InputSelection{Recursive: true})
+	if len(star.Files) != 3 {
+		t.Errorf("* expanded to %v, want both files and the nested one", star.Files)
+	}
+
+	// The patterns still apply to a directory the wildcard reached.
+	sub := FindInputs([]string{filepath.Join(src, "*")}, InputSelection{
+		Recursive: true,
+		Exclude:   []string{"nested"},
+	})
+	if len(sub.Files) != 2 {
+		t.Errorf("filtered wildcard walk gave %v", sub.Files)
+	}
+
+	// A pattern matching nothing is a reported problem, like any other path
+	// that could not be used.
+	none := FindInputs([]string{filepath.Join(src, "ZZ*.qvd")}, InputSelection{})
+	if len(none.Files) != 0 || len(none.Problems) != 1 {
+		t.Fatalf("no-match pattern gave %v, %v", none.Files, none.Problems)
+	}
+	if !errors.Is(none.Problems[0].Err, ErrInput) {
+		t.Errorf("problem err = %v, want ErrInput", none.Problems[0].Err)
+	}
+
+	// A wildcard in a directory element is refused with a message, rather
+	// than half-working.
+	for _, pattern := range []string{filepath.Join(src, "*", "*.qvd"), filepath.Join(src, "*", "a.qvd")} {
+		deep := FindInputs([]string{pattern}, InputSelection{})
+		if len(deep.Problems) != 1 || !strings.Contains(deep.Problems[0].Err.Error(), "last element") {
+			t.Errorf("directory wildcard %q gave %v", pattern, deep.Problems)
+		}
+	}
+
+	// An existing file whose name contains a wildcard character is still
+	// taken literally: expansion only happens once the path itself fails.
+	if runtime.GOOS != "windows" {
+		odd := filepath.Join(t.TempDir(), "odd*name.qvd")
+		if _, err := qvdtest.Build(odd, sampleTable(5)); err != nil {
+			t.Fatal(err)
+		}
+		if got := FindInputs([]string{odd}, InputSelection{}); len(got.Files) != 1 {
+			t.Errorf("literal path with a wildcard character gave %v, %v", got.Files, got.Problems)
+		}
 	}
 }
 
@@ -107,7 +248,7 @@ func TestRunManyContinuesPastAFailure(t *testing.T) {
 	src := folderFixture(t, false, true)
 	outDir := filepath.Join(t.TempDir(), "out")
 
-	inputs, _ := FindInputs([]string{src}, false)
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
 	opts := testOptions()
 	b, err := RunMany(context.Background(), inputs, &opts, &ManyOptions{OutDir: outDir}, nil)
 	if err != nil {
@@ -176,7 +317,7 @@ func TestRunManyRejectsOutputCollisions(t *testing.T) {
 	if _, err := qvdtest.Build(filepath.Join(src, "nested.qvd"), sampleTable(5)); err != nil {
 		t.Fatal(err)
 	}
-	inputs, _ := FindInputs([]string{src}, true)
+	inputs := FindInputs([]string{src}, InputSelection{Recursive: true}).Files
 	outDir := filepath.Join(t.TempDir(), "out")
 
 	opts := testOptions()
@@ -230,7 +371,7 @@ func TestSplitWorkerBudget(t *testing.T) {
 // Files convert correctly when several run at once.
 func TestRunManyConcurrent(t *testing.T) {
 	src := folderFixture(t, true, false)
-	inputs, _ := FindInputs([]string{src}, true)
+	inputs := FindInputs([]string{src}, InputSelection{Recursive: true}).Files
 	outDir := filepath.Join(t.TempDir(), "out")
 	opts := testOptions()
 	opts.Quality = QualityFull
@@ -260,7 +401,7 @@ func TestLogWriterRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputs, _ := FindInputs([]string{src}, false)
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
 	opts := testOptions()
 	opts.Quality = QualityNumeric
 	if _, err := RunMany(context.Background(), inputs, &opts,
@@ -345,7 +486,7 @@ func TestLogSchemaIsStableOnACleanRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputs, _ := FindInputs([]string{src}, false)
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
 	opts := testOptions()
 	opts.Quality = QualityNumeric
 	if _, err := RunMany(context.Background(), inputs, &opts,
@@ -392,7 +533,8 @@ func TestRunManyReportsUnreadableInputs(t *testing.T) {
 	src := folderFixture(t, false, false)
 	outDir := filepath.Join(t.TempDir(), "out")
 
-	good, problems := FindInputs([]string{src, filepath.Join(src, "nope.qvd")}, false)
+	foundGood := FindInputs([]string{src, filepath.Join(src, "nope.qvd")}, InputSelection{})
+	good, problems := foundGood.Files, foundGood.Problems
 	if len(good) != 2 || len(problems) != 1 {
 		t.Fatalf("found %v with problems %v", good, problems)
 	}
@@ -440,7 +582,7 @@ func TestNewLogWriterCreatesItsDirectory(t *testing.T) {
 // failed to read when in fact they were never attempted.
 func TestRunManyCancellationIsReportedAsCancelled(t *testing.T) {
 	src := folderFixture(t, true, false)
-	inputs, _ := FindInputs([]string{src}, true)
+	inputs := FindInputs([]string{src}, InputSelection{Recursive: true}).Files
 	if len(inputs) == 0 {
 		t.Fatal("fixture produced no inputs")
 	}
@@ -493,7 +635,7 @@ func TestRunManyCancellationIsReportedAsCancelled(t *testing.T) {
 // a quarter of an hour of silence.
 func TestRunManyReportsPerFileProgress(t *testing.T) {
 	src := folderFixture(t, true, false)
-	inputs, _ := FindInputs([]string{src}, true)
+	inputs := FindInputs([]string{src}, InputSelection{Recursive: true}).Files
 	outDir := filepath.Join(t.TempDir(), "out")
 
 	opts := testOptions()
@@ -529,7 +671,7 @@ func TestRunManyReportsPerFileProgress(t *testing.T) {
 // output is unreadable.
 func TestRunManyPrefixesConcurrentProgress(t *testing.T) {
 	src := folderFixture(t, true, false)
-	inputs, _ := FindInputs([]string{src}, true)
+	inputs := FindInputs([]string{src}, InputSelection{Recursive: true}).Files
 	if len(inputs) < 2 {
 		t.Skip("fixture has too few files to run concurrently")
 	}
@@ -578,7 +720,7 @@ func TestRunManyPrefixFollowsEffectiveConcurrency(t *testing.T) {
 	if _, err := qvdtest.Build(filepath.Join(src, "only.qvd"), sampleTable(200)); err != nil {
 		t.Fatal(err)
 	}
-	inputs, _ := FindInputs([]string{src}, true)
+	inputs := FindInputs([]string{src}, InputSelection{Recursive: true}).Files
 	if len(inputs) != 1 {
 		t.Fatalf("fixture has %d files, want 1", len(inputs))
 	}

@@ -13,6 +13,23 @@ restarts from it.
 
 ## [Unreleased]
 
+### Added
+
+- A wildcard in the last element of an input path is expanded by qvd2parquet
+  when the shell has not done it, so `qvd2parquet --out-dir out qvds\CE*.qvd`
+  works in `cmd.exe` and PowerShell, neither of which expands for an external
+  command. It takes `.qvd` files and directories only, and a wildcard in a
+  directory element is refused rather than half-supported.
+- `--include-files` and `--exclude-files` narrow what a directory contributes
+  to a folder conversion, which `--recursive` needs since no path expansion
+  reaches into a tree. Patterns are the usual case-insensitive `*` and `?`,
+  matched against the file name with and without its extension, and exclude
+  wins over include. They filter a directory's contents only: a file named on
+  the command line was meant.
+- Files a pattern dropped, and a pattern that reached no file, are both
+  reported. A selection that leaves nothing is a usage error naming the
+  patterns rather than the message for an empty folder.
+
 ### Documentation
 
 - How `cmd.exe` treats `%` in a pattern, which is what makes
