@@ -263,6 +263,44 @@ func majorVersion(v string) string {
 // is the ordinary case rather than a contrived one.
 func tagged(s string) string { return strconv.Itoa(len(s)) + ":" + s }
 
+// zoneSampleFrom and zoneSampleTo bound the years zoneIdentity samples. They
+// cover the dates a QVD realistically holds, from the Unix epoch the serial
+// values are converted against to a generation ahead of it.
+const (
+	zoneSampleFrom = 1970
+	zoneSampleTo   = 2050
+)
+
+// zoneIdentity describes what a timezone does rather than what it is called.
+//
+// A name is not identity here. time.Local reports its IANA name only when TZ
+// is set; with TZ unset, which is how a server usually gets its zone from
+// /etc/localtime, its String() is the bare word "Local" on a machine in Berlin
+// and on one in Tokyo alike. --timezone Local converts a QVD's wall clock
+// against that zone, so its output depends on the converting machine, and a
+// manifest fingerprinting the word "Local" would be trusted by a machine that
+// would now write different timestamps.
+//
+// Sampling the offsets answers it without asking the operating system what its
+// zone is called, which Go does not portably expose. It also catches what a
+// name could not: a tzdata update that changes a rule genuinely changes the
+// conversion, and reconverting then is right rather than wasteful. The default
+// --timezone none computes in UTC, whose offsets never move, so the common
+// path is unaffected by either.
+func zoneIdentity(loc *time.Location) string {
+	h := sha256.New()
+	for year := zoneSampleFrom; year <= zoneSampleTo; year++ {
+		// Two instants a year, either side of where the northern and southern
+		// hemispheres put their daylight saving.
+		for _, month := range []time.Month{time.January, time.July} {
+			at := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC).In(loc)
+			name, offset := at.Zone()
+			fmt.Fprint(h, tagged(name), tagged(strconv.Itoa(offset)))
+		}
+	}
+	return "zone:" + hex.EncodeToString(h.Sum(nil))
+}
+
 // fingerprintValue renders one option as text. An unsupported kind is an error
 // rather than a silently stable value, so a future option of a shape this does
 // not understand fails the test that walks a fully populated Options rather
@@ -326,9 +364,14 @@ func fingerprintValue(v reflect.Value) (string, error) {
 		if v.IsNil() {
 			return "nil", nil
 		}
-		// A compiled regexp or a timezone describes itself; anything else is
-		// walked as the struct it points at. The pointer's own address never
-		// enters, or nothing would ever match twice.
+		// A timezone is fingerprinted by what it does rather than what it is
+		// called, for the reason in zoneIdentity.
+		if loc, ok := v.Interface().(*time.Location); ok {
+			return zoneIdentity(loc), nil
+		}
+		// A compiled regexp describes itself; anything else is walked as the
+		// struct it points at. The pointer's own address never enters, or
+		// nothing would ever match twice.
 		if s, ok := v.Interface().(fmt.Stringer); ok {
 			return s.String(), nil
 		}

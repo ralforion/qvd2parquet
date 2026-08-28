@@ -273,6 +273,63 @@ func TestManifestChecksTheInputItRecorded(t *testing.T) {
 	}
 }
 
+// A zone's name is not its identity. time.Local reports an IANA name only when
+// TZ is set; with TZ unset, which is how a server usually takes its zone from
+// /etc/localtime, String() is the bare word "Local" wherever the machine is.
+// Fingerprinting that word would let a manifest written in one zone be trusted
+// by a machine that would now write different timestamps.
+func TestFingerprintDistinguishesZonesByWhatTheyDo(t *testing.T) {
+	fp := func(loc *time.Location) string {
+		t.Helper()
+		o := DefaultOptions()
+		o.Location = loc
+		o.TimezoneName = "Local" // as --timezone Local records it either way
+		got, err := FingerprintOptions(&o, "2.2.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	// Two machines whose local zone differs, both calling it "Local".
+	berlinish := time.FixedZone("Local", 2*60*60)
+	tokyoish := time.FixedZone("Local", 9*60*60)
+	if berlinish.String() != tokyoish.String() {
+		t.Fatalf("the fixture no longer reproduces the case: %q vs %q",
+			berlinish, tokyoish)
+	}
+	if fp(berlinish) == fp(tokyoish) {
+		t.Error("two zones an hour apart fingerprinted the same because both are called Local")
+	}
+
+	// Real zones that agree today and disagree over daylight saving, which a
+	// single sampled instant would miss.
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Skip("no tzdata available")
+	}
+	johannesburg, err := time.LoadLocation("Africa/Johannesburg")
+	if err != nil {
+		t.Skip("no tzdata available")
+	}
+	if fp(berlin) == fp(johannesburg) {
+		t.Error("zones differing only in their daylight saving fingerprinted the same")
+	}
+
+	// The same zone reached twice is the same fingerprint, or nothing would
+	// ever be skipped.
+	again, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fp(berlin) != fp(again) {
+		t.Error("one zone loaded twice fingerprinted differently")
+	}
+	if fp(time.UTC) != fp(time.FixedZone("UTC", 0)) {
+		t.Error("UTC by two routes fingerprinted differently")
+	}
+}
+
 // manifestFixture converts nothing; it writes the two files an entry
 // describes and returns the manifest recording them.
 func manifestFixture(t *testing.T) (dir, in, out string, m *Manifest) {
