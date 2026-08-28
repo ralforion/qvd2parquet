@@ -13,6 +13,13 @@ restarts from it.
 
 ## [Unreleased]
 
+### Documentation
+
+- How `cmd.exe` treats `%` in a pattern, which is what makes
+  `--encoding "%*_PKEY=delta_byte_array"` match no column when the same line is
+  run from a `.bat` file rather than typed at the prompt. `--exclude '%*'` is
+  affected the same way.
+
 ## [2.2.0] - 2026-08-28
 
 Everything a run reports about itself gets more honest. Two of the release's

@@ -489,6 +489,33 @@ starts, naming the ones that fit. Pinning a column also turns its dictionary
 off, since leaving it on would mean the pinned encoding took over only once the
 dictionary page overflowed.
 
+### Percent signs on Windows
+
+`cmd.exe` expands `%` before qvd2parquet sees the argument, and quoting does
+not stop it. Inside a `.bat` or `.cmd` file `%*` is replaced with the batch
+file's own arguments, so `--encoding "%*_PKEY=delta_byte_array"` arrives as
+`--encoding "_PKEY=delta_byte_array"` and matches nothing. Write `%%` there
+instead. At the interactive `cmd.exe` prompt the opposite holds: `%*` is passed
+through as typed, and `%%` would arrive as two percent signs. That is why a
+line that works when you type it can stop working once it is pasted into a
+`.bat`.
+
+| where | write |
+|---|---|
+| `.bat` or `.cmd` file | `--encoding "%%*_PKEY=delta_byte_array"` |
+| interactive `cmd.exe` | `--encoding "%*_PKEY=delta_byte_array"` |
+| PowerShell | `--encoding '%*_PKEY=delta_byte_array'` |
+| bash, zsh | `--encoding '%*_PKEY=delta_byte_array'` |
+
+The same holds for any pattern beginning with `%`, `--exclude '%*'` included.
+What matched nothing is reported with the pattern quoted as it arrived, so it
+names the mangled form rather than the one you wrote:
+
+```text
+qvd2parquet: note: --encoding "_PKEY" matched no column; patterns are wildcards
+over the output column names and the original QVD names
+```
+
 ### Measuring instead of guessing
 
 Whether `delta_byte_array` pays depends on the order the rows arrive in, since
@@ -571,7 +598,9 @@ the original QVD names, before --field-regex renames anything
 
 Both ways of getting a pattern wrong look exactly like success otherwise. `%`
 is not the wildcard `%*` and matches only a field named `%`, and a name that
-`--field-regex` produces is never what `--exclude` sees.
+`--field-regex` produces is never what `--exclude` sees. On Windows there is a
+third way: `cmd.exe` eats the `%` itself, which
+[Percent signs on Windows](#percent-signs-on-windows) covers.
 
 QVD field names from SAP extracts are often composite, packing the table, the
 technical name and a description into one string:
