@@ -159,6 +159,120 @@ func TestFingerprintReadsTheSchemaOverride(t *testing.T) {
 	}
 }
 
+// Joining a list with a separator the values may contain lets two different
+// option sets hash the same, and a skip on a wrong fingerprint is exactly the
+// stale output this feature exists to prevent. Qlik field names contain spaces
+// routinely, so --columns is the ordinary case.
+func TestFingerprintDistinguishesAmbiguousLists(t *testing.T) {
+	fp := func(mutate func(o *Options)) string {
+		t.Helper()
+		o := DefaultOptions()
+		mutate(&o)
+		got, err := FingerprintOptions(&o, "2.2.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	for _, tc := range []struct {
+		name string
+		a, b func(o *Options)
+	}{
+		{
+			"one column named with a space against two columns",
+			func(o *Options) { o.Columns = []string{"Sales Amount"} },
+			func(o *Options) { o.Columns = []string{"Sales", "Amount"} },
+		},
+		{
+			"the same for --exclude patterns",
+			func(o *Options) { o.Exclude = []string{"A B"} },
+			func(o *Options) { o.Exclude = []string{"A", "B"} },
+		},
+		{
+			"a list against the empty one it renders like",
+			func(o *Options) { o.Columns = []string{""} },
+			func(o *Options) { o.Columns = []string{} },
+		},
+		{
+			"an encoding rule whose pattern carries the separator",
+			func(o *Options) {
+				o.Encodings = EncodingSpec{Rules: []EncodingRule{{Pattern: "A B", Encoding: "plain"}}}
+			},
+			func(o *Options) {
+				o.Encodings = EncodingSpec{Rules: []EncodingRule{
+					{Pattern: "A", Encoding: "plain"}, {Pattern: "B", Encoding: "plain"},
+				}}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if fp(tc.a) == fp(tc.b) {
+				t.Errorf("two different option sets fingerprinted the same")
+			}
+		})
+	}
+}
+
+// The entry is keyed by the output name, and two folders can each hold an
+// A.qvd. Size and timestamp cannot tell those two inputs apart once a copy has
+// preserved the timestamps, so the entry has to name the input it came from.
+func TestManifestChecksTheInputItRecorded(t *testing.T) {
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "out")
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(outDir, "A.parquet")
+	if err := os.WriteFile(out, []byte("output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two sources of the same name and size, with the timestamps a copy that
+	// preserved them would leave behind.
+	same := time.Now().Add(-time.Hour)
+	var inputs []string
+	for i, content := range []string{"prod-data", "test-data"} {
+		d := filepath.Join(dir, []string{"prod", "test"}[i])
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		in := filepath.Join(d, "A.qvd")
+		if err := os.WriteFile(in, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(in, same, same); err != nil {
+			t.Fatal(err)
+		}
+		inputs = append(inputs, in)
+	}
+
+	m := LoadManifest(outDir)
+	m.Record(inputs[0], out, "fp", 10)
+	if !m.UpToDate(inputs[0], out, "fp") {
+		t.Fatal("the input that was recorded is not up to date")
+	}
+	if m.UpToDate(inputs[1], out, "fp") {
+		t.Error("a different source file of the same name, size and timestamp was " +
+			"skipped: the output would be the other folder's")
+	}
+
+	// The same file reached by a relative path from the directory holding it
+	// is still the same file, so a script run from elsewhere does not
+	// reconvert the folder.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(filepath.Dir(inputs[0])); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(wd)
+	if !m.UpToDate("A.qvd", out, "fp") {
+		t.Error("the same file named relatively was not recognized")
+	}
+}
+
 // manifestFixture converts nothing; it writes the two files an entry
 // describes and returns the manifest recording them.
 func manifestFixture(t *testing.T) (dir, in, out string, m *Manifest) {

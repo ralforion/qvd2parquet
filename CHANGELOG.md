@@ -19,9 +19,9 @@ restarts from it.
   output, for a folder re-extracted nightly where most inputs have not changed.
   It is not a timestamp comparison: the run keeps a record in
   `.qvd2parquet-manifest.json` under `--out-dir` and skips only when the
-  manifest names the output, the input's size and timestamp still match, the
-  output has not been replaced since, and the conversion options fingerprint
-  the same. Mtime alone cannot see a changed flag, is fooled by an extract
+  manifest names the output, the entry names this input, the input's size and
+  timestamp still match, the output has not been replaced since, and the
+  conversion options fingerprint the same. Mtime alone cannot see a changed flag, is fooled by an extract
   copied with its timestamps preserved, and trusts two clocks on a network
   share to agree.
 - The fingerprint covers every option that can change what is written,

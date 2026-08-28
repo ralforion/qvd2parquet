@@ -391,14 +391,19 @@ is told about:
 
 So the run keeps a record instead, in `.qvd2parquet-manifest.json` under
 `--out-dir`, and a file is skipped only when **this exact run already produced
-it**. All four have to hold:
+it**. All five have to hold:
 
 | | |
 |---|---|
 | the manifest names the output | it was this tool that wrote it |
+| the entry names this input | two folders can each hold an `A.qvd`, and both produce `A.parquet` |
 | the input's size and timestamp match | the source has not been re-extracted |
 | the options fingerprint matches | the run would write the same thing |
 | the output's size and timestamp match | nothing has replaced it since |
+
+The input is identified by its resolved absolute path, so running the same job
+from a different working directory or through a symlinked parent changes
+nothing. Genuinely moving the folder reconverts it once.
 
 The fingerprint covers every option that can change what is written, including
 the **contents** of a `--schema` override rather than only its path, and the

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -45,6 +46,11 @@ type Manifest struct {
 // ManifestEntry is one converted file, described well enough to tell whether
 // converting it again would produce the same thing.
 type ManifestEntry struct {
+	// Input is the absolute path the output was produced from. It is compared,
+	// not merely recorded: the entry is keyed by the output name, and two
+	// folders can each hold an A.qvd. Size and timestamp cannot separate those
+	// two inputs when a copy preserved the timestamps, and skipping then hands
+	// back a Parquet built from the other one.
 	Input         string `json:"input"`
 	InputSize     int64  `json:"inputSize"`
 	InputModTime  string `json:"inputModTime"`
@@ -112,6 +118,13 @@ func (m *Manifest) UpToDate(input, output, fingerprint string) bool {
 	if !ok || e.Fingerprint != fingerprint {
 		return false
 	}
+	// Compared exactly. A folder that moved, or a path spelled with different
+	// capitals on a filesystem that does not care, converts once more than it
+	// had to; the alternative is folding two paths together and skipping a
+	// file this run has never seen.
+	if e.Input != canonicalInputPath(input) {
+		return false
+	}
 	in, err := os.Stat(input)
 	if err != nil {
 		return false
@@ -142,7 +155,7 @@ func (m *Manifest) Record(input, output, fingerprint string, rows int64) {
 		return
 	}
 	m.Entries[filepath.Base(output)] = ManifestEntry{
-		Input:         input,
+		Input:         canonicalInputPath(input),
 		InputSize:     in.Size(),
 		InputModTime:  stamp(in.ModTime()),
 		OutputSize:    out.Size(),
@@ -151,6 +164,28 @@ func (m *Manifest) Record(input, output, fingerprint string, rows int64) {
 		Rows:          rows,
 		ConvertedAt:   stamp(time.Now()),
 	}
+}
+
+// canonicalInputPath is the identity an entry records, so the same file
+// reached by a relative path, through a symlinked parent, or from a different
+// working directory is still recognized as the same file. Two spellings that
+// resolve differently only cost one conversion, but a folder under /tmp on
+// macOS is reached both ways routinely, and reconverting it every night would
+// make the feature useless there.
+//
+// This is the simple form of the command's canonicalPath, which also has to
+// follow a dangling final symlink because it reasons about files that do not
+// exist yet. An input that cannot be resolved is one the conversion is about
+// to fail on anyway.
+func canonicalInputPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
 }
 
 // stamp formats a modification time. Both sides of every comparison go through
@@ -182,7 +217,7 @@ func FingerprintOptions(o *Options, toolVersion string) (string, error) {
 	// Only the major version. From 2.0.0 the project promises that a default
 	// will not change what an existing file converts to outside a major bump,
 	// so a minor upgrade must not reconvert a folder and a major one must.
-	fmt.Fprintf(h, "tool=%s\n", majorVersion(toolVersion))
+	fmt.Fprint(h, tagged("tool"), tagged(majorVersion(toolVersion)))
 
 	v := reflect.ValueOf(*o)
 	t := v.Type()
@@ -195,7 +230,7 @@ func FingerprintOptions(o *Options, toolVersion string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("cannot fingerprint --%s: %w", name, err)
 		}
-		fmt.Fprintf(h, "%s=%s\n", name, s)
+		fmt.Fprint(h, tagged(name), tagged(s))
 	}
 
 	// The schema override's contents, not merely its path: editing that file
@@ -205,7 +240,7 @@ func FingerprintOptions(o *Options, toolVersion string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read --schema %s: %w", o.SchemaOverridePath, err)
 		}
-		fmt.Fprintf(h, "schemaOverride=%x\n", sha256.Sum256(b))
+		fmt.Fprint(h, tagged("schemaOverride"), tagged(fmt.Sprintf("%x", sha256.Sum256(b))))
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
@@ -218,6 +253,15 @@ func majorVersion(v string) string {
 	}
 	return v
 }
+
+// tagged length-prefixes a rendering, so no two different values can produce
+// one string. Joining with a separator cannot do that when the separator is a
+// character the values may contain: []string{"Sales Amount"} and
+// []string{"Sales", "Amount"} both render as "Sales Amount" under a space
+// join, and --columns 'Sales Amount' would then fingerprint the same as
+// --columns 'Sales,Amount'. Qlik field names contain spaces routinely, so this
+// is the ordinary case rather than a contrived one.
+func tagged(s string) string { return strconv.Itoa(len(s)) + ":" + s }
 
 // fingerprintValue renders one option as text. An unsupported kind is an error
 // rather than a silently stable value, so a future option of a shape this does
@@ -235,15 +279,16 @@ func fingerprintValue(v reflect.Value) (string, error) {
 		if v.Kind() == reflect.Slice && v.IsNil() {
 			return "nil", nil
 		}
-		parts := make([]string, v.Len())
+		var b strings.Builder
+		fmt.Fprintf(&b, "[%d]", v.Len())
 		for i := 0; i < v.Len(); i++ {
 			s, err := fingerprintValue(v.Index(i))
 			if err != nil {
 				return "", err
 			}
-			parts[i] = s
+			b.WriteString(tagged(s))
 		}
-		return "[" + strings.Join(parts, " ") + "]", nil
+		return b.String(), nil
 
 	case reflect.Map:
 		if v.IsNil() {
@@ -259,21 +304,23 @@ func fingerprintValue(v reflect.Value) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			parts = append(parts, key+"="+val)
+			parts = append(parts, tagged(key)+tagged(val))
 		}
 		sort.Strings(parts) // map order is not a property of the options
-		return "{" + strings.Join(parts, " ") + "}", nil
+		return "{" + strings.Join(parts, "") + "}", nil
 
 	case reflect.Struct:
-		parts := make([]string, v.NumField())
+		var b strings.Builder
+		b.WriteString("{")
 		for i := 0; i < v.NumField(); i++ {
 			s, err := fingerprintValue(v.Field(i))
 			if err != nil {
 				return "", err
 			}
-			parts[i] = v.Type().Field(i).Name + "=" + s
+			b.WriteString(tagged(v.Type().Field(i).Name) + tagged(s))
 		}
-		return "{" + strings.Join(parts, " ") + "}", nil
+		b.WriteString("}")
+		return b.String(), nil
 
 	case reflect.Pointer, reflect.Interface:
 		if v.IsNil() {
