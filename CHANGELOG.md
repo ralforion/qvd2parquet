@@ -13,6 +13,31 @@ restarts from it.
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-08-28
+
+A folder conversion learns which files to convert, and which not to convert
+again. Both come from the same place: a nightly SAP extract is a directory, not
+a file, and the two things you want to say about it are "only these" and "only
+what changed".
+
+`--include-files` and `--exclude-files` answer the first, and a wildcard in an
+input path now expands even where the shell will not do it, which is every
+Windows shell: `cmd.exe` expands nothing and PowerShell does not expand for an
+external command, so `qvds\CE*.qvd` used to arrive verbatim and be reported as
+a missing file.
+
+`--skip-up-to-date` answers the second, and deliberately not by comparing
+timestamps. Whether the Parquet is newer than the QVD cannot see that a flag
+changed since, is fooled by an extract copied with its timestamps preserved,
+and trusts two clocks on a network share to agree. All three end in a stale
+output nobody is told about, which is worse than the conversion it saved. So a
+run records what it produced and skips only what it produced, and the record
+includes a fingerprint of everything that can change the bytes written.
+
+No flag changed meaning and no conversion produces different data, so this is
+minor rather than major: nothing is skipped or filtered without being asked
+for, and the compatibility promise from 2.0.0 holds.
+
 ### Added
 
 - `--skip-up-to-date` leaves a file alone when the run already produced its
@@ -720,7 +745,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/ralforion/qvd2parquet/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/ralforion/qvd2parquet/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/ralforion/qvd2parquet/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/ralforion/qvd2parquet/compare/v1.0.1...v2.0.0

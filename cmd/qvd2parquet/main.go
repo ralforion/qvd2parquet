@@ -42,7 +42,7 @@ const (
 // defaultVersion is what a plain "go build" reports. Release archives override
 // version with -ldflags, and "go install module@vX.Y.Z" supplies the tag
 // through the embedded build info, so all three paths agree.
-const defaultVersion = "2.2.0"
+const defaultVersion = "2.3.0"
 
 var version = defaultVersion
 
