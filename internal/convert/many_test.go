@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
@@ -240,6 +241,114 @@ func TestOutputPathFor(t *testing.T) {
 		if got := OutputPathFor(tc.in, tc.dir); got != tc.want {
 			t.Errorf("OutputPathFor(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// The whole point of --skip-up-to-date: a second run over an unchanged folder
+// does nothing, and anything that would change what is written brings the file
+// back.
+func TestRunManySkipsUpToDateFiles(t *testing.T) {
+	src := folderFixture(t, false, false)
+	outDir := filepath.Join(t.TempDir(), "out")
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+
+	run := func(o Options) *BatchResult {
+		t.Helper()
+		o.Force = true
+		b, err := RunMany(context.Background(), inputs, &o,
+			&ManyOptions{OutDir: outDir, SkipUpToDate: true, ToolVersion: "2.2.0"}, nil)
+		if err != nil {
+			t.Fatalf("RunMany: %v", err)
+		}
+		return b
+	}
+
+	if b := run(opts); b.Converted != 2 || b.Skipped != 0 {
+		t.Fatalf("first run converted=%d skipped=%d, want 2 and 0", b.Converted, b.Skipped)
+	}
+	// The manifest is the run's own record and belongs beside the outputs.
+	if _, err := os.Stat(ManifestPath(outDir)); err != nil {
+		t.Fatalf("no manifest written: %v", err)
+	}
+
+	b := run(opts)
+	if b.Converted != 0 || b.Skipped != 2 {
+		t.Errorf("second run converted=%d skipped=%d, want 0 and 2", b.Converted, b.Skipped)
+	}
+	if !strings.Contains(b.Summary(), "2 skipped") {
+		t.Errorf("the summary should account for the skipped files:\n%s", b.Summary())
+	}
+	// A skipped file is still a record in the log, or a run's log would not
+	// account for every input it was given.
+	for _, r := range b.Results {
+		if !r.Skipped || r.Err != nil {
+			t.Errorf("result %+v", r)
+		}
+	}
+
+	// A changed option is the case mtime cannot see: same inputs, same
+	// outputs, a conversion that would now produce something else.
+	changed := testOptions()
+	changed.Compression = "zstd" // testOptions uses snappy
+	if b := run(changed); b.Converted != 2 || b.Skipped != 0 {
+		t.Errorf("after --compression changed: converted=%d skipped=%d, want 2 and 0",
+			b.Converted, b.Skipped)
+	}
+
+	// A re-extracted input at the same size, which is what a nightly extract
+	// copied with its timestamps preserved looks like.
+	later := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(inputs[0], later, later); err != nil {
+		t.Fatal(err)
+	}
+	if b := run(changed); b.Converted != 1 || b.Skipped != 1 {
+		t.Errorf("after one input changed: converted=%d skipped=%d, want 1 and 1",
+			b.Converted, b.Skipped)
+	}
+}
+
+// Without the flag the feature leaves no trace, so a folder conversion does
+// not acquire state nobody asked for.
+func TestRunManyWritesNoManifestUnlessAsked(t *testing.T) {
+	src := folderFixture(t, false, false)
+	outDir := filepath.Join(t.TempDir(), "out")
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+
+	if _, err := RunMany(context.Background(), inputs, &opts, &ManyOptions{OutDir: outDir}, nil); err != nil {
+		t.Fatalf("RunMany: %v", err)
+	}
+	if _, err := os.Stat(ManifestPath(outDir)); !os.IsNotExist(err) {
+		t.Errorf("a run without --skip-up-to-date left a manifest behind")
+	}
+}
+
+// A failed conversion must not be recorded as done. The writer renames a
+// temporary into place, so the previous output is still the one the manifest
+// describes, and the next run has to try the file again.
+func TestRunManyDoesNotRecordAFailure(t *testing.T) {
+	src := folderFixture(t, false, true)
+	outDir := filepath.Join(t.TempDir(), "out")
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+	opts.Force = true
+	many := &ManyOptions{OutDir: outDir, SkipUpToDate: true, ToolVersion: "2.2.0"}
+
+	first, err := RunMany(context.Background(), inputs, &opts, many, nil)
+	if err != nil {
+		t.Fatalf("RunMany: %v", err)
+	}
+	if first.Failed != 1 {
+		t.Fatalf("failed=%d, want the corrupt file to fail", first.Failed)
+	}
+	second, err := RunMany(context.Background(), inputs, &opts, many, nil)
+	if err != nil {
+		t.Fatalf("RunMany: %v", err)
+	}
+	if second.Skipped != 2 || second.Failed != 1 {
+		t.Errorf("second run skipped=%d failed=%d, want 2 and 1: a file that failed "+
+			"must be attempted again", second.Skipped, second.Failed)
 	}
 }
 

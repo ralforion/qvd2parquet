@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ralforion/qvd2parquet/internal/convert"
 )
@@ -533,6 +534,75 @@ func TestBatchSelectsFilesByName(t *testing.T) {
 	}
 	if !strings.Contains(string(combined), `--include-files/--exclude-files "ZZ*" left none of the 3 .qvd file(s)`) {
 		t.Errorf("output should blame the patterns, not an empty folder:\n%s", combined)
+	}
+}
+
+// --skip-up-to-date has to reach the run, and the manifest has to be the one
+// thing a nightly job can rely on: the second run over an unchanged folder
+// does nothing.
+func TestBatchSkipsUpToDateFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("fixture missing, this test would otherwise pass by skipping: %v", err)
+	}
+	src := t.TempDir()
+	for _, name := range []string{"A.qvd", "B.qvd"} {
+		if err := os.WriteFile(filepath.Join(src, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	outDir := filepath.Join(t.TempDir(), "out")
+
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(bin, append([]string{"--out-dir", outDir, "--skip-up-to-date"}, args...)...)
+		combined, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("run failed: %v\n%s", err, combined)
+		}
+		return string(combined)
+	}
+
+	if out := run(src); strings.Contains(out, "skip ") {
+		t.Errorf("the first run skipped something:\n%s", out)
+	}
+	// The manifest is a dotfile, so a reader scanning the directory for
+	// Parquet ignores it the way it ignores any name beginning with a dot.
+	if _, err := os.Stat(filepath.Join(outDir, convert.ManifestName)); err != nil {
+		t.Fatalf("no manifest written: %v", err)
+	}
+
+	out := run(src)
+	if !strings.Contains(out, "2 skipped") {
+		t.Errorf("the second run should have skipped both files:\n%s", out)
+	}
+
+	// A nightly job is --force --skip-up-to-date: permission to overwrite the
+	// stale, and a decision to leave the current alone. Dropping the flag is
+	// how the same job reruns everything.
+	later := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(filepath.Join(src, "A.qvd"), later, later); err != nil {
+		t.Fatal(err)
+	}
+	out = run("--force", src)
+	if !strings.Contains(out, "1 skipped") || !strings.Contains(out, "converted 1/2") {
+		t.Errorf("only the changed file should have converted:\n%s", out)
+	}
+
+	// Pointing the log at the manifest would destroy the run's own record.
+	cmd := exec.Command(bin, "--out-dir", outDir, "--skip-up-to-date",
+		"--log", filepath.Join(outDir, convert.ManifestName), src)
+	combined, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("--log over the manifest was accepted:\n%s", combined)
+	}
+	if got := cmd.ProcessState.ExitCode(); got != exitUsage {
+		t.Errorf("exit code = %d, want %d (usage)", got, exitUsage)
 	}
 }
 

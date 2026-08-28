@@ -15,6 +15,25 @@ restarts from it.
 
 ### Added
 
+- `--skip-up-to-date` leaves a file alone when the run already produced its
+  output, for a folder re-extracted nightly where most inputs have not changed.
+  It is not a timestamp comparison: the run keeps a record in
+  `.qvd2parquet-manifest.json` under `--out-dir` and skips only when the
+  manifest names the output, the input's size and timestamp still match, the
+  output has not been replaced since, and the conversion options fingerprint
+  the same. Mtime alone cannot see a changed flag, is fooled by an extract
+  copied with its timestamps preserved, and trusts two clocks on a network
+  share to agree.
+- The fingerprint covers every option that can change what is written,
+  including the contents of a `--schema` override rather than only its path,
+  and the tool's major version, which the stability promise makes sufficient.
+  Options that cannot change the output are excluded by name, so a new option
+  counts by default: the mistake it can make is an unnecessary conversion
+  rather than a wrong skip.
+- `--skip-up-to-date` is selection and `--force` is write permission, so a
+  nightly job passes both and a full rerun drops the one flag. Nothing is
+  skipped by default, the manifest is written only when the flag is passed, and
+  a file that failed is not recorded.
 - A wildcard in the last element of an input path is expanded by qvd2parquet
   when the shell has not done it, so `qvd2parquet --out-dir out qvds\CE*.qvd`
   works in `cmd.exe` and PowerShell, neither of which expands for an external

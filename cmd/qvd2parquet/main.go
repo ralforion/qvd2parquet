@@ -144,6 +144,7 @@ func run() int {
 		recursive     = fs.Bool("recursive", false, "With --out-dir, descend into subdirectories")
 		includeFiles  = fs.String("include-files", "", "With --out-dir, convert only the files matching these comma-separated wildcard patterns, e.g. 'CE*'")
 		excludeFiles  = fs.String("exclude-files", "", "With --out-dir, skip the files matching these comma-separated wildcard patterns")
+		skipUpToDate  = fs.Bool("skip-up-to-date", false, "With --out-dir, leave a file alone when this exact run already produced its output")
 		logPath       = fs.String("log", "", "Write one JSON Lines record per input, then a summary")
 		inspect       = fs.Bool("inspect", false, "Read only the header and symbol tables, print the schema, and exit")
 		showVersion   = fs.Bool("version", false, "Print the version and exit")
@@ -301,7 +302,7 @@ func run() int {
 			Include:   splitList(*includeFiles),
 			Exclude:   splitList(*excludeFiles),
 		}
-		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, sel, *logPath, logf)
+		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, sel, *skipUpToDate, *logPath, logf)
 	}
 
 	return runSingle(ctx, inputPath, outputPath, &opts, *logPath, logf)
@@ -505,7 +506,8 @@ func canonicalPath(path string) string {
 // runBatch converts every input into --out-dir, continuing past a failure so
 // one bad file does not hide the state of the rest.
 func runBatch(ctx context.Context, paths []string, opts *convert.Options,
-	outDir string, fileWorkers int, sel convert.InputSelection, logPath string, logf convert.Logf) int {
+	outDir string, fileWorkers int, sel convert.InputSelection, skipUpToDate bool,
+	logPath string, logf convert.Logf) int {
 
 	found := convert.FindInputs(paths, sel)
 	inputs, problems := found.Files, found.Problems
@@ -536,6 +538,16 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 
 	var log *convert.LogWriter
 	if logPath != "" {
+		if skipUpToDate {
+			// The manifest is the run's own record of what it produced;
+			// pointing the log at it would destroy that record and leave
+			// every later run reconverting the folder.
+			if err := checkLogCollisions(logPath, []logCollision{
+				{"the --skip-up-to-date manifest", convert.ManifestPath(outDir)},
+			}); err != nil {
+				return usageErr(err)
+			}
+		}
 		if err := validateBatchLogPath(logPath, inputs, problems, outDir, opts); err != nil {
 			return usageErr(err)
 		}
@@ -548,11 +560,13 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	}
 
 	result, err := convert.RunMany(ctx, inputs, opts, &convert.ManyOptions{
-		OutDir:      outDir,
-		FileWorkers: fileWorkers,
-		Recursive:   sel.Recursive,
-		Log:         log,
-		Problems:    problems,
+		OutDir:       outDir,
+		FileWorkers:  fileWorkers,
+		Recursive:    sel.Recursive,
+		Log:          log,
+		Problems:     problems,
+		SkipUpToDate: skipUpToDate,
+		ToolVersion:  version,
 	}, logf)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)

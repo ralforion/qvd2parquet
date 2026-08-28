@@ -356,6 +356,14 @@ type ManyOptions struct {
 	// Problems are inputs that could not even be examined. They are reported
 	// as failures alongside the files that did convert.
 	Problems []InputProblem
+	// SkipUpToDate leaves a file alone when the manifest in OutDir says this
+	// exact run already produced its output. Off by default: a run that
+	// silently declined to convert would be the wrong default for a tool
+	// whose output another job is waiting on.
+	SkipUpToDate bool
+	// ToolVersion identifies the binary in the manifest's fingerprint. Only
+	// its major version is used.
+	ToolVersion string
 }
 
 // RunMany converts every input, continuing past a failure so one bad file does
@@ -378,6 +386,23 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	// anything.
 	if err := checkOutputCollisions(inputs, many.OutDir); err != nil {
 		return nil, err
+	}
+
+	// A manifest is read and written only when asked for, so a run that never
+	// passes --skip-up-to-date leaves no state in its output directory.
+	var manifest *Manifest
+	var fingerprint string
+	if many.SkipUpToDate {
+		fp, err := FingerprintOptions(opts, many.ToolVersion)
+		if err != nil {
+			// Not knowing what this run would produce means not being able to
+			// say anything is up to date. Converting everything is the answer
+			// that cannot be wrong, and the batch guarantee is that every
+			// input is attempted.
+			logf("note: --skip-up-to-date is converting every file: %v", err)
+		} else {
+			fingerprint, manifest = fp, LoadManifest(many.OutDir)
+		}
 	}
 
 	fileWorkers, perFile := splitWorkerBudget(many.FileWorkers, opts.Workers, len(inputs))
@@ -424,6 +449,14 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			break
 		}
 
+		if out := OutputPathFor(in, many.OutDir); manifest.UpToDate(in, out, fingerprint) {
+			results[i] = FileResult{Input: in, Output: out, Skipped: true, Started: time.Now()}
+			// Serialized like every other per-file line: a conversion already
+			// running can be writing progress at the same moment.
+			safeLogf("skip %s (up to date)", DisplayPath(in))
+			continue
+		}
+
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(i int, in string) {
@@ -433,6 +466,23 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		}(i, in)
 	}
 	wg.Wait()
+
+	// The manifest describes what is on disk now, so it is written after the
+	// conversions and includes only the ones that produced a file. A file
+	// that failed leaves its previous entry alone: the writer renames a
+	// temporary into place, so a failed conversion cannot have replaced the
+	// output the entry describes.
+	if manifest != nil {
+		for _, r := range results {
+			if r.Err == nil && !r.Skipped && r.Stats != nil {
+				manifest.Record(r.Input, r.Output, fingerprint, r.Stats.Rows)
+			}
+		}
+		if err := manifest.Save(many.OutDir); err != nil {
+			logf("note: could not write %s: %v; the next --skip-up-to-date run will convert these files again",
+				ManifestName, err)
+		}
+	}
 
 	// An unreadable input is a failure of that input, not of the run.
 	for _, p := range many.Problems {
