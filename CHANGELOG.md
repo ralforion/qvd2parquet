@@ -15,6 +15,23 @@ restarts from it.
 
 ### Added
 
+- An `--exclude` pattern that matches no field is reported instead of passing
+  silently. `--columns` already fails on a name that matches nothing, while
+  `--exclude` accepted anything, and both ways of writing a pattern wrongly
+  look exactly like success: `%` is not the wildcard `%*` and matches only a
+  field named `%`, and the name `--field-regex` produces is never what
+  `--exclude` sees, since exclusion is decided first. It stays a note rather
+  than an error, because one command line is often pointed at a folder of
+  tables that do not all carry the same fields. The patterns appear in
+  `--inspect`, in the run log, and in a `--log` record as `excludeNoMatch`.
+- `--field-regex` says which fields it left alone. A field the expression does
+  not match keeps its original name, which is what lets a rule target a subset,
+  but on a 213 column SAP extract the two fields that stayed behind are
+  invisible among the renamed ones. Runs now close the schema notes with
+  `2 of 3 field(s) renamed, 1 unchanged: PlainField`, naming at most five.
+  `--schema-report` carries the full list under `fieldRegex`, and a `--log`
+  record carries `fieldsRenamed` and `fieldsUnchanged` as counts, since a
+  record there is one line per file.
 - `--inspect` and `--schema-report` show each column's value range, rendered in
   the type the column is written as. A QVD stores a date as a serial day
   number, so a profile reported `WADAT` as 38365..411241 and a goods-issue date
@@ -31,6 +48,55 @@ restarts from it.
   `usedFraction` per column, and the `--log` record carries
   `decimalsNearLimit`, the names alone, since a record there is one line per
   file and stays that way.
+- `--encoding` pins a column to a Parquet encoding, as
+  `--encoding '%*_PKEY=delta_byte_array'`. A column whose values are nearly all
+  distinct gets nothing from the default dictionary: the dictionary page
+  overflows, the writer falls back to `PLAIN`, and the column is stored as raw
+  bytes with only the compressor working on it. A Qlik composite primary key is
+  that column, one distinct value per row. Patterns are wildcards over both the
+  output name and the original QVD name, so one rule covers a folder of SAP
+  tables whose keys are named per table, and a later rule wins over an earlier
+  one. An encoding the column's type cannot carry is refused before the
+  conversion starts, naming the ones that fit, and `--inspect` shows what a run
+  would pin. Nothing changes without the flag.
+- `--encoding auto` measures the choice instead of guessing at it. Whether
+  `delta_byte_array` pays depends on the order the rows arrive in, and nothing
+  in the symbol table reveals that order, so sampled rows are written through
+  the real writer twice, once as the run would today and once with each
+  candidate, and the compressed column chunks are compared. Three windows of
+  100,000 consecutive rows, at head, middle and tail, land within about a point
+  of the whole file, and the estimate converges from above, so it understates a
+  win rather than overselling one; a file of 300,000 rows or fewer is measured
+  in full. On a 3M row key that arrives in document order the
+  sample measured 31% and the conversion wrote 1.8 MiB against the default's
+  6.2 MiB; on the same values shuffled nothing is adopted and the run says so.
+  `--inspect --encoding auto` reports the measurement without converting, and
+  is the only thing that makes inspect read records at all. Over `--out-dir`
+  each file is measured on its own, since no pattern can know what a given
+  table's key looks like. A column an explicit rule names is not measured at
+  all, so the tool never recommends against a decision already taken, and
+  `--schema-report` records the encoding each column is actually written with,
+  measured or pinned.
+- Progress lines say how far along a phase is and roughly how long is left:
+  `converted 5000000/20589661 rows (24%) in 3m21s (24875 rows/s, about 10m26s
+  left)`. The row total is read from the QVD header before a record is
+  decoded, so both come from numbers the run already holds. The throughput
+  shown is still the average since the phase started, while the estimate
+  follows the recent rate, because a run carries its startup cost in the
+  average long after it has found its speed. The quality gate projects
+  separately, having its own total and its own speed.
+
+### Fixed
+
+- `--log` now writes a file record and summary for single-file conversions. It
+  was accepted but silently ignored outside `--out-dir` mode.
+- A batch run reports each file's progress. `--out-dir` passed a nil logger to
+  the converter, so it discarded the schema notes, the row counts and the
+  quality gate's progress: a folder holding one large table printed a line on
+  starting and nothing again until it finished, which on a twenty-million-row
+  table is a quarter of an hour of silence. Converting several files at once,
+  each line names the file it belongs to, and the writer is serialized so two
+  files cannot interleave mid-line.
 
 ### Changed
 
@@ -57,11 +123,6 @@ restarts from it.
   and the rest -- but sat next to a verb about writing, so its figure read as
   the time taken to write the file. On a wide file the gate alone can be the
   larger half of it.
-
-### Fixed
-
-- `--log` now writes a file record and summary for single-file conversions. It
-  was accepted but silently ignored outside `--out-dir` mode.
 
 ## [2.1.0] - 2026-08-25
 

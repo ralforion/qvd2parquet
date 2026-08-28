@@ -16,7 +16,7 @@ func TestInspectResolvesSchemaWithoutReadingRecords(t *testing.T) {
 	in := buildFixture(t, sampleTable(5000))
 	opts := testOptions()
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestInspectMatchesConversionSchema(t *testing.T) {
 	in := buildFixture(t, sampleTable(500))
 	opts := testOptions()
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestInspectHonoursExcludeAndRename(t *testing.T) {
 	opts.Exclude = []string{"%*"}
 	opts.Renamer = renamer
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestInspectReportsSchemaFailureWithProfiles(t *testing.T) {
 	in := buildFixture(t, tbl)
 	opts := testOptions()
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatalf("Inspect should not return the policy error: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestInspectReportsSchemaFailureWithProfiles(t *testing.T) {
 func TestInspectWriteRendersSchemaTable(t *testing.T) {
 	in := buildFixture(t, sampleTable(120))
 	opts := testOptions()
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestInspectWriteRendersSchemaTable(t *testing.T) {
 
 func TestInspectMissingFile(t *testing.T) {
 	opts := testOptions()
-	if _, err := Inspect(filepath.Join(t.TempDir(), "nope.qvd"), &opts); err == nil {
+	if _, err := Inspect(context.Background(), filepath.Join(t.TempDir(), "nope.qvd"), &opts); err == nil {
 		t.Fatal("expected an error for a missing file")
 	}
 }
@@ -183,7 +183,7 @@ func TestInspectWritesNoFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := testOptions()
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,6 +209,113 @@ func TestWithThousands(t *testing.T) {
 	} {
 		if got := withThousands(in); got != want {
 			t.Errorf("withThousands(%d) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Inspect is where a command line is checked before a conversion that runs
+// for a quarter of an hour, so both silent outcomes have to be visible here.
+func TestInspectWriteReportsDeadPatternsAndUntouchedFields(t *testing.T) {
+	in := buildFixture(t, sapStyleTable())
+	renamer, err := NewFieldRenamer(sapRegex, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.Exclude = []string{"%SYS*", "COUNTER"}
+	opts.Renamer = renamer
+
+	rep, err := Inspect(context.Background(), in, &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rep.Close()
+
+	if strings.Join(rep.ExcludeNoMatch, ",") != "COUNTER" {
+		t.Errorf("ExcludeNoMatch = %v, want [COUNTER]", rep.ExcludeNoMatch)
+	}
+
+	var sb strings.Builder
+	if err := rep.Write(&sb); err != nil {
+		t.Fatal(err)
+	}
+	out := sb.String()
+	for _, want := range []string{
+		`Exclude         "COUNTER" matched no field`,
+		"Field regex     2 of 4 field(s) renamed, 2 unchanged: %A057_PKEY, PlainField",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("inspect output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// With nothing to report, neither line appears at all.
+func TestInspectWriteStaysQuietWhenEveryPatternMatches(t *testing.T) {
+	in := buildFixture(t, sapStyleTable())
+	opts := testOptions()
+	opts.Exclude = []string{"%*"}
+
+	rep, err := Inspect(context.Background(), in, &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rep.Close()
+
+	var sb strings.Builder
+	if err := rep.Write(&sb); err != nil {
+		t.Fatal(err)
+	}
+	if out := sb.String(); strings.Contains(out, "matched no field") || strings.Contains(out, "Field regex") {
+		t.Errorf("unexpected reporting:\n%s", out)
+	}
+}
+
+// A file the type policy rejects has no resolved schema, and that is exactly
+// when the rest of the command line wants checking: the run has to be fixed
+// and repeated, so a pattern or an expression that is also wrong should not
+// wait for the next attempt to show itself.
+func TestInspectReportsSelectionEvenWhenTheSchemaFails(t *testing.T) {
+	tbl := qvdtest.Table{Name: "Bad", Fields: []qvdtest.Field{
+		{Name: "%BAD_PKEY", Type: "ASCII", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Str("k1"), qvdtest.Str("k2")}},
+		{Name: "Bad-||-CustomerID-||-Kunde", Type: "ASCII", Rows: []int{0, 1},
+			Symbols: []qvd.Symbol{qvdtest.Int(42), qvdtest.Str("N/A")}},
+	}}
+	in := buildFixture(t, tbl)
+	renamer, err := NewFieldRenamer(sapRegex, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.Renamer = renamer
+	opts.Exclude = []string{"COUNTER"}
+
+	rep, err := Inspect(context.Background(), in, &opts)
+	if err != nil {
+		t.Fatalf("Inspect should not return the policy error: %v", err)
+	}
+	defer rep.Close()
+
+	if rep.SchemaErr == nil {
+		t.Fatal("this fixture should fail the mixed-type policy")
+	}
+	if rep.Schema != nil {
+		t.Fatal("fixture assumption wrong: a rejected file has no resolved schema")
+	}
+
+	var sb strings.Builder
+	if err := rep.Write(&sb); err != nil {
+		t.Fatal(err)
+	}
+	out := sb.String()
+	for _, want := range []string{
+		`Exclude         "COUNTER" matched no field`,
+		"Field regex     1 of 2 field(s) renamed, 1 unchanged: %BAD_PKEY",
+		"Schema could not be resolved",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report should contain %q:\n%s", want, out)
 		}
 	}
 }

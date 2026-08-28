@@ -230,3 +230,57 @@ func TestSamePathIgnoresCaseOnWindows(t *testing.T) {
 		t.Fatal("case-only aliases treated as different paths")
 	}
 }
+
+// Inspect is a preflight check, so it has to exit the way the conversion
+// would. Reporting a problem and exiting 0 is worse than not checking: a
+// script gating on it would go on to start the run that is about to fail.
+func TestInspectExitsNonZeroOnAnEncodingItCannotApply(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	in := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	if _, err := os.Stat(in); err != nil {
+		t.Fatalf("fixture missing, this test would otherwise pass by skipping: %v", err)
+	}
+
+	// Id is written as int64, which cannot carry a byte array encoding.
+	cmd := exec.Command(bin, "--inspect", "--encoding", "Id=delta_byte_array", in)
+	combined, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("inspect exited 0 despite refusing the encoding:\n%s", combined)
+	}
+	code := cmd.ProcessState.ExitCode()
+	if code != exitSchema {
+		t.Errorf("exit code = %d, want %d (schema/type policy):\n%s", code, exitSchema, combined)
+	}
+	if !strings.Contains(string(combined), "does not fit column \"Id\"") {
+		t.Errorf("output should explain the refusal:\n%s", combined)
+	}
+
+	// The same conversion must fail the same way, or inspect would not be
+	// predicting it.
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	cmd = exec.Command(bin, "--force", "--encoding", "Id=delta_byte_array", in, out)
+	combined, err = cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("the conversion accepted what inspect refused:\n%s", combined)
+	}
+	if got := cmd.ProcessState.ExitCode(); got != code {
+		t.Errorf("conversion exit code = %d, inspect said %d", got, code)
+	}
+}
+
+// A pin inspect accepts must leave it exiting 0, or the gate would be useless
+// in the other direction.
+func TestInspectExitsZeroOnAnEncodingItAccepts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	in := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	cmd := exec.Command(bin, "--inspect", "--encoding", "Name=delta_byte_array", in)
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("inspect failed on a valid pin: %v\n%s", err, combined)
+	}
+}

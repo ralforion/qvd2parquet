@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,7 +24,22 @@ type Stats struct {
 	// already fills most of the type's range, so a later load carrying a
 	// larger one would not convert.
 	DecimalsNearLimit []string
+	// ExcludeNoMatch holds the --exclude patterns that matched no field in
+	// this file, and Renames records what --field-regex did to the fields
+	// that were kept. Both describe silent outcomes: a pattern that drops
+	// nothing and an expression that renames nothing look exactly like ones
+	// that worked.
+	ExcludeNoMatch []string
+	Renames        RenameSummary
+	// Encodings names the columns written with a pinned or measured encoding,
+	// as "NAME=encoding".
+	Encodings []string
 }
+
+// maxNamedFields caps how many field names a single log line will list. A run
+// where the expression matched nothing would otherwise print every field on a
+// 213 column extract.
+const maxNamedFields = 5
 
 // RowsPerSecond is the overall conversion throughput.
 func (s Stats) RowsPerSecond() float64 {
@@ -52,15 +68,28 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	}
 	defer f.Close()
 
+	// Refuse an output that cannot be written before doing any work for it.
+	// The writer checks again when it creates the file, which is what
+	// actually guarantees it; this only means a missing --force costs
+	// milliseconds rather than a symbol pass and an encoding measurement.
+	if err := parquetwrite.CheckOutput(outputPath, opts.Force); err != nil {
+		return nil, nil, err
+	}
+
 	if err := f.SelectColumns(opts.Columns); err != nil {
 		return nil, nil, err
 	}
-	dropped, err := f.ExcludeColumns(opts.Exclude)
+	dropped, unmatchedExcludes, err := f.ExcludeColumns(opts.Exclude)
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(dropped) > 0 {
 		logf("excluded %d column(s) by pattern: %s", len(dropped), strings.Join(dropped, ", "))
+	}
+	if len(unmatchedExcludes) > 0 {
+		logf("note: --exclude %s matched no field; patterns are wildcards over the "+
+			"original QVD names, before --field-regex renames anything",
+			quotedList(unmatchedExcludes))
 	}
 	logf("%s: table %q, %d rows, %d bytes/record, %d of %d columns selected",
 		inputPath, f.Header.TableName, f.NoOfRecords, f.RecordByteSize,
@@ -92,6 +121,9 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	}
 	for _, n := range rs.Notes {
 		logf("schema: %s", n)
+	}
+	if line := rs.Renames.Line(maxNamedFields); line != "" {
+		logf("field-regex: %s", line)
 	}
 
 	// Batch size depends on the resolved column count, so it can only be
@@ -132,8 +164,31 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 		}
 	}
 
+	// Encodings are settled before the schema report is written, so the report
+	// describes the file the run is about to produce rather than the one it
+	// would have produced without measuring.
+	enc, err := ResolveEncodings(opts.Encodings.Rules, rs, f)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Pins are reported before any measurement, since a measurement that
+	// follows must leave them alone. What it adopts reports itself.
+	if len(enc.Pinned) > 0 {
+		logf("encoding: %s", strings.Join(enc.Pinned, ", "))
+	}
+	if len(enc.Unmatched) > 0 {
+		logf("note: --encoding %s matched no column; patterns are wildcards over "+
+			"the output column names and the original QVD names",
+			quotedList(enc.Unmatched))
+	}
+	if opts.Encodings.Auto {
+		if err := applyMeasuredEncodings(ctx, f, rs, opts, enc, logf); err != nil {
+			return nil, nil, err
+		}
+	}
+
 	if opts.SchemaReportPath != "" {
-		if err := WriteSchemaReport(opts.SchemaReportPath, inputPath, f, rs, opts); err != nil {
+		if err := WriteSchemaReport(opts.SchemaReportPath, inputPath, f, rs, opts, enc); err != nil {
 			return nil, nil, err
 		}
 		logf("wrote schema report to %s", opts.SchemaReportPath)
@@ -161,8 +216,9 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 		return nil, nil, err
 	}
 	w, err := parquetwrite.Create(outputPath, rs.Arrow, parquetwrite.Options{
-		Compression:  codec,
-		RowGroupRows: int64(opts.RowGroupRows),
+		Compression:     codec,
+		RowGroupRows:    int64(opts.RowGroupRows),
+		ColumnEncodings: enc.ByColumn,
 	}, opts.Force)
 	if err != nil {
 		return nil, nil, err
@@ -179,10 +235,11 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	}()
 
 	decodeStart := time.Now()
+	// The row total is known from the header before a single record is read,
+	// so every progress line can carry the share done and the time left.
+	prog := newProgressETA(f.NoOfRecords, decodeStart)
 	metrics, err := conv.Run(ctx, w, func(rows int64) {
-		el := time.Since(decodeStart)
-		logf("converted %d/%d rows in %s (%.0f rows/s)",
-			rows, f.NoOfRecords, el.Round(time.Millisecond), float64(rows)/el.Seconds())
+		logf("converted %s", prog.Report(rows, time.Now()))
 	})
 	if err != nil {
 		return nil, nil, err
@@ -231,6 +288,9 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 		Elapsed:           time.Since(start),
 		SymbolsRead:       symbolsRead,
 		DecimalsNearLimit: decimalsNearLimit(rs, f),
+		ExcludeNoMatch:    unmatchedExcludes,
+		Renames:           rs.Renames,
+		Encodings:         enc.Pinned,
 	}
 	if fi, err := os.Stat(outputPath); err == nil {
 		st.OutputBytes = fi.Size()
@@ -247,11 +307,22 @@ func passFail(ok bool) string {
 
 // SchemaReport is the --schema-report document.
 type SchemaReport struct {
-	Input          string               `json:"input"`
-	TableName      string               `json:"tableName"`
-	Rows           int64                `json:"rows"`
-	RecordByteSize int                  `json:"recordByteSize"`
-	Columns        []SchemaReportColumn `json:"columns"`
+	Input          string `json:"input"`
+	TableName      string `json:"tableName"`
+	Rows           int64  `json:"rows"`
+	RecordByteSize int    `json:"recordByteSize"`
+	// FieldRegex is present only when --field-regex was given, and says which
+	// of the selected fields it left alone.
+	FieldRegex *FieldRegexReport    `json:"fieldRegex,omitempty"`
+	Columns    []SchemaReportColumn `json:"columns"`
+}
+
+// FieldRegexReport summarises a --field-regex run over one file. Unlike the
+// log record, which is one line per file, this can afford every name.
+type FieldRegexReport struct {
+	Fields    int      `json:"fields"`
+	Renamed   int      `json:"renamed"`
+	Unchanged []string `json:"unchanged"`
 }
 
 // SchemaReportColumn explains one output column's type decision.
@@ -272,9 +343,12 @@ type SchemaReportColumn struct {
 	// it is written as. The profile above holds the same span as the raw Qlik
 	// payload, where a date is a serial day number: 411241 rather than
 	// 3025-12-08.
-	Range   string         `json:"range,omitempty"`
-	Decimal *DecimalReport `json:"decimal,omitempty"`
-	Note    string         `json:"note"`
+	Range string `json:"range,omitempty"`
+	// Encoding is set only when --encoding pins this column; otherwise the
+	// writer's default applies and there is nothing to record.
+	Encoding string         `json:"encoding,omitempty"`
+	Decimal  *DecimalReport `json:"decimal,omitempty"`
+	Note     string         `json:"note"`
 }
 
 // DecimalReport documents how a decimal column was resolved.
@@ -296,12 +370,25 @@ type DecimalReport struct {
 }
 
 // WriteSchemaReport saves the inferred schema and profiles as JSON.
-func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema, opts *Options) error {
+// enc may be nil, in which case no column carries an encoding: a caller that
+// has not resolved them has nothing to report about them.
+func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema, opts *Options, enc *ResolvedEncodings) error {
+	pinned := map[string]parquetwrite.Encoding{}
+	if enc != nil {
+		pinned = enc.ByColumn
+	}
 	rep := SchemaReport{
 		Input:          inputPath,
 		TableName:      f.Header.TableName,
 		Rows:           f.NoOfRecords,
 		RecordByteSize: f.RecordByteSize,
+	}
+	if rs.Renames.Fields > 0 {
+		rep.FieldRegex = &FieldRegexReport{
+			Fields:    rs.Renames.Fields,
+			Renamed:   rs.Renames.Renamed,
+			Unchanged: append([]string{}, rs.Renames.Unchanged...),
+		}
 	}
 	// Notes are produced per source column; map them onto output columns.
 	noteBySource := map[int]string{}
@@ -334,6 +421,7 @@ func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema, 
 			Strategy:     c.Strategy.String(),
 			Nullable:     c.Nullable,
 			Range:        ValueRange(c, f.Profiles[c.SourceIndex], opts),
+			Encoding:     string(pinned[c.Name]),
 			Note:         noteBySource[c.SourceIndex],
 		}
 		if c.Strategy == StrategyDecimal {
@@ -359,4 +447,14 @@ func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema, 
 		return fmt.Errorf("write schema report %s: %w", path, err)
 	}
 	return nil
+}
+
+// quotedList renders patterns for a message, so an empty or space-carrying
+// one is visible rather than vanishing into the sentence.
+func quotedList(items []string) string {
+	quoted := make([]string, len(items))
+	for i, s := range items {
+		quoted[i] = strconv.Quote(s)
+	}
+	return strings.Join(quoted, ", ")
 }

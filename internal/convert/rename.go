@@ -107,3 +107,59 @@ func (r *FieldRenamer) Apply(original string) (name, comment string) {
 	}
 	return name, comment
 }
+
+// RenameSummary records what a --field-regex did across the fields a run
+// selected. A field the expression does not match keeps its original name,
+// which is the right behaviour for a rule aimed at a subset, but on a wide
+// SAP extract the handful of untouched fields is invisible among two hundred
+// renamed ones.
+type RenameSummary struct {
+	// Fields is how many selected fields the expression was applied to.
+	Fields int
+	// Renamed is how many came out with a different name or gained a comment.
+	Renamed int
+	// Unchanged names the fields the expression did nothing for, in header
+	// order.
+	Unchanged []string
+}
+
+// SummarizeRenames applies r to each name and reports what changed. A nil
+// renamer means no --field-regex was given, and the zero summary says so.
+func SummarizeRenames(r *FieldRenamer, names []string) RenameSummary {
+	if r == nil {
+		return RenameSummary{}
+	}
+	s := RenameSummary{Fields: len(names)}
+	for _, n := range names {
+		// A field can match and still keep its name while gaining a comment,
+		// which is a rename doing its job, so both halves count as changed.
+		name, comment := r.Apply(n)
+		if name != n || comment != "" {
+			s.Renamed++
+			continue
+		}
+		s.Unchanged = append(s.Unchanged, n)
+	}
+	return s
+}
+
+// Line renders the summary for a log or report, naming at most max unchanged
+// fields so a file where the expression matched nothing does not print two
+// hundred names. It returns "" when no renaming was configured.
+func (s RenameSummary) Line(max int) string {
+	if s.Fields == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("%d of %d field(s) renamed", s.Renamed, s.Fields)
+	if len(s.Unchanged) == 0 {
+		return line
+	}
+	shown := s.Unchanged
+	suffix := ""
+	if max > 0 && len(shown) > max {
+		shown = shown[:max]
+		suffix = fmt.Sprintf(" and %d more", len(s.Unchanged)-max)
+	}
+	return fmt.Sprintf("%s, %d unchanged: %s%s",
+		line, len(s.Unchanged), strings.Join(shown, ", "), suffix)
+}

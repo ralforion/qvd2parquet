@@ -808,3 +808,51 @@ func TestPhasesReportTheirOwnDuration(t *testing.T) {
 		t.Errorf("--progress 0 should silence the running counts:\n%s", joined)
 	}
 }
+
+// Both phases that report progress know their total before they start, so
+// both must say how far along they are. On a twenty million row table this is
+// the difference between watching a counter and knowing whether to wait.
+func TestProgressLinesCarryShareAndEstimate(t *testing.T) {
+	in := buildFixture(t, sampleTable(5000))
+	out := filepath.Join(t.TempDir(), "out.parquet")
+
+	opts := testOptions()
+	opts.Quality = QualityFull
+	opts.ProgressEvery = 1000 // several reports over a small fixture
+
+	var lines []string
+	logf := func(format string, args ...any) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	if _, _, err := Run(context.Background(), in, out, &opts, logf); err != nil {
+		t.Fatal(err)
+	}
+
+	var conversion, gate []string
+	for _, l := range lines {
+		switch {
+		case strings.HasPrefix(l, "converted "):
+			conversion = append(conversion, l)
+		case strings.Contains(l, ": verified "):
+			gate = append(gate, l)
+		}
+	}
+	for name, got := range map[string][]string{"conversion": conversion, "quality gate": gate} {
+		if len(got) == 0 {
+			t.Fatalf("%s reported no progress at all", name)
+		}
+		for _, l := range got {
+			if !strings.Contains(l, "/5000 rows (") || !strings.Contains(l, "%)") {
+				t.Errorf("%s line carries no share of the total: %q", name, l)
+			}
+		}
+		// Only a line with rows still to come can project, and a fixture this
+		// small can finish inside one report, so the estimate is checked on
+		// the lines that have one rather than required on all of them.
+		for _, l := range got {
+			if strings.Contains(l, "left") && !strings.Contains(l, "rows/s, about ") {
+				t.Errorf("%s estimate is not attached to the throughput: %q", name, l)
+			}
+		}
+	}
+}

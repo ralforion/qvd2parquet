@@ -125,6 +125,7 @@ qvd2parquet --inspect [options] input.qvd
   -decimal-source auto       Decimal extraction: auto|text|numeric
   -decimal-strict            Fail instead of rounding when a value does not fit its scale
   -compression zstd          Parquet compression: zstd|snappy|gzip|uncompressed
+  -encoding 'PAT=ENC,...'    Pin column encodings, or 'auto' to measure per file
   -batch-rows 0              Rows per Arrow batch, 0 sizes it from the column
                              count to hold in-flight memory steady
   -row-group-rows 65536      Rows per Parquet row group
@@ -208,6 +209,21 @@ the final line is the whole run, not just the write. On a wide file the gate is
 routinely the larger half. Those two lines are printed whatever `--progress` is
 set to; `--progress` only controls the running `converted N/M rows` and
 `verified N/M rows` lines in between.
+
+Those running lines carry the share done and an estimate of the time left:
+
+```text
+qvd2parquet: converted 5000000/20589661 rows (24%) in 3m21s (24875 rows/s, about 10m26s left)
+```
+
+The row total comes from the QVD header before a single record is decoded, so
+both are arithmetic on numbers the run already has. The throughput shown is the
+average since the phase started; the estimate is not, it follows the recent
+rate, so the two can disagree while a run is speeding up. That is deliberate: a
+run carries the cost of starting up in its average long after it has found its
+speed, and projecting from the average stays pessimistic for the rest of the
+file. The quality gate has its own total and its own speed, so it projects
+separately rather than continuing the conversion's estimate.
 
 Everything goes to stderr, so `2> run.log` captures it all and leaves stdout
 empty.
@@ -306,6 +322,16 @@ $ qvd2parquet --out-dir out --file-workers 4 ./qvds
 qvd2parquet: converting 50 file(s), 4 at a time, 2 decode worker(s) each
 ```
 
+Each file reports its own progress. Converting several at once, every line
+names the file it belongs to:
+
+```text
+qvd2parquet: qvds/CE10500.qvd: converted 1000000/20589661 rows (5%) in 43.493s (23099 rows/s, about 14m11s left)
+qvd2parquet: qvds/BSEG.qvd: converted 1000000/8402113 rows (12%) in 41.882s (23876 rows/s, about 5m10s left)
+```
+
+Converting one at a time, nothing can interleave and the prefix is left off.
+
 The default is `1`: one file at a time, decoding it with the default worker
 count. Raise it for many small files, where per-file parallelism beats
 per-chunk. This is the main reason folder conversion is built in rather than
@@ -336,8 +362,10 @@ duckdb -c "select input, error from read_json_auto('run.jsonl') where status='fa
 ```
 
 Each file record carries the row and column counts, output size, elapsed time,
-throughput, and the quality gate's verdict with any errors — so a run can be
-audited without opening every per-file report. `--schema-report` and
+throughput, `excludeNoMatch` with any pattern that dropped nothing from that
+file, `fieldsRenamed` and `fieldsUnchanged`, `encodings` with any column not
+written the default way, and the quality gate's verdict with any errors, so a
+run can be audited without opening every per-file report. `--schema-report` and
 `--quality-report` also work in batch mode; each file gets its own document,
 named after the input.
 
@@ -374,18 +402,26 @@ a conversion would write — including `--exclude` and `--field-regex`:
 
 ```sh
 qvd2parquet --inspect \
-  --exclude '%*' \
+  --exclude '%*,COUNTER' \
   --field-regex '^[^-]*-\|\|-(?P<name>[^-]*)-\|\|-(?P<comment>.*)$' \
   A057.qvd
 ```
 
 ```text
-Fields          4 of 6 selected (2 excluded: %A057_PKEY, %SYS_TS)
+Fields          3 of 5 selected (2 excluded: %A057_PKEY, %SYS_TS)
+Exclude         "COUNTER" matched no field
+Field regex     2 of 3 field(s) renamed, 1 unchanged: PlainField
 
-COLUMN                                    QVD TYPE  SYMBOLS  NULLS  PARQUET TYPE   NOTES
-DATBI (A057-||-DATBI-||-Ende Gültigkeit)  INTEGER   2        0      int64          Ende Gültigkeit
-KBETR (A057-||-KBETR-||-Betrag)           REAL      2        0      decimal(4, 2)  Betrag
+COLUMN                                    QVD TYPE  SYMBOLS  NULLS  PARQUET TYPE  RANGE           NOTES
+DATBI (A057-||-DATBI-||-Ende Gültigkeit)  INTEGER   2        0      int64         45000 .. 45001  Ende Gültigkeit
+KSCHL (A057-||-KSCHL-||-Konditionsart)    ASCII     2        0      utf8                          Konditionsart
+PlainField                                ASCII     2        0      utf8                          2 text symbols, written as utf8
 ```
+
+The two middle lines appear only when there is something to say. A pattern that
+matched no field and a field the expression left alone are both invisible in the
+conversion itself, and both are usually a mistake worth catching before a run
+that lasts a quarter of an hour.
 
 When the type policy rejects a column, `--inspect` prints the reason and falls
 back to the raw symbol profiles that explain it, then exits `3`:
@@ -402,6 +438,107 @@ That makes it a cheap pre-flight check in a pipeline: inspect first, and only
 convert once the schema is what you expect. `--schema-report` works in inspect
 mode too, for the same information as JSON.
 
+## Column encodings
+
+Every column is written with a dictionary by default, which is right for the
+columns a QVD is usually full of: a field with twenty-seven thousand distinct
+values across twenty million rows costs almost nothing that way.
+
+It is worth nothing on a column whose values are nearly all distinct. The
+dictionary page overflows, the writer falls back to `PLAIN`, and the column
+ends up as raw bytes with only the compressor working on it. A Qlik composite
+primary key is exactly that column: one distinct value per row.
+
+`--encoding` pins such a column to something better:
+
+```sh
+qvd2parquet --encoding '%*_PKEY=delta_byte_array' CE10500.qvd ce10500.parquet
+```
+
+```text
+qvd2parquet: encoding: %CE10500_PKEY=delta_byte_array
+```
+
+Patterns are wildcards, matched against **both** the output column name and the
+original QVD name, so one rule covers a folder of SAP tables whose keys are
+named per table. A later rule wins over an earlier one, so `'*=plain,KEY=delta_byte_array'`
+sets a default and an exception. A pattern that matches no column is reported
+rather than rejected, for the same reason `--exclude` does that: one command
+line is often pointed at tables that do not all carry the same fields.
+
+The encodings on offer, and what they suit:
+
+| encoding | for |
+|---|---|
+| `dictionary` | the default: repeated values of any type |
+| `plain` | values with no structure to exploit |
+| `delta_byte_array` | text whose consecutive rows share a prefix, such as a sorted composite key |
+| `delta_length_byte_array` | text of varying length with no shared prefix |
+| `delta_binary_packed` | integers, dates and timestamps that move in small steps |
+
+An encoding the column's type cannot carry is refused before the conversion
+starts, naming the ones that fit. Pinning a column also turns its dictionary
+off, since leaving it on would mean the pinned encoding took over only once the
+dictionary page overflowed.
+
+### Measuring instead of guessing
+
+Whether `delta_byte_array` pays depends on the order the rows arrive in, since
+it stores each value against the one before it. On a key that arrives in
+document order it cuts the column to about a third; on the same values shuffled
+it saves nothing. Nothing in the symbol table reveals that order, so the choice
+has to be measured rather than reasoned about.
+
+`--encoding auto` measures it. Sampled rows are written through the real writer
+twice, once as the run would today and once with each candidate, and the
+compressed size of the column chunk is compared:
+
+```sh
+qvd2parquet --inspect --encoding auto CE10500.qvd
+```
+
+```text
+Columns that would compress better with a different encoding:
+  %CE10500_PKEY  delta_byte_array, measured 31% of current size on 300,000 sampled rows
+A conversion with --encoding auto writes them that way; pin them instead with --encoding "%CE10500_PKEY=delta_byte_array".
+```
+
+`--schema-report` written from that same inspect carries the measured encoding
+per column, so a scripted preflight reads the same decisions the conversion
+will make.
+
+On a conversion it also applies what it measured, per file:
+
+```text
+qvd2parquet: encoding: measured 1 column(s) on 300,000 sampled rows in 91ms: 1 adopted, 0 left as they are
+qvd2parquet: encoding: %CE10500_PKEY  delta_byte_array, measured 31% of current size on 300,000 sampled rows
+```
+
+That run wrote 1.8 MiB where the default wrote 6.2 MiB, which is what the
+sample predicted before the conversion started.
+
+Details worth knowing:
+
+- Three windows of 100,000 consecutive rows are sampled, at the head, the
+  middle and the tail. At that size the measured ratio lands within about a
+  point of the whole file, and it converges from above, so a sample understates
+  a win rather than overselling it. A file of 300,000 rows or fewer is measured
+  in full, which costs no more than three windows would and leaves no room for
+  a sorted head to answer for a shuffled tail.
+- Only columns whose values would overflow the dictionary page are measured. On
+  a 213 column extract that is a handful, and columns are measured in groups so
+  a wide file does not hold every sample at once.
+- A candidate has to measure at 80% of the current size or better to be
+  adopted. On a shuffled key nothing is adopted, and the run says so.
+- An explicit rule always wins, and a column it names is not measured at all.
+  `--encoding 'auto,%*_PKEY=plain'` measures everything except that column, and
+  `--inspect` will not recommend against a rule you have already written.
+- `--encoding auto` is the only thing that makes `--inspect` read records, and
+  it reads only the sampled windows. Without it, inspect still touches nothing
+  but the header and the symbol tables.
+- Over `--out-dir` every file is measured on its own, which is the point: no
+  pattern can know what each table's key looks like.
+
 ## Selecting and renaming fields
 
 `--columns` keeps only the named fields. `--exclude` drops fields matching
@@ -414,6 +551,19 @@ qvd2parquet --exclude '%*' A057.qvd a057.parquet
 
 Patterns match the field's **original** QVD name, before any renaming, so they
 describe what you see in the source file. Excluding every column is an error.
+
+A pattern that matches nothing is **not** an error, since one command line is
+often pointed at a folder of tables that do not all carry the same fields, but
+it is reported:
+
+```text
+qvd2parquet: note: --exclude "%" matched no field; patterns are wildcards over
+the original QVD names, before --field-regex renames anything
+```
+
+Both ways of getting a pattern wrong look exactly like success otherwise. `%`
+is not the wildcard `%*` and matches only a field named `%`, and a name that
+`--field-regex` produces is never what `--exclude` sees.
 
 QVD field names from SAP extracts are often composite, packing the table, the
 technical name and a description into one string:
@@ -436,7 +586,14 @@ qvd2parquet \
 qvd2parquet: excluded 2 column(s) by pattern: %A057_PKEY, %SYS_TS
 qvd2parquet: schema: A057-||-DATBI-||-Ende Gültigkeit: INTEGER with 2 integer symbols, written as int64; written as "DATBI" with comment "Ende Gültigkeit"
 qvd2parquet: schema: A057-||-KBETR-||-Betrag: REAL with 2 double symbols promoted to decimal(4,2); scale 2 inferred from values; written as "KBETR" with comment "Betrag"
+qvd2parquet: field-regex: 2 of 3 field(s) renamed, 1 unchanged: PlainField
 ```
+
+A field the expression does not match keeps its original name, which is what
+makes a rule aimed at a subset possible. The closing line says which fields
+those were, because on a 213 column extract nobody spots the two that stayed
+behind. At most five are named; `--schema-report` carries the full list under
+`fieldRegex`, and a `--log` record carries the counts.
 
 The result carries the description as Parquet field metadata, and keeps the
 original QVD name so nothing is lost:

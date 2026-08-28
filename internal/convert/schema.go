@@ -98,6 +98,10 @@ type ResolvedSchema struct {
 	Arrow   *arrow.Schema
 	// Notes explains, per source column, how the type was chosen.
 	Notes []string
+	// Renames records what --field-regex did to the selected fields, so a run
+	// can say which ones it left alone. The zero value means no renaming was
+	// configured.
+	Renames RenameSummary
 }
 
 // SchemaOverride is the --schema JSON document.
@@ -264,10 +268,23 @@ var (
 	arrowTime32 = arrow.FixedWidthTypes.Time32ms
 )
 
+// selectedNames lists the original QVD names of the fields a run will convert,
+// in header order.
+func selectedNames(f *qvd.File) []string {
+	selected := f.SelectedColumns()
+	names := make([]string, 0, len(selected))
+	for _, idx := range selected {
+		names = append(names, f.Columns[idx].Name)
+	}
+	return names
+}
+
 // ResolveSchema turns profiled QVD columns into the output Parquet schema.
 func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*ResolvedSchema, error) {
 	rs := &ResolvedSchema{}
 	tsType := &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: arrowTimeZoneName(opts)}
+
+	rs.Renames = SummarizeRenames(opts.Renamer, selectedNames(f))
 
 	for _, idx := range f.SelectedColumns() {
 		col := f.Columns[idx]

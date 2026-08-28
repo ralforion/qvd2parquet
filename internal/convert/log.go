@@ -83,6 +83,17 @@ type fileRecord struct {
 	// so it carries only the signal a scheduled run would want to alert on.
 	DecimalsNearLimit []string `json:"decimalsNearLimit"`
 
+	// ExcludeNoMatch names --exclude patterns that dropped nothing from this
+	// file, which over a folder of tables is how a mistyped pattern shows up.
+	// The rename counts are counts only: the names belong in --schema-report,
+	// since a record here is one line per file.
+	ExcludeNoMatch []string `json:"excludeNoMatch"`
+	// Encodings names the columns written with an encoding other than the
+	// default, as "NAME=encoding", whether pinned or measured.
+	Encodings       []string `json:"encodings"`
+	FieldsRenamed   int      `json:"fieldsRenamed"`
+	FieldsUnchanged int      `json:"fieldsUnchanged"`
+
 	QualityMode   string   `json:"qualityMode"`
 	QualityPassed *bool    `json:"qualityPassed"`
 	QualityErrors []string `json:"qualityErrors"`
@@ -100,6 +111,8 @@ func (w *LogWriter) File(r FileResult) {
 		// clean runs.
 		QualityErrors:     []string{},
 		DecimalsNearLimit: []string{},
+		ExcludeNoMatch:    []string{},
+		Encodings:         []string{},
 		Time:              r.Started.UTC().Format(time.RFC3339Nano),
 		Input:             r.Input,
 		Output:            r.Output,
@@ -121,6 +134,14 @@ func (w *LogWriter) File(r FileResult) {
 		if len(r.Stats.DecimalsNearLimit) > 0 {
 			rec.DecimalsNearLimit = r.Stats.DecimalsNearLimit
 		}
+		if len(r.Stats.ExcludeNoMatch) > 0 {
+			rec.ExcludeNoMatch = r.Stats.ExcludeNoMatch
+		}
+		if len(r.Stats.Encodings) > 0 {
+			rec.Encodings = r.Stats.Encodings
+		}
+		rec.FieldsRenamed = r.Stats.Renames.Renamed
+		rec.FieldsUnchanged = len(r.Stats.Renames.Unchanged)
 	}
 	if r.Quality != nil {
 		passed := r.Quality.Passed

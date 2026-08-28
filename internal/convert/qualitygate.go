@@ -223,6 +223,9 @@ func readParquetMetrics(ctx context.Context, path string, rs *ResolvedSchema, op
 	gateStart := time.Now()
 	var progMu sync.Mutex
 	var seen, nextProgress int64 = 0, opts.ProgressEvery
+	// The gate has its own total and its own speed, so it projects separately
+	// rather than continuing the conversion's estimate.
+	prog := newProgressETA(totalRows, gateStart)
 	report := func(n int64) {
 		if logf == nil || opts.ProgressEvery <= 0 {
 			return
@@ -233,10 +236,7 @@ func readParquetMetrics(ctx context.Context, path string, rs *ResolvedSchema, op
 		if seen < nextProgress {
 			return
 		}
-		el := time.Since(gateStart)
-		logf("quality gate %s: verified %d/%d rows in %s (%.0f rows/s)",
-			opts.Quality, seen, totalRows, el.Round(time.Millisecond),
-			float64(seen)/el.Seconds())
+		logf("quality gate %s: verified %s", opts.Quality, prog.Report(seen, time.Now()))
 		for seen >= nextProgress {
 			nextProgress += opts.ProgressEvery
 		}
