@@ -57,9 +57,18 @@ func QlikDaysToDate32(v float64) (int32, bool) {
 // encoding noise (measured at up to 210ns on real Qlik output, which is what
 // makes a stored 07:15:00 read back as 07:14:59.999999) without discarding
 // anything the source could have expressed.
+// MaxTimestampMicros bounds how far from the Unix epoch a QVD serial is
+// allowed to land, in microseconds. It is about thirty-one thousand years
+// either way, which is far past anything a QVD holds and still short of where
+// the arithmetic stops being exact. It is exported because whatever reasons
+// about the values a conversion can produce has to agree with what a
+// conversion will accept: the up-to-date manifest fingerprints a timezone over
+// exactly this range.
+const MaxTimestampMicros = 1e18
+
 func QlikDaysToTimestampMicros(v float64, loc *time.Location) (int64, bool) {
 	wall := (v - QlikEpochOffset) * microsPerDay
-	if math.IsNaN(wall) || math.IsInf(wall, 0) || math.Abs(wall) > 1e18 {
+	if math.IsNaN(wall) || math.IsInf(wall, 0) || math.Abs(wall) > MaxTimestampMicros {
 		return 0, false
 	}
 	us := int64(math.Round(wall))

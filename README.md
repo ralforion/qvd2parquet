@@ -416,14 +416,23 @@ unset, which is how a server usually takes its zone from `/etc/localtime`, it
 is the bare word `Local` whether the machine sits in Berlin or Tokyo. Since
 `--timezone Local` writes timestamps against the converting machine's zone, a
 manifest that recorded only the word would be trusted by a machine that would
-now write different ones. Sampling a few dates a year is not enough either:
-`America/Boise` and `America/Denver` agree on the first of January and the
-first of July in every year from 1970 to 2050, and disagree through most of
-January 1974, when Denver took up the emergency daylight saving three weeks
-before Boise did. So the fingerprint walks every transition in the range
-instead, with nothing in between to miss. A `tzdata` update that moves one
-reconverts the folder, which is right rather than wasteful; the default
-`--timezone none` computes in UTC, which has no transitions at all. Options that cannot change the output are left out, so a
+now write different ones.
+
+Sampling instants cannot answer it, however many are taken: `America/Boise` and
+`America/Denver` agree on the first of January and the first of July in every
+year from 1970 to 2050, and disagree through most of January 1974, when Denver
+took up the emergency daylight saving three weeks before Boise did. Narrowing
+to recent years cannot answer it either: `Africa/Abidjan` and `GMT` agree from
+1970 onwards and differ by sixteen minutes of local mean time in 1900, and a
+QVD reaches 1900 easily, its own serial epoch being 1899-12-30.
+
+So the fingerprint walks every transition over the whole range a conversion
+accepts, with nothing in between and nothing outside. It costs almost nothing:
+the zone table stops at its last real transition rather than projecting a rule
+forward for ever, so a busy zone is under two hundred steps and UTC is one. A
+`tzdata` update that moves a transition reconverts the folder, which is right
+rather than wasteful; the default `--timezone none` computes in UTC, which has
+no transitions at all. Options that cannot change the output are left out, so a
 folder does not reconvert itself over a different `--workers` or `--progress`.
 [The stability promise](CHANGELOG.md) is what makes the major version enough: a
 default does not change what an existing file converts to outside a major bump,

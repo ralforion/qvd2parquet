@@ -30,9 +30,12 @@ restarts from it.
   version, which the stability promise makes sufficient. A timezone is
   fingerprinted by what it does because `time.Local` is called `Local` on every
   machine whose `TZ` is unset, and `--timezone Local` writes timestamps against
-  the converting machine's zone. Transitions rather than sampled dates because
-  `America/Boise` and `America/Denver` agree every January and July from 1970
-  to 2050 and differ through most of January 1974.
+  the converting machine's zone. Every transition over the whole range a
+  conversion accepts, rather than sampled dates in recent years: `America/Boise`
+  and `America/Denver` agree every January and July from 1970 to 2050 and
+  differ through most of January 1974, while `Africa/Abidjan` and `GMT` agree
+  from 1970 onwards and differ in 1900, which a QVD reaches easily with its
+  serial epoch at 1899-12-30.
   Options that cannot change the output are excluded by name, so a new option
   counts by default: the mistake it can make is an unnecessary conversion
   rather than a wrong skip.

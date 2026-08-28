@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
 
 // ManifestName is the record a folder conversion keeps of what it produced,
@@ -263,18 +265,11 @@ func majorVersion(v string) string {
 // is the ordinary case rather than a contrived one.
 func tagged(s string) string { return strconv.Itoa(len(s)) + ":" + s }
 
-// zoneFrom and zoneTo bound the years zoneIdentity covers. They span the dates
-// a QVD realistically holds, from the Unix epoch its serial values are
-// converted against to a generation ahead of it.
-const (
-	zoneFrom = 1970
-	zoneTo   = 2050
-)
-
 // zoneTransitionLimit stops the walk below if a zone ever presents more
-// boundaries than a rule set plausibly has. Eighty years of twice-yearly
-// daylight saving is under two hundred.
-const zoneTransitionLimit = 10000
+// boundaries than a rule set plausibly has. Every zone in tzdata is under two
+// hundred across the whole range, since the table ends at its last real
+// transition rather than projecting a rule forward for ever.
+const zoneTransitionLimit = 100000
 
 // zoneIdentity describes what a timezone does rather than what it is called.
 //
@@ -286,24 +281,26 @@ const zoneTransitionLimit = 10000
 // manifest fingerprinting the word "Local" would be trusted by a machine that
 // would now write different timestamps.
 //
-// Sampling a few instants a year is not enough either. America/Boise and
-// America/Denver agree on the first of January and the first of July in every
-// year from 1970 to 2050, and disagree through most of January 1974, when
-// Denver took up the emergency daylight saving three weeks before Boise did. A
-// conversion applies the zone to every value in the file, so the fingerprint
-// has to cover the rules and not a handful of dates.
+// Sampling instants cannot answer it, however many are taken. America/Boise
+// and America/Denver agree on the first of January and the first of July in
+// every year from 1970 to 2050, and disagree through most of January 1974,
+// when Denver took up the emergency daylight saving three weeks before Boise
+// did. Narrowing to a range of years cannot answer it either: Africa/Abidjan
+// and GMT agree from 1970 onwards and differ by sixteen minutes of local mean
+// time in 1900, and a QVD reaches 1900 easily, its own serial epoch being
+// 1899-12-30.
 //
-// So it walks the transitions themselves. ZoneBounds hands back the end of the
-// period holding an instant, which is the next transition exactly, so stepping
-// from one to the next enumerates every rule change in the range with nothing
-// in between to miss. That also catches a tzdata update that moves a
-// transition, which genuinely changes the conversion. The default --timezone
-// none computes in UTC, which has no transitions at all, so the common path
-// neither reconverts nor costs anything.
+// So the walk covers every transition over the entire range a conversion
+// accepts. ZoneBounds hands back the end of the period holding an instant,
+// which is the next transition exactly, so stepping from one to the next
+// enumerates the zone's whole rule set with nothing in between and nothing
+// outside. It is not expensive: the table stops at the last real transition
+// rather than projecting a rule forward for ever, so a busy zone is under two
+// hundred steps and UTC is one.
 func zoneIdentity(loc *time.Location) string {
 	h := sha256.New()
-	at := time.Date(zoneFrom, time.January, 1, 0, 0, 0, 0, time.UTC)
-	end := time.Date(zoneTo, time.January, 1, 0, 0, 0, 0, time.UTC)
+	at := time.UnixMicro(-qvd.MaxTimestampMicros).UTC()
+	end := time.UnixMicro(qvd.MaxTimestampMicros).UTC()
 	for i := 0; at.Before(end) && i < zoneTransitionLimit; i++ {
 		local := at.In(loc)
 		name, offset := local.Zone()
@@ -312,8 +309,8 @@ func zoneIdentity(loc *time.Location) string {
 
 		_, next := local.ZoneBounds()
 		if next.IsZero() || !next.After(at) {
-			// A zone with no further transition, which is every fixed offset
-			// and UTC itself. What it does is already fully described.
+			// The last period, which for UTC and any fixed offset is the only
+			// one. What the zone does is now fully described.
 			break
 		}
 		at = next

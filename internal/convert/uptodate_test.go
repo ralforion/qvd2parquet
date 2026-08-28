@@ -354,6 +354,28 @@ func TestFingerprintDistinguishesZonesByWhatTheyDo(t *testing.T) {
 		t.Error("two zones differing only between the sampled dates fingerprinted the same")
 	}
 
+	// Two zones that agree from 1970 onwards and differ by sixteen minutes of
+	// local mean time in 1900. A QVD reaches 1900 easily, its own serial epoch
+	// being 1899-12-30, so a range of recent years cannot answer this either.
+	abidjan, err := time.LoadLocation("Africa/Abidjan")
+	if err != nil {
+		t.Skip("no tzdata available")
+	}
+	gmt, err := time.LoadLocation("GMT")
+	if err != nil {
+		t.Skip("no tzdata available")
+	}
+	modern := time.Date(1970, time.January, 1, 0, 0, 0, 0, time.UTC)
+	_, abNow := modern.In(abidjan).Zone()
+	_, gmtNow := modern.In(gmt).Zone()
+	if abNow != gmtNow {
+		t.Log("tzdata no longer has these agreeing from 1970; the pair no longer " +
+			"demonstrates the case, but the assertion below still holds")
+	}
+	if fp(abidjan) == fp(gmt) {
+		t.Error("two zones differing only before 1970 fingerprinted the same")
+	}
+
 	// The same zone reached twice is the same fingerprint, or nothing would
 	// ever be skipped.
 	again, err := time.LoadLocation("Europe/Berlin")
