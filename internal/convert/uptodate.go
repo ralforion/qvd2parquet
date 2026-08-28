@@ -263,13 +263,18 @@ func majorVersion(v string) string {
 // is the ordinary case rather than a contrived one.
 func tagged(s string) string { return strconv.Itoa(len(s)) + ":" + s }
 
-// zoneSampleFrom and zoneSampleTo bound the years zoneIdentity samples. They
-// cover the dates a QVD realistically holds, from the Unix epoch the serial
-// values are converted against to a generation ahead of it.
+// zoneFrom and zoneTo bound the years zoneIdentity covers. They span the dates
+// a QVD realistically holds, from the Unix epoch its serial values are
+// converted against to a generation ahead of it.
 const (
-	zoneSampleFrom = 1970
-	zoneSampleTo   = 2050
+	zoneFrom = 1970
+	zoneTo   = 2050
 )
+
+// zoneTransitionLimit stops the walk below if a zone ever presents more
+// boundaries than a rule set plausibly has. Eighty years of twice-yearly
+// daylight saving is under two hundred.
+const zoneTransitionLimit = 10000
 
 // zoneIdentity describes what a timezone does rather than what it is called.
 //
@@ -281,22 +286,37 @@ const (
 // manifest fingerprinting the word "Local" would be trusted by a machine that
 // would now write different timestamps.
 //
-// Sampling the offsets answers it without asking the operating system what its
-// zone is called, which Go does not portably expose. It also catches what a
-// name could not: a tzdata update that changes a rule genuinely changes the
-// conversion, and reconverting then is right rather than wasteful. The default
-// --timezone none computes in UTC, whose offsets never move, so the common
-// path is unaffected by either.
+// Sampling a few instants a year is not enough either. America/Boise and
+// America/Denver agree on the first of January and the first of July in every
+// year from 1970 to 2050, and disagree through most of January 1974, when
+// Denver took up the emergency daylight saving three weeks before Boise did. A
+// conversion applies the zone to every value in the file, so the fingerprint
+// has to cover the rules and not a handful of dates.
+//
+// So it walks the transitions themselves. ZoneBounds hands back the end of the
+// period holding an instant, which is the next transition exactly, so stepping
+// from one to the next enumerates every rule change in the range with nothing
+// in between to miss. That also catches a tzdata update that moves a
+// transition, which genuinely changes the conversion. The default --timezone
+// none computes in UTC, which has no transitions at all, so the common path
+// neither reconverts nor costs anything.
 func zoneIdentity(loc *time.Location) string {
 	h := sha256.New()
-	for year := zoneSampleFrom; year <= zoneSampleTo; year++ {
-		// Two instants a year, either side of where the northern and southern
-		// hemispheres put their daylight saving.
-		for _, month := range []time.Month{time.January, time.July} {
-			at := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC).In(loc)
-			name, offset := at.Zone()
-			fmt.Fprint(h, tagged(name), tagged(strconv.Itoa(offset)))
+	at := time.Date(zoneFrom, time.January, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(zoneTo, time.January, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; at.Before(end) && i < zoneTransitionLimit; i++ {
+		local := at.In(loc)
+		name, offset := local.Zone()
+		fmt.Fprint(h, tagged(strconv.FormatInt(at.Unix(), 10)),
+			tagged(name), tagged(strconv.Itoa(offset)))
+
+		_, next := local.ZoneBounds()
+		if next.IsZero() || !next.After(at) {
+			// A zone with no further transition, which is every fixed offset
+			// and UTC itself. What it does is already fully described.
+			break
 		}
+		at = next
 	}
 	return "zone:" + hex.EncodeToString(h.Sum(nil))
 }

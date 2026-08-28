@@ -26,11 +26,13 @@ restarts from it.
   share to agree.
 - The fingerprint covers every option that can change what is written,
   including the contents of a `--schema` override rather than only its path,
-  the offsets of `--timezone` rather than its name, and the tool's major
+  every transition of `--timezone` rather than its name, and the tool's major
   version, which the stability promise makes sufficient. A timezone is
   fingerprinted by what it does because `time.Local` is called `Local` on every
   machine whose `TZ` is unset, and `--timezone Local` writes timestamps against
-  the converting machine's zone.
+  the converting machine's zone. Transitions rather than sampled dates because
+  `America/Boise` and `America/Denver` agree every January and July from 1970
+  to 2050 and differ through most of January 1974.
   Options that cannot change the output are excluded by name, so a new option
   counts by default: the mistake it can make is an unnecessary conversion
   rather than a wrong skip.

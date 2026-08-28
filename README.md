@@ -407,16 +407,23 @@ nothing. Genuinely moving the folder reconverts it once.
 
 The fingerprint covers every option that can change what is written, including
 the **contents** of a `--schema` override rather than only its path, the
-**offsets** of `--timezone` rather than its name, and the tool's major version.
-The timezone is fingerprinted by what it does because a name is not identity
+**transitions** of `--timezone` rather than its name, and the tool's major
+version.
+
+The timezone is fingerprinted by what it does, because a name is not identity
 there: `time.Local` reports an IANA name only when `TZ` is set, and with `TZ`
 unset, which is how a server usually takes its zone from `/etc/localtime`, it
 is the bare word `Local` whether the machine sits in Berlin or Tokyo. Since
 `--timezone Local` writes timestamps against the converting machine's zone, a
 manifest that recorded only the word would be trusted by a machine that would
-now write different ones. A `tzdata` update that moves a rule reconverts the
-folder for the same reason; the default `--timezone none` computes in UTC,
-whose offsets never move. Options that cannot change the output are left out, so a
+now write different ones. Sampling a few dates a year is not enough either:
+`America/Boise` and `America/Denver` agree on the first of January and the
+first of July in every year from 1970 to 2050, and disagree through most of
+January 1974, when Denver took up the emergency daylight saving three weeks
+before Boise did. So the fingerprint walks every transition in the range
+instead, with nothing in between to miss. A `tzdata` update that moves one
+reconverts the folder, which is right rather than wasteful; the default
+`--timezone none` computes in UTC, which has no transitions at all. Options that cannot change the output are left out, so a
 folder does not reconvert itself over a different `--workers` or `--progress`.
 [The stability promise](CHANGELOG.md) is what makes the major version enough: a
 default does not change what an existing file converts to outside a major bump,

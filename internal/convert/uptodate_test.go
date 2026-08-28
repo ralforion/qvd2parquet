@@ -316,6 +316,44 @@ func TestFingerprintDistinguishesZonesByWhatTheyDo(t *testing.T) {
 		t.Error("zones differing only in their daylight saving fingerprinted the same")
 	}
 
+	// Two zones that agree on the first of January and the first of July in
+	// every year from 1970 to 2050, and disagree through most of January 1974,
+	// when Denver took up the emergency daylight saving three weeks before
+	// Boise did. Sampling a few instants a year cannot separate these, which
+	// is why the fingerprint walks the transitions instead.
+	boise, err := time.LoadLocation("America/Boise")
+	if err != nil {
+		t.Skip("no tzdata available")
+	}
+	denver, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		t.Skip("no tzdata available")
+	}
+	sameOnSampledDates := true
+	for year := 1970; year <= 2050 && sameOnSampledDates; year++ {
+		for _, month := range []time.Month{time.January, time.July} {
+			at := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
+			if _, a := at.In(boise).Zone(); true {
+				if _, b := at.In(denver).Zone(); a != b {
+					sameOnSampledDates = false
+					break
+				}
+			}
+		}
+	}
+	if !sameOnSampledDates {
+		t.Log("tzdata no longer has Boise and Denver agreeing on the sampled dates; " +
+			"the pair no longer demonstrates the case, but the assertion below still holds")
+	}
+	if _, a := time.Date(1974, time.January, 6, 12, 0, 0, 0, time.UTC).In(boise).Zone(); true {
+		if _, b := time.Date(1974, time.January, 6, 12, 0, 0, 0, time.UTC).In(denver).Zone(); a == b {
+			t.Skip("this tzdata does not carry the 1974 divergence")
+		}
+	}
+	if fp(boise) == fp(denver) {
+		t.Error("two zones differing only between the sampled dates fingerprinted the same")
+	}
+
 	// The same zone reached twice is the same fingerprint, or nothing would
 	// ever be skipped.
 	again, err := time.LoadLocation("Europe/Berlin")
