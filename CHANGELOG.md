@@ -13,6 +13,24 @@ restarts from it.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-28
+
+Everything a run reports about itself gets more honest. Two of the release's
+threads come from the same 213-column SAP extract that shaped 2.1.0: a profile
+is only useful if it renders a value in the type the column is written as, and
+a composite primary key gets nothing from the dictionary encoding the writer
+defaults to. `--encoding auto` answers the second by measuring rather than
+guessing, since whether `delta_byte_array` pays depends on the row order and
+nothing in the symbol table reveals it.
+
+The other thread is `--log`, which was accepted and silently ignored on every
+single-file conversion, and which could be pointed at a file the run itself
+writes. That destroyed the run's own output or its log and still exited 0.
+
+No flag changed meaning and no conversion produces different data, so this is
+minor rather than major: `--encoding` and `--encoding auto` change nothing
+without being asked for, and the compatibility promise from 2.0.0 holds.
+
 ### Added
 
 - An `--exclude` pattern that matches no field is reported instead of passing
@@ -125,7 +143,6 @@ restarts from it.
   message names the step it is not a multiple of, `0.001`, rather than a power
   of ten, and no longer quotes an empty display string for a pure numeric
   symbol that never had one.
-
 - Each phase reports its own duration. The conversion's timing used to arrive
   only as the last `--progress` line, so `--progress 0` left it as the one
   phase that never accounted for itself while the quality gate always did, and
@@ -651,7 +668,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/ralforion/qvd2parquet/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/ralforion/qvd2parquet/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/ralforion/qvd2parquet/compare/v1.0.1...v2.0.0
 [1.0.1]: https://github.com/ralforion/qvd2parquet/compare/v1.0.0...v1.0.1
