@@ -3,6 +3,7 @@ package convert
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -49,7 +50,7 @@ func TestTrialFindsAWinOnAnOrderedKey(t *testing.T) {
 	opts := testOptions()
 	opts.Encodings, _ = ParseEncodingSpec("auto")
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +98,7 @@ func TestTrialDeclinesOnAScrambledKey(t *testing.T) {
 	opts := testOptions()
 	opts.Encodings, _ = ParseEncodingSpec("auto")
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +125,7 @@ func TestInspectReadsNoRecordsWithoutAuto(t *testing.T) {
 	in := buildFixture(t, keyTable(30000, true))
 	opts := testOptions()
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +210,7 @@ func TestPinnedColumnsAreNotMeasured(t *testing.T) {
 	opts := testOptions()
 	opts.Encodings, _ = ParseEncodingSpec("auto,%*_PKEY=plain")
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +375,7 @@ func TestInspectSchemaReportCarriesTheMeasurement(t *testing.T) {
 	opts.Encodings, _ = ParseEncodingSpec("auto")
 	opts.SchemaReportPath = filepath.Join(t.TempDir(), "inspect-schema.json")
 
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,5 +442,40 @@ func TestExistingOutputIsRefusedBeforeMeasuring(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(out); string(b) != "not parquet" {
 		t.Error("the existing output was touched")
+	}
+}
+
+// Ctrl-C has to stop the measurement, not only print that it will. The
+// measurement is the one part of inspect that does open-ended work, so it is
+// the one part that has to watch the context.
+func TestInspectMeasurementStopsOnCancellation(t *testing.T) {
+	in := buildFixture(t, keyTable(30000, true))
+	opts := testOptions()
+	opts.Encodings, _ = ParseEncodingSpec("auto")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rep, err := Inspect(ctx, in, &opts)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	defer rep.Close()
+
+	if rep.EncodingErr == nil {
+		t.Fatal("a cancelled measurement should report why it stopped")
+	}
+	// Wrapped as a cancellation, so the CLI exits 7 rather than reporting the
+	// input as unreadable.
+	if !errors.Is(rep.EncodingErr, ErrCanceled) {
+		t.Errorf("EncodingErr = %v, want a cancellation", rep.EncodingErr)
+	}
+	if len(rep.Encodings.Trials) != 0 {
+		t.Errorf("a cancelled measurement produced results: %+v", rep.Encodings.Trials)
+	}
+	// The rest of the report still stands: the schema was resolved before the
+	// measurement was asked for.
+	if rep.Schema == nil || len(rep.Schema.Columns) == 0 {
+		t.Error("the schema should still be reported")
 	}
 }

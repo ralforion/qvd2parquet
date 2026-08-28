@@ -144,6 +144,9 @@ func trialGroup(ctx context.Context, f *qvd.File, rs *ResolvedSchema, opts *Opti
 
 	var out []EncodingTrial
 	for i := range sub.Columns {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("%w while measuring encodings", ErrCanceled)
+		}
 		trial, err := measureColumn(sub, records, i, f, base, sampled)
 		if err != nil {
 			return nil, err
@@ -313,11 +316,13 @@ func decodeWindows(ctx context.Context, f *qvd.File, sub *ResolvedSchema, opts *
 	var records []arrow.Record
 	var sampled int64
 	for _, ch := range windows {
-		if err := ctx.Err(); err != nil {
+		if ctx.Err() != nil {
 			for _, r := range records {
 				r.Release()
 			}
-			return nil, 0, err
+			// Wrapped the way every other cancellable path wraps it, so the
+			// CLI reports exit 7 rather than reading it as an input failure.
+			return nil, 0, fmt.Errorf("%w while measuring encodings", ErrCanceled)
 		}
 		res, err := w.decodeChunk(ch)
 		if err != nil {

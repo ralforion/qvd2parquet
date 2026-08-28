@@ -286,7 +286,7 @@ func run() int {
 	}
 
 	if *inspect {
-		return runInspect(inputPath, &opts)
+		return runInspect(ctx, inputPath, &opts)
 	}
 	if batch {
 		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, *recursive, *logPath, logf)
@@ -355,8 +355,8 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 // runInspect reads the header and symbol tables only, then prints the schema a
 // conversion would produce. The report is the command's result, so it goes to
 // stdout; diagnostics stay on stderr.
-func runInspect(inputPath string, opts *convert.Options) int {
-	rep, err := convert.Inspect(inputPath, opts)
+func runInspect(ctx context.Context, inputPath string, opts *convert.Options) int {
+	rep, err := convert.Inspect(ctx, inputPath, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)

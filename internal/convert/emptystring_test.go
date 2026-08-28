@@ -205,7 +205,7 @@ func TestInspectNullCountMatchesConversion(t *testing.T) {
 	in := buildFixture(t, tbl)
 
 	opts := testOptions()
-	rep, err := Inspect(in, &opts)
+	rep, err := Inspect(context.Background(), in, &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
