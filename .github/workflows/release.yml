@@ -26,6 +26,11 @@ jobs:
           cache: true
       - run: go test ./...
 
+      # A tag must not publish archives whose licence texts have drifted from
+      # the dependencies actually compiled into the binary.
+      - name: Verify THIRD-PARTY-NOTICES.md is current
+        run: ./scripts/gen-notices.sh --check
+
   # One job per platform, so the release builds in parallel rather than looping
   # through every target in a single job.
   build:

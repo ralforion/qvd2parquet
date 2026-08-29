@@ -1479,7 +1479,15 @@ use `--columns` to skip wide string columns, then lower `--batch-rows` and
 go test ./...              # unit and integration tests
 go test -race ./...        # the parallel decoder is race-tested
 go vet ./...
+./scripts/gen-notices.sh   # after a dependency change, see below
 ```
+
+`THIRD-PARTY-NOTICES.md` is generated from the module graph of
+`./cmd/qvd2parquet`, resolving a licence per linked package rather than per
+module, which is what picks up the differently licensed code some dependencies
+vendor. Regenerate it whenever a dependency is added, removed or bumped. CI
+runs `./scripts/gen-notices.sh --check` and fails when the committed file no
+longer matches, and the release workflow refuses to publish on a stale one.
 
 ### Releasing
 
@@ -1537,6 +1545,18 @@ file. All 77 rows and 9 columns match exactly.
 Copyright © 2026 [RALFORION d.o.o.](https://ralforion.com)
 
 Licensed under the [Apache License 2.0](LICENSE).
+
+### Third-party licences
+
+The binary is statically linked, so it embeds the compiled code of its Go
+dependencies. Their licence texts, and the `NOTICE` files Apache-2.0 requires
+to be carried forward, are reproduced in
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md), which ships inside every
+release archive alongside the binary.
+
+All of them are permissive (Apache-2.0, MIT, BSD). None is copyleft, so nothing
+there places a condition on the data you convert or on software you build
+alongside the converter.
 
 Built by Ralfo Becher at RALFORION, the team behind the
 [OrionBelt Semantic Layer](https://github.com/ralforion/orionbelt-semantic-layer).

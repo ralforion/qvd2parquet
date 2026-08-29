@@ -50,7 +50,11 @@ for platform in $PLATFORMS; do
             -ldflags "-s -w -X main.version=$VERSION" \
             -o "$stage/$exe" ./cmd/qvd2parquet
 
-    cp README.md LICENSE "$stage/" 2>/dev/null || cp README.md "$stage/"
+    # THIRD-PARTY-NOTICES.md is not optional: the binary is statically linked,
+    # so the archive redistributes every dependency's compiled code and has to
+    # carry their licence texts. Missing files fail the build rather than
+    # silently shipping an archive that cannot legally be handed on.
+    cp README.md LICENSE THIRD-PARTY-NOTICES.md "$stage/"
 
     if [ "$GOOS" = windows ]; then
         (cd "$DIST" && zip -qr "$name.zip" "$name")

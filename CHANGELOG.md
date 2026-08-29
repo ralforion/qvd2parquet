@@ -13,6 +13,20 @@ restarts from it.
 
 ## [Unreleased]
 
+### Added
+
+- `THIRD-PARTY-NOTICES.md`, reproducing the licence texts of every Go module
+  compiled into the binary, and shipped inside every release archive. The
+  binary is statically linked, so an archive redistributes its dependencies'
+  code; their MIT, BSD and Apache-2.0 terms all ask for attribution when that
+  happens, and Apache-2.0 4(d) asks for each dependency's own `NOTICE` to be
+  carried forward. Archives previously shipped only `README.md` and `LICENSE`.
+- `scripts/gen-notices.sh`, which generates that file from the module graph of
+  `./cmd/qvd2parquet`. It resolves a licence per linked package rather than per
+  module, so it picks up the differently licensed code that `brotli` and
+  `klauspost/compress` vendor under their own subdirectories. `--check` fails
+  when the committed file has drifted; CI and the release workflow both run it.
+
 ## [2.3.0] - 2026-08-28
 
 A folder conversion learns which files to convert, and which not to convert

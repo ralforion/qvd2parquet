@@ -37,6 +37,22 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: go test -race ./...
 
+  # The notices file is generated from the module graph, so a dependency bump
+  # that forgets to regenerate it would ship an archive whose licence texts do
+  # not match the code inside the binary.
+  notices:
+    name: notices
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          cache: true
+
+      - name: Verify THIRD-PARTY-NOTICES.md is current
+        run: ./scripts/gen-notices.sh --check
+
   # One job per release target, so the 16 builds run in parallel instead of
   # taking ~21 minutes end to end. Each target compiles its own copy of the
   # Arrow dependency tree, which is what makes the sequential form slow.
