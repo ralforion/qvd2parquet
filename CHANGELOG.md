@@ -13,19 +13,48 @@ restarts from it.
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-08-29
+
+The release archives were incomplete. They carried the binary, `README.md` and
+`LICENSE`, but the binary is statically linked, so every archive also hands on
+the compiled code of nineteen Go modules. Their MIT, BSD and Apache-2.0 terms
+all ask for attribution when that happens, and Apache-2.0 4(d) asks for each
+dependency's own `NOTICE` to be carried forward. None of those texts was in the
+archive.
+
+Nothing about the converter changed. No flag changed meaning, no conversion
+produces different bytes, and the binary in 2.3.1 is the binary in 2.3.0. Only
+what sits beside it in the archive is different, which is why this is a patch.
+
+If you redistribute qvd2parquet, or vendor it into an image or an installer,
+2.3.1 is the first archive that carries everything you need to pass on with it.
+
+### Fixed
+
+- Release archives now include `THIRD-PARTY-NOTICES.md`, reproducing in full
+  the licence texts of every Go module compiled into the binary, along with the
+  `NOTICE` files that Apache Arrow, Apache Thrift and gRPC require to travel
+  with them. All nineteen are permissive, Apache-2.0, MIT or BSD, and none is
+  copyleft, so nothing there constrains the data you convert or software you
+  build alongside the converter.
+- `scripts/build-release.sh` no longer falls back to an archive without
+  `LICENSE` when a file is missing. That fallback was silent, and a build that
+  cannot assemble a complete archive should stop rather than ship an incomplete
+  one.
+
 ### Added
 
-- `THIRD-PARTY-NOTICES.md`, reproducing the licence texts of every Go module
-  compiled into the binary, and shipped inside every release archive. The
-  binary is statically linked, so an archive redistributes its dependencies'
-  code; their MIT, BSD and Apache-2.0 terms all ask for attribution when that
-  happens, and Apache-2.0 4(d) asks for each dependency's own `NOTICE` to be
-  carried forward. Archives previously shipped only `README.md` and `LICENSE`.
-- `scripts/gen-notices.sh`, which generates that file from the module graph of
-  `./cmd/qvd2parquet`. It resolves a licence per linked package rather than per
-  module, so it picks up the differently licensed code that `brotli` and
-  `klauspost/compress` vendor under their own subdirectories. `--check` fails
-  when the committed file has drifted; CI and the release workflow both run it.
+- `scripts/gen-notices.sh` generates `THIRD-PARTY-NOTICES.md` from the module
+  graph of `./cmd/qvd2parquet`. It resolves a licence per linked package rather
+  than per module, which is what finds the differently licensed code some
+  dependencies vendor below their module root: `brotli` carries a fork of the
+  standard library's `compress/flate`, and `klauspost/compress` carries `s2`,
+  `snappy`, `internal/snapref` and `zstd/internal/xxhash`. All five are linked
+  into the binary and a module-root scan misses every one of them.
+- `./scripts/gen-notices.sh --check` fails when the committed file has drifted
+  from `go.mod`. CI runs it on every pull request, and the release workflow runs
+  it before a tag can publish, so an archive cannot ship licence texts that do
+  not match the code inside the binary.
 
 ## [2.3.0] - 2026-08-28
 
@@ -759,7 +788,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.3.1...HEAD
+[2.3.1]: https://github.com/ralforion/qvd2parquet/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/ralforion/qvd2parquet/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/ralforion/qvd2parquet/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/ralforion/qvd2parquet/compare/v2.0.0...v2.1.0
