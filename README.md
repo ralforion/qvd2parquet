@@ -1476,10 +1476,11 @@ use `--columns` to skip wide string columns, then lower `--batch-rows` and
 ## Development
 
 ```sh
-go test ./...              # unit and integration tests
-go test -race ./...        # the parallel decoder is race-tested
+go test ./...                   # unit and integration tests
+go test -race ./...             # the parallel decoder is race-tested
 go vet ./...
-./scripts/gen-notices.sh   # after a dependency change, see below
+./scripts/gen-notices.sh        # after a dependency change, see below
+./scripts/check-action-pins.sh  # after editing a workflow, see below
 ```
 
 `THIRD-PARTY-NOTICES.md` is generated from the module graph of
@@ -1488,6 +1489,19 @@ module, which is what picks up the differently licensed code some dependencies
 vendor. Regenerate it whenever a dependency is added, removed or bumped. CI
 runs `./scripts/gen-notices.sh --check` and fails when the committed file no
 longer matches, and the release workflow refuses to publish on a stale one.
+
+Every Action the workflows use is pinned to a commit SHA rather than a version
+tag, because a tag is a movable label and its owner can repoint it at new code
+at any time. A SHA is unreadable, though, so the version comment beside it is
+the only thing a reviewer actually reads, and nothing makes the two agree. That
+gap is what `./scripts/check-action-pins.sh` closes: it resolves each comment's
+tag upstream and fails when the SHA pinned in the workflow is not the commit
+that tag names, so a hash quietly swapped for one from a fork stops looking
+like a routine Dependabot bump. It also rejects any Action that is not
+SHA-pinned or whose owner is not in the script's allowlist. The comments must
+name exact patch releases: a major tag such as `v7` moves with every release
+and would fail the check for a pin that is still good. CI runs it in the `pins`
+job, and `--offline` skips the upstream lookups when you have no network.
 
 ### Releasing
 

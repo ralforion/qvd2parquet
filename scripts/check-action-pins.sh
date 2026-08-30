@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+#
+# Verify that every third-party Action used by the workflows is pinned to an
+# immutable commit SHA, comes from an owner we trust, and carries a version
+# comment that really does name the release that SHA was cut from.
+#
+#   ./scripts/check-action-pins.sh              # every check
+#   ./scripts/check-action-pins.sh --offline    # skip the upstream tag lookups
+#
+# A git tag is a movable label, so `uses: actions/checkout@v7` runs whichever
+# commit that label points at when the job starts, and the owner of the action
+# can repoint it at any time. Pinning to a SHA fixes the code, but it also
+# makes the reference unreadable to a human, and that is the weakness this
+# guards. A pull request can swap the hash for one taken from an attacker's
+# fork while leaving the reassuring `# v7.0.1` comment untouched, and the diff
+# then looks exactly like a routine Dependabot bump. Forks share object storage
+# with their parent, so such a commit is even reachable under the real
+# repository's URL. Only resolving the tag tells the two apart.
+#
+# Version comments must name exact patch releases, never major tags. A major
+# tag such as v7 moves with every release, so checking against it would turn CI
+# red the moment upstream ships v7.0.2, for a pin that is still perfectly good.
+# Patch tags never move, so this check stays quiet until something is wrong.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+# Only actions published by these owners may appear in a workflow. This is the
+# check that carries the most weight: a SHA matching its own tag says nothing
+# about whether the action belongs here at all, because `evil/action@<sha>
+# # v1` verifies perfectly well against evil's own v1 tag.
+ALLOWED_OWNERS="actions"
+
+offline=false
+case "${1:-}" in
+    --offline) offline=true ;;
+    "") ;;
+    *) echo "usage: $0 [--offline]" >&2; exit 2 ;;
+esac
+
+# Resolve a tag to the commit it names, following annotated tags through to
+# their target. git ls-remote needs no token and is not rate limited, unlike
+# the REST API, which matters because hosted runners share outbound addresses.
+# It also exits 0 for a tag that does not exist, so an empty result has to be
+# treated as a failure by the caller rather than trusted.
+resolve_tag() {
+    git ls-remote "https://github.com/$1" "refs/tags/$2" "refs/tags/$2^{}" 2>/dev/null |
+        awk '{ sha[$2] = $1 }
+             END { print (("refs/tags/'"$2"'^{}") in sha) \
+                          ? sha["refs/tags/'"$2"'^{}"] \
+                          : sha["refs/tags/'"$2"'"] }'
+}
+
+failures=0
+checked=0
+
+fail() {
+    echo "::error file=$1,line=$2::$3"
+    echo "  $1:$2: $3" >&2
+    failures=$((failures + 1))
+}
+
+# Every `uses:` line in every workflow, carrying its file and line number so a
+# failure points straight at the offending reference.
+while IFS=: read -r file line body; do
+    # `uses: owner/repo@ref  # comment`, with the step's leading "- " optional.
+    spec=$(printf '%s\n' "$body" | sed -E 's/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
+    comment=$(printf '%s\n' "$body" | sed -nE 's/.*#[[:space:]]*(v[0-9][^[:space:]]*).*/\1/p')
+
+    # Actions living in this repository are covered by our own review, and
+    # container actions have no tag to resolve.
+    case "$spec" in
+        ./*|.\\*|docker://*) continue ;;
+    esac
+
+    checked=$((checked + 1))
+
+    repo=${spec%%@*}
+    ref=${spec#*@}
+    owner=${repo%%/*}
+
+    # A subdirectory action such as owner/repo/path@ref still pins the whole
+    # repository, so trim the path before resolving anything.
+    repo=$(printf '%s\n' "$repo" | cut -d/ -f1,2)
+
+    allowed=false
+    for candidate in $ALLOWED_OWNERS; do
+        [ "$owner" = "$candidate" ] && allowed=true
+    done
+    if [ "$allowed" = false ]; then
+        fail "$file" "$line" "owner '$owner' is not in ALLOWED_OWNERS ($ALLOWED_OWNERS); add it deliberately in scripts/check-action-pins.sh if this action is meant to run here"
+        continue
+    fi
+
+    if ! printf '%s\n' "$ref" | grep -qE '^[0-9a-f]{40}$'; then
+        fail "$file" "$line" "$repo is pinned to '$ref', which is a movable tag; pin it to the 40-character commit SHA that tag points at"
+        continue
+    fi
+
+    if [ -z "$comment" ]; then
+        fail "$file" "$line" "$repo@${ref:0:8} has no version comment; append '# vX.Y.Z' naming the release this SHA was cut from"
+        continue
+    fi
+
+    if ! printf '%s\n' "$comment" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+        fail "$file" "$line" "$repo carries the comment '# $comment'; name an exact patch release such as v7.0.1, because major tags move with every release and would fail this check for a good pin"
+        continue
+    fi
+
+    [ "$offline" = true ] && continue
+
+    actual=$(resolve_tag "$repo" "$comment")
+    if [ -z "$actual" ]; then
+        fail "$file" "$line" "$repo has no tag $comment upstream"
+    elif [ "$actual" != "$ref" ]; then
+        fail "$file" "$line" "$repo $comment is upstream commit $actual, but the workflow pins $ref"
+    fi
+done < <(grep -rnE '^[[:space:]]*(-[[:space:]]+)?uses:' .github/workflows)
+
+if [ "$failures" -gt 0 ]; then
+    echo >&2
+    echo "$failures of $checked action pin(s) failed verification" >&2
+    exit 1
+fi
+
+echo "all $checked action pin(s) verified$([ "$offline" = true ] && echo " (offline: SHA and comment format only)")"
