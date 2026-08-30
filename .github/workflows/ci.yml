@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
@@ -16,8 +19,8 @@ jobs:
         go: ['1.25', '1.27']
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ matrix.go }}
           cache: true
@@ -44,8 +47,8 @@ jobs:
     name: notices
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.27'
           cache: true
@@ -53,11 +56,11 @@ jobs:
       - name: Verify THIRD-PARTY-NOTICES.md is current
         run: ./scripts/gen-notices.sh --check
 
-  # One job per release target, so the 16 builds run in parallel instead of
+  # One job per release target, so the six builds run in parallel instead of
   # taking ~21 minutes end to end. Each target compiles its own copy of the
   # Arrow dependency tree, which is what makes the sequential form slow.
   # No build cache here on purpose. The Go build cache is keyed by the source,
-  # so it would miss on every commit while still paying 16 parallel ~210 MB
+  # so it would miss on every commit while still paying six parallel ~210 MB
   # saves per run -- which pushed the repository past its 10 GB cache limit and
   # left "Post Cache" steps hanging until they were cancelled, failing the job
   # after the build itself had succeeded in seconds. setup-go still caches
@@ -76,8 +79,8 @@ jobs:
           - windows/amd64
           - windows/arm64
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.27'
           cache: true
@@ -89,7 +92,7 @@ jobs:
         run: ./scripts/build-release.sh
 
   # A single gate so branch protection has one stable check to require, rather
-  # than sixteen that change whenever the target list does.
+  # than six that change whenever the target list does.
   cross-compile:
     name: cross-compile
     needs: build
