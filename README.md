@@ -1498,7 +1498,9 @@ gap is what `./scripts/check-action-pins.sh` closes: it resolves each comment's
 tag upstream and fails when the SHA pinned in the workflow is not the commit
 that tag names, so a hash quietly swapped for one from a fork stops looking
 like a routine Dependabot bump. It also rejects any Action that is not
-SHA-pinned or whose owner is not in the script's allowlist. The comments must
+SHA-pinned or whose owner is not in the script's allowlist, and any container
+action not pinned by digest, since an image tag such as `:latest` moves just as
+a git tag does. The comments must
 name exact patch releases: a major tag such as `v7` moves with every release
 and would fail the check for a pin that is still good. CI runs it in the `pins`
 job, and the release workflow runs it too, so a tag cannot publish binaries

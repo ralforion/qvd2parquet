@@ -20,6 +20,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # First, before any other action runs. This is the workflow holding
+      # contents: write, so a tag must not publish binaries built by steps
+      # whose pins were never checked against the releases they name. Ordering
+      # is the point: an action that has already executed could have rewritten
+      # the workspace, this script included, so a verifier placed after it
+      # would be checking whatever that action left behind. Only checkout runs
+      # first, and it has to, since nothing can be verified before the tree it
+      # fetches exists.
+      - name: Verify every Action is pinned to its named release
+        run: ./scripts/check-action-pins.sh
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27'
@@ -30,12 +42,6 @@ jobs:
       # the dependencies actually compiled into the binary.
       - name: Verify THIRD-PARTY-NOTICES.md is current
         run: ./scripts/gen-notices.sh --check
-
-      # The same reasoning applied to the Actions themselves. This is the
-      # workflow holding contents: write, so a tag must not publish binaries
-      # built by steps whose pins were never checked against their releases.
-      - name: Verify every Action is pinned to its named release
-        run: ./scripts/check-action-pins.sh
 
   # One job per platform, so the release builds in parallel rather than looping
   # through every target in a single job.

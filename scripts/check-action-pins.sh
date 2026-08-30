@@ -79,13 +79,28 @@ while IFS=: read -r file line body; do
     spec=$(printf '%s\n' "$body" | sed -E 's/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
     comment=$(printf '%s\n' "$body" | sed -nE 's/.*#[[:space:]]*(v[0-9][^[:space:]]*).*/\1/p')
 
-    # Actions living in this repository are covered by our own review, and
-    # container actions have no tag to resolve.
+    # Actions living in this repository are covered by our own review.
     case "$spec" in
-        ./*|.\\*|docker://*) continue ;;
+        ./*|.\\*) continue ;;
     esac
 
     checked=$((checked + 1))
+
+    # A container action is third-party executable code exactly as a repository
+    # action is, and an image tag such as :latest is every bit as movable as a
+    # git tag, so one cannot simply be waved through for having no git ref to
+    # resolve. A digest is what pins an image, and anything else is rejected.
+    # Note the residual gap: a digest fixes which image runs without saying
+    # whether it ought to run here, because there is no registry equivalent of
+    # ALLOWED_OWNERS. Adding a container action stays a deliberate act.
+    case "$spec" in
+        docker://*)
+            if ! printf '%s\n' "$spec" | grep -qE '^docker://[^@[:space:]]+@sha256:[0-9a-f]{64}$'; then
+                fail "$file" "$line" "$spec is a container action that is not pinned by digest; write it as docker://image@sha256:<64 hex digits>"
+            fi
+            continue
+            ;;
+    esac
 
     repo=${spec%%@*}
     ref=${spec#*@}
