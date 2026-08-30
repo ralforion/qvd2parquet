@@ -1501,7 +1501,9 @@ like a routine Dependabot bump. It also rejects any Action that is not
 SHA-pinned or whose owner is not in the script's allowlist. The comments must
 name exact patch releases: a major tag such as `v7` moves with every release
 and would fail the check for a pin that is still good. CI runs it in the `pins`
-job, and `--offline` skips the upstream lookups when you have no network.
+job, and the release workflow runs it too, so a tag cannot publish binaries
+built by steps whose pins were never checked. `--offline` skips the upstream
+lookups when you have no network, checking only the SHA and comment format.
 
 ### Releasing
 

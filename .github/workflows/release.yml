@@ -31,6 +31,12 @@ jobs:
       - name: Verify THIRD-PARTY-NOTICES.md is current
         run: ./scripts/gen-notices.sh --check
 
+      # The same reasoning applied to the Actions themselves. This is the
+      # workflow holding contents: write, so a tag must not publish binaries
+      # built by steps whose pins were never checked against their releases.
+      - name: Verify every Action is pinned to its named release
+        run: ./scripts/check-action-pins.sh
+
   # One job per platform, so the release builds in parallel rather than looping
   # through every target in a single job.
   build:
