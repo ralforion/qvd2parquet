@@ -784,3 +784,84 @@ func TestCatalogScanNeedsCatalogOut(t *testing.T) {
 		t.Errorf("missing diagnostic:\n%s", combined)
 	}
 }
+
+// TestCatalogWriteFailureFailsTheRun covers a catalog that cannot be committed
+// after an otherwise successful conversion. The close used to run from a defer
+// that only printed, so the process reported success while the catalog the
+// caller was waiting on did not exist.
+func TestCatalogWriteFailureFailsTheRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	// A directory cannot be replaced by the writer's rename, so the commit
+	// fails after the conversion has already succeeded.
+	blocked := filepath.Join(dir, "catalog.parquet")
+	if err := os.Mkdir(blocked, 0o755); err != nil {
+		t.Fatalf("create blocking directory: %v", err)
+	}
+
+	cmd := exec.Command(bin, "--progress", "0", "--force", "--catalog-out", blocked,
+		filepath.Join("..", "..", "testdata", "sample-small.qvd"),
+		filepath.Join(dir, "out.parquet"))
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitOutput {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitOutput, combined)
+	}
+	if !strings.Contains(string(combined), "output error") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+}
+
+// TestCatalogOutDoesNotTakeAFailedInputPath is the guard the log already has
+// for a path FindInputs could not examine. Such a path never reaches the
+// inputs list, so the loop over inputs does not see it, and the catalog took
+// the name of the very file the run was about to report as missing: exit 4,
+// "no such file", and an empty Parquet sitting at that path.
+func TestCatalogOutDoesNotTakeAFailedInputPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.qvd")
+
+	cmd := exec.Command(bin, "--progress", "0", "--out-dir", filepath.Join(dir, "out"),
+		"--catalog-out", missing, missing)
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--catalog-out path must differ from the input") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+	if _, err := os.Stat(missing); err == nil {
+		t.Fatal("the run created a file at the input path it reported as missing")
+	}
+}
+
+// TestCatalogScanRejectsLog keeps --log from being accepted and ignored. A
+// scan converts nothing, so it has no file records to write, and a run that
+// silently produced no log would look like one that had lost it.
+func TestCatalogScanRejectsLog(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+
+	cmd := exec.Command(bin, "--progress", "0", "--catalog-scan",
+		"--catalog-out", filepath.Join(dir, "catalog.parquet"),
+		"--log", filepath.Join(dir, "run.jsonl"), dir)
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--log records conversions and cannot be combined with --catalog-scan") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+}

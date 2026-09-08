@@ -172,6 +172,9 @@ func run() int {
 	case scan && *catalogOut == "":
 		fmt.Fprintf(os.Stderr, "%s: --catalog-scan needs --catalog-out to write to\n", programName)
 		return exitUsage
+	case scan && *logPath != "":
+		fmt.Fprintf(os.Stderr, "%s: --log records conversions and cannot be combined with --catalog-scan\n", programName)
+		return exitUsage
 	case scan && (batch || *inspect):
 		fmt.Fprintf(os.Stderr, "%s: --catalog-scan reads finished Parquet files and "+
 			"converts nothing, so it cannot be combined with --out-dir or --inspect\n", programName)
@@ -330,35 +333,50 @@ func run() int {
 }
 
 // openCatalog creates the run's catalog writer and returns a function that
-// closes it.
+// closes it, reporting the exit code the closing warrants.
 //
 // It is called only after the path guards have run, for the same reason
 // NewLogWriter is: the writer replaces whatever file it is pointed at, so
 // creating it before the guards would let a run that was correctly refused
 // destroy the input it was refused for.
-func openCatalog(path string, opts *convert.Options, logf convert.Logf) (func(), error) {
+//
+// The close returns a code rather than only printing, because the catalog is
+// an output a scheduled job waits on. A run whose conversion succeeded and
+// whose catalog could not be written has not done what it was asked, and
+// exiting 0 would tell the job otherwise.
+func openCatalog(path string, opts *convert.Options, logf convert.Logf) (func() int, error) {
 	if path == "" {
-		return func() {}, nil
+		return func() int { return exitOK }, nil
 	}
 	cat, err := catalog.NewWriter(path, version, opts.Force)
 	if err != nil {
 		return nil, err
 	}
 	opts.Catalog = cat
-	return func() {
+	return func() int {
 		if err := cat.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
-			return
+			return exitCodeFor(err)
 		}
 		logf("wrote catalog to %s: %d column(s)", cat.Path(), cat.Len())
+		return exitOK
 	}, nil
+}
+
+// closeCatalogInto runs the close and upgrades an otherwise successful exit
+// code to the failure. A conversion that already failed keeps its own code:
+// that is the failure worth reporting, and the catalog's is a consequence.
+func closeCatalogInto(code *int, closeCatalog func() int) {
+	if c := closeCatalog(); c != exitOK && *code == exitOK {
+		*code = c
+	}
 }
 
 // runSingle converts one explicit input/output pair. Its log uses the same
 // file-plus-summary records as runBatch so automation can query either mode
 // without knowing how many files the command converted.
 func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.Options,
-	logPath, catalogPath string, logf convert.Logf) int {
+	logPath, catalogPath string, logf convert.Logf) (code int) {
 
 	if err := validateCatalogPath(catalogPath, inputPath, outputPath, opts); err != nil {
 		return usageErr(err)
@@ -372,7 +390,7 @@ func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.
 		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)
 	}
-	defer closeCatalog()
+	defer closeCatalogInto(&code, closeCatalog)
 
 	var log *convert.LogWriter
 	if logPath != "" {
@@ -482,8 +500,8 @@ func validateCatalogPath(catalogPath, inputPath, outputPath string, opts *conver
 
 // validateBatchCatalogPath is the batch equivalent, checking every derived
 // path the way validateBatchLogPath does.
-func validateBatchCatalogPath(catalogPath string, inputs []string, outDir string,
-	opts *convert.Options) error {
+func validateBatchCatalogPath(catalogPath string, inputs []string,
+	problems []convert.InputProblem, outDir string, opts *convert.Options) error {
 
 	if catalogPath == "" {
 		return nil
@@ -492,6 +510,17 @@ func validateBatchCatalogPath(catalogPath string, inputs []string, outDir string
 		{"--schema", opts.SchemaOverridePath},
 	}); err != nil {
 		return err
+	}
+	// A path FindInputs could not examine never reaches the inputs list, so
+	// the loop below would not see it and the catalog would take the name of
+	// the file the run is about to report as missing, creating it in the same
+	// breath. The log guard covers this; so must this one.
+	for _, p := range problems {
+		if err := checkCollisions(catalogPath, "--catalog-out", []logCollision{
+			{"the input " + p.Path, p.Path},
+		}); err != nil {
+			return err
+		}
 	}
 	for _, in := range inputs {
 		out := convert.OutputPathFor(in, outDir)
@@ -626,7 +655,7 @@ func canonicalPath(path string) string {
 // one bad file does not hide the state of the rest.
 func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	outDir string, fileWorkers int, sel convert.InputSelection, skipUpToDate bool,
-	logPath, catalogPath string, logf convert.Logf) int {
+	logPath, catalogPath string, logf convert.Logf) (code int) {
 
 	found := convert.FindInputs(paths, sel)
 	inputs, problems := found.Files, found.Problems
@@ -655,7 +684,7 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		return exitOutput
 	}
 
-	if err := validateBatchCatalogPath(catalogPath, inputs, outDir, opts); err != nil {
+	if err := validateBatchCatalogPath(catalogPath, inputs, problems, outDir, opts); err != nil {
 		return usageErr(err)
 	}
 	if err := checkCollisions(catalogPath, "--catalog-out", []logCollision{
@@ -669,7 +698,7 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)
 	}
-	defer closeCatalog()
+	defer closeCatalogInto(&code, closeCatalog)
 
 	var log *convert.LogWriter
 	if logPath != "" {
@@ -784,7 +813,7 @@ func runCatalogScan(paths []string, catalogPath string, recursive, force bool, l
 // conversion would produce. The report is the command's result, so it goes to
 // stdout; diagnostics stay on stderr.
 func runInspect(ctx context.Context, inputPath string, opts *convert.Options,
-	catalogPath string, logf convert.Logf) int {
+	catalogPath string, logf convert.Logf) (code int) {
 
 	if err := validateCatalogPath(catalogPath, inputPath, "", opts); err != nil {
 		return usageErr(err)
@@ -794,7 +823,7 @@ func runInspect(ctx context.Context, inputPath string, opts *convert.Options,
 		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)
 	}
-	defer closeCatalog()
+	defer closeCatalogInto(&code, closeCatalog)
 
 	rep, err := convert.Inspect(ctx, inputPath, opts)
 	if err != nil {

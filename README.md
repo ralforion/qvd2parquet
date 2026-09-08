@@ -616,8 +616,18 @@ still writes a catalog describing the whole folder.
 
 The catalog path has to differ from every file the run reads or writes, on the
 same terms as `--log`, and for the same reason: it is written by truncating.
-A run correctly refused for that collision must not destroy the file on its way
-out, so the writer is not created until the paths have been checked.
+That covers the whole expanded input list, including an input the run could not
+examine, and the outputs and per-file reports derived from it under `--out-dir`.
+A run correctly refused for such a collision must not destroy the file on its
+way out, so the writer is not created until the paths have been checked.
+
+A catalog that cannot be written fails the run. The conversion may well have
+succeeded, but a job waiting on the catalog has not got what it asked for, so
+the exit code says so rather than reporting success beside the error.
+
+`--catalog-scan` converts nothing and so has no conversion records to write,
+which makes `--log` meaningless with it; the combination is refused rather than
+accepted and ignored.
 
 ## Inspecting a file
 
