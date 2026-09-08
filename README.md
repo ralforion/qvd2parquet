@@ -540,8 +540,11 @@ pattern that dropped nothing from that file, `fieldsRenamed` and
 the quality gate's verdict with any errors, so a run can be audited without
 opening every per-file report. `table` is what a query groups by when a folder
 holds one table's daily extracts under names that carry a timestamp rather than
-the table. It is filled in on a skipped file too, from the manifest; only a
-failed file leaves it empty, since nothing there read the header. `--schema-report` and
+the table. It is filled in on a skipped file, from the manifest, and on a
+failed one, by reading that file's header on its own, so a failure past the
+header is still grouped with the table it belongs to. It is empty only when
+nothing could read the header at all, which is the case where there is no name
+to give. `--schema-report` and
 `--quality-report` also work in batch mode; each file gets its own document,
 named after the input.
 

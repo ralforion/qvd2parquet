@@ -106,6 +106,13 @@ func TestSingleFileLog(t *testing.T) {
 			file["rows"] != float64(1000) || file["error"] != "" {
 			t.Errorf("file record = %v", file)
 		}
+		// The single-file path assembles its own FileResult, so it is its own
+		// chance to leave the table out. The fixture is sample-small.qvd
+		// holding BigSales, which is also the case a name taken from the file
+		// name would get wrong.
+		if file["table"] != "BigSales" {
+			t.Errorf("file record has table %q, want \"BigSales\": %v", file["table"], file)
+		}
 		if summary["type"] != "summary" || summary["files"] != float64(1) ||
 			summary["converted"] != float64(1) || summary["failed"] != float64(0) ||
 			summary["rows"] != float64(1000) {
@@ -139,6 +146,32 @@ func TestSingleFileLog(t *testing.T) {
 		if summary["type"] != "summary" || summary["files"] != float64(1) ||
 			summary["converted"] != float64(0) || summary["failed"] != float64(1) {
 			t.Errorf("summary record = %v", summary)
+		}
+	})
+
+	// A conversion can fail long after the header was read, and that record is
+	// the one an operator goes looking for. Naming the table only on success
+	// would leave a failure in a folder of timestamp-named extracts saying
+	// nothing about which table it was.
+	t.Run("failure after the header still names the table", func(t *testing.T) {
+		dir := t.TempDir()
+		out := filepath.Join(dir, "out.parquet")
+		logPath := filepath.Join(dir, "run.jsonl")
+
+		cmd := exec.Command(bin, "--progress", "0", "--quality-gate", "none",
+			"--columns", "Nope", "--log", logPath, fixture, out)
+		combined, err := cmd.CombinedOutput()
+		if _, ok := err.(*exec.ExitError); !ok {
+			t.Fatalf("expected the run to fail: %v\n%s", err, combined)
+		}
+
+		file := readLogRecords(t, logPath)[0]
+		if file["status"] != "failed" || file["error"] == "" {
+			t.Fatalf("file record = %v", file)
+		}
+		if file["table"] != "BigSales" {
+			t.Errorf("a failure past the header should still name the table, got %q: %v",
+				file["table"], file)
 		}
 	})
 

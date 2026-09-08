@@ -18,9 +18,10 @@ import (
 type FileResult struct {
 	Input  string
 	Output string
-	// Table is the QVD's own table name: from the conversion when one ran,
-	// and from the manifest entry that recorded it when the file was skipped.
-	// A failed file has none, since nothing read the header.
+	// Table names the QVD's table for a result that has no Stats to ask: a
+	// skipped file, where the manifest kept the name, or a failed one, where
+	// the header was read on its own. Read it through TableName rather than
+	// directly, so a conversion that did run answers from its own Stats.
 	Table   string
 	Stats   *Stats
 	Quality *QualityReport
@@ -34,6 +35,21 @@ type FileResult struct {
 
 // Failed reports whether the file did not convert.
 func (r FileResult) Failed() bool { return r.Err != nil }
+
+// TableName is the QVD's own table name, or empty when nothing managed to
+// read it.
+//
+// It is a method rather than a field every caller has to remember to set.
+// A FileResult is built in two places, the batch loop and the single-file
+// path, and a field was silently left empty by the second of them; a
+// conversion that produced Stats now answers from Stats wherever it was
+// assembled, and Table is consulted only when there is no Stats.
+func (r FileResult) TableName() string {
+	if r.Stats != nil {
+		return r.Stats.TableName
+	}
+	return r.Table
+}
 
 // BatchResult summarizes a whole run.
 type BatchResult struct {
@@ -462,7 +478,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			// lock.
 			table := manifest.TableFor(out)
 			if table == "" {
-				table = tableNameOf(in)
+				table = TableNameOf(in)
 				manifest.NoteTable(out, table)
 			}
 			results[i] = FileResult{Input: in, Output: out, Table: table, Skipped: true, Started: time.Now()}
@@ -596,8 +612,14 @@ func convertOne(ctx context.Context, in string, opts *Options, many *ManyOptions
 	stats, quality, err := Run(ctx, in, r.Output, &o, fileLogf)
 	r.Elapsed = time.Since(r.Started)
 	r.Stats, r.Quality, r.Err = stats, quality, err
-	if stats != nil {
-		r.Table = stats.TableName
+	if err != nil {
+		// A conversion can fail well after the header was read, on a bad
+		// --encoding or a quality gate, and a failed record is exactly the
+		// one an operator goes looking for. Reading the header again costs
+		// an open and an XML parse on a path that is already the slow one,
+		// and a file that failed because it is not a QVD simply has no name
+		// to give.
+		r.Table = TableNameOf(in)
 	}
 
 	switch {

@@ -206,13 +206,17 @@ func (m *Manifest) NoteTable(output, table string) {
 	m.Entries[key] = e
 }
 
-// tableNameOf reads just the QVD's header for its table name. It is the
-// fallback for a manifest entry written before the name was recorded, and
-// costs one open and an XML parse, not a symbol pass. A file that will not
-// open yields no name and no error: the run has already decided this output
-// is up to date, and an unreadable input is not a reason to fail a file that
-// was never going to be converted.
-func tableNameOf(input string) string {
+// TableNameOf reads just the QVD's header for its table name, which costs one
+// open and an XML parse rather than a symbol pass. It answers for the two
+// results that have no Stats to ask: a manifest entry written before the name
+// was recorded, and a file that failed. A file that will not open yields no
+// name and no error, since neither caller is in a position to fail: one has
+// already decided the output is up to date, and the other is describing a
+// conversion that has failed already.
+//
+// It is exported for the single-file path in the command, which assembles its
+// own FileResult.
+func TableNameOf(input string) string {
 	f, err := qvd.Open(input)
 	if err != nil {
 		return ""

@@ -20,8 +20,12 @@ restarts from it.
   assigned, so a folder of nightly extracts could only be grouped by table by
   parsing the input path, which does not carry the table name: an extract is
   named for the table and the timestamp it was taken at, or for neither. The
-  value is the QVD header's own table name. Only a failed file leaves it empty,
-  since nothing there read the header.
+  value is the QVD header's own table name.
+- A **failed** file names its table too. A conversion can fail well after the
+  header was read, on an unknown `--columns` or a quality gate, and that record
+  is the one worth being able to group; the header is re-read on its own for a
+  failure, which costs an open and an XML parse on a path that is already the
+  slow one. `table` is empty only when nothing could read the header at all.
 - A file skipped by `--skip-up-to-date` reports its `table` too, which is the
   case the field is most wanted for: in the steady state the flag is for,
   almost every file skips, so a log without it could not be grouped by table
