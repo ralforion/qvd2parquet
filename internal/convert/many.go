@@ -405,7 +405,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	// per-file --force guard would report that as a pre-existing file, and
 	// with --force it would silently overwrite, so catch it before converting
 	// anything.
-	if err := checkOutputCollisions(inputs, many.OutDir); err != nil {
+	if err := CheckOutputCollisions(inputs, many.OutDir); err != nil {
 		return nil, err
 	}
 
@@ -565,9 +565,14 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	return b, nil
 }
 
-// checkOutputCollisions rejects a run in which two inputs would produce the
+// CheckOutputCollisions rejects a run in which two inputs would produce the
 // same output file.
-func checkOutputCollisions(inputs []string, outDir string) error {
+//
+// RunMany calls this itself, but the CLI has to call it earlier: it opens the
+// log and the catalog before converting, both by truncating, and a run refused
+// here would otherwise have destroyed them on the way out. A guard that runs
+// after a writer is open protects nothing.
+func CheckOutputCollisions(inputs []string, outDir string) error {
 	byOutput := make(map[string][]string, len(inputs))
 	for _, in := range inputs {
 		out := OutputPathFor(in, outDir)

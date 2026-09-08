@@ -619,8 +619,9 @@ same terms as `--log`, and for the same reason: it is written by truncating.
 That covers the whole expanded input list, including an input the run could not
 examine, and the outputs and per-file reports derived from it under `--out-dir`.
 A run correctly refused for any reason must not destroy a file on its way out,
-so neither the log nor the catalog is created until every path guard has run,
-including the guards that have nothing to do with the catalog.
+so neither the log nor the catalog is created until every check that can refuse
+the run has passed. That includes the checks concerning neither of them, such as
+two inputs whose names would produce one output.
 
 A catalog that cannot be written fails the run. The conversion may well have
 succeeded, but a job waiting on the catalog has not got what it asked for, so

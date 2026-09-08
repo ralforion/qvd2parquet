@@ -928,3 +928,70 @@ func TestRefusedRunLeavesTheCatalogAlone(t *testing.T) {
 		})
 	}
 }
+
+// TestOutputCollisionLeavesLogAndCatalogAlone covers a batch refused for a
+// reason neither writer knows about.
+//
+// RunMany rejects two inputs that would produce one output, but it did so
+// after the CLI had already opened the log and the catalog, both by
+// truncating. The run printed the collision and exited non-zero having
+// replaced an existing catalog with an empty Parquet and emptied the log.
+func TestOutputCollisionLeavesLogAndCatalogAlone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sample-small.qvd"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	dir := t.TempDir()
+	// Two directories holding the same base name map to one output.
+	var inDirs []string
+	for _, name := range []string{"a", "b"} {
+		sub := filepath.Join(dir, name)
+		if err := os.Mkdir(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sub, "same.qvd"), fixture, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		inDirs = append(inDirs, sub)
+	}
+
+	const catalogSentinel, logSentinel = "not a parquet file", "not a log\n"
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	logPath := filepath.Join(dir, "run.jsonl")
+	if err := os.WriteFile(catalogPath, []byte(catalogSentinel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte(logSentinel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	args := append([]string{"--progress", "0", "--force",
+		"--out-dir", filepath.Join(dir, "out"),
+		"--catalog-out", catalogPath, "--log", logPath}, inDirs...)
+	combined, err := exec.Command(bin, args...).CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitOutput {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitOutput, combined)
+	}
+	if !strings.Contains(string(combined), "output name collision") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+
+	for _, f := range []struct{ path, want string }{
+		{catalogPath, catalogSentinel},
+		{logPath, logSentinel},
+	} {
+		got, err := os.ReadFile(f.path)
+		if err != nil {
+			t.Fatalf("read %s after rejection: %v", f.path, err)
+		}
+		if string(got) != f.want {
+			t.Errorf("refused run rewrote %s: %q", filepath.Base(f.path), string(got))
+		}
+	}
+}

@@ -690,10 +690,21 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		return exitOutput
 	}
 
-	// Every path guard runs before either writer is created. Both the log and
-	// the catalog are written by truncating, so a writer opened ahead of a
-	// guard that then refuses the run destroys a file on the way out -- and
-	// the refusal it prints makes that damage look impossible.
+	// Every guard that can refuse the run outright goes here, before either
+	// writer is created. Both the log and the catalog are written by
+	// truncating, so a writer opened ahead of a guard that then refuses the
+	// run destroys a file on the way out -- and the refusal it prints makes
+	// that damage look impossible.
+	//
+	// That includes the guards which have nothing to do with either path.
+	// RunMany rejects two inputs that would produce one output, but it does so
+	// after the CLI has opened both writers, so the check has to happen here
+	// as well. It is cheap and idempotent, and RunMany keeps its own copy for
+	// callers that are not this one.
+	if err := convert.CheckOutputCollisions(inputs, outDir); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		return exitCodeFor(err)
+	}
 	if err := validateBatchCatalogPath(catalogPath, inputs, problems, outDir, opts); err != nil {
 		return usageErr(err)
 	}
