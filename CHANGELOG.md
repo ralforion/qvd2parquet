@@ -13,6 +13,8 @@ restarts from it.
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-09-08
+
 ### Added
 
 - `--catalog-out` writes a column-grain catalog of a run: one Parquet row per
@@ -858,6 +860,7 @@ First release.
   description of the format.
 
 [Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.3.2...HEAD
+[2.4.0]: https://github.com/ralforion/qvd2parquet/compare/v2.3.2...v2.4.0
 [2.3.2]: https://github.com/ralforion/qvd2parquet/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/ralforion/qvd2parquet/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/ralforion/qvd2parquet/compare/v2.2.0...v2.3.0
