@@ -614,6 +614,13 @@ and simply has no comment.
 own, so its output is scanned instead. A run that skipped the whole folder
 still writes a catalog describing the whole folder.
 
+A skipped output that cannot be read fails that file rather than dropping it
+from the catalog with a note. An incomplete catalog beside exit 0 is worse than
+none, because nothing downstream can tell that a table is missing, and a file
+the manifest calls current but nothing can read is worth reporting on its own
+account. Without `--catalog-out` the same folder skips silently, since nothing
+asked for the output to be read.
+
 The catalog path has to differ from every file the run reads or writes, on the
 same terms as `--log`, and for the same reason: it is written by truncating.
 That covers the whole expanded input list, including an input the run could not

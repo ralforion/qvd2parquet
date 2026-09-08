@@ -495,15 +495,22 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			if opts.Catalog != nil {
 				rows, err := catalog.ScanFile(out)
 				if err != nil {
-					safeLogf("note: catalog: %v; %s will be missing from %s",
-						err, DisplayPath(out), opts.Catalog.Path())
-				} else {
-					for j := range rows {
-						rows[j].SourceFile = in
-						rows[j].SourceTable = table
-					}
-					opts.Catalog.Add(rows)
+					// Reported as a failure of this file rather than a note.
+					// The run was asked for a catalog of the folder and cannot
+					// produce one, and a note beside exit 0 would hand a
+					// scheduled job a catalog silently missing a table. It is
+					// also a finding in its own right: the manifest says this
+					// output is current and it cannot be read.
+					results[i].Err = fmt.Errorf("%w: catalog: %v; rerun with "+
+						"--force to reconvert it", parquetwrite.ErrOutput, err)
+					safeLogf("catalog: %s is up to date but could not be read: %v", DisplayPath(out), err)
+					continue
 				}
+				for j := range rows {
+					rows[j].SourceFile = in
+					rows[j].SourceTable = table
+				}
+				opts.Catalog.Add(rows)
 			}
 			// Serialized like every other per-file line: a conversion already
 			// running can be writing progress at the same moment.

@@ -1056,3 +1056,72 @@ func TestLogOpenFailureLeavesTheCatalogAlone(t *testing.T) {
 		})
 	}
 }
+
+// TestSkippedFileThatCannotBeCataloguedFailsTheRun covers the one path where a
+// catalog can come out incomplete rather than absent.
+//
+// A skipped file writes no rows of its own, so its existing output is scanned
+// instead. That scan used to fail with a note and the run carried on, so a
+// folder whose output could not be read produced exit 0 and a catalog silently
+// missing a table -- worse than no catalog, because a job downstream has no way
+// to tell. It is also a finding on its own terms: the manifest says the output
+// is current and it cannot be read.
+func TestSkippedFileThatCannotBeCataloguedFailsTheRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sample-small.qvd"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "A.qvd"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(dir, "out")
+
+	// A first run to write the manifest the second one will skip on.
+	if out, err := exec.Command(bin, "--progress", "0", "--out-dir", outDir,
+		"--skip-up-to-date", src).CombinedOutput(); err != nil {
+		t.Fatalf("first run: %v\n%s", err, out)
+	}
+
+	// Make the output unreadable as Parquet while leaving the size and
+	// modification time the manifest compares against untouched, so the run
+	// still decides the file is up to date. Overwriting in place rather than
+	// removing permissions keeps this meaningful on Windows, where chmod does
+	// not take away read access.
+	output := filepath.Join(outDir, "A.parquet")
+	info, err := os.Stat(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(output, bytes.Repeat([]byte("x"), int(info.Size())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(output, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	combined, err := exec.Command(bin, "--progress", "0", "--out-dir", outDir,
+		"--skip-up-to-date", "--catalog-out", catalogPath, src).CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitOutput {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitOutput, combined)
+	}
+	if !strings.Contains(string(combined), "could not be read") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+	// Without --catalog-out the same folder is skipped silently, since nothing
+	// asked for the output to be read.
+	if out, err := exec.Command(bin, "--progress", "0", "--out-dir", outDir,
+		"--skip-up-to-date", src).CombinedOutput(); err != nil {
+		t.Fatalf("a run not asking for a catalog should still skip: %v\n%s", err, out)
+	}
+}
