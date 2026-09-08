@@ -453,6 +453,19 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	logResult := func(r FileResult) { many.Log.File(r) } // a nil log writes nothing
 
 	start := time.Now()
+
+	// An unreadable input is a failure of that input, not of the run. These
+	// are known before anything converts, so they are logged before anything
+	// converts: a run killed during a long conversion still accounts for the
+	// bad path it was already given. They join the results at the end, where
+	// the sort puts them back among the files.
+	problems := make([]FileResult, 0, len(many.Problems))
+	for _, p := range many.Problems {
+		r := FileResult{Input: p.Path, Err: p.Err, Started: start}
+		problems = append(problems, r)
+		logResult(r)
+	}
+
 	results := make([]FileResult, len(inputs))
 	sem := make(chan struct{}, fileWorkers)
 	var wg sync.WaitGroup
@@ -531,11 +544,16 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			defer wg.Done()
 			defer func() { <-sem }()
 			results[i] = convertOne(ctx, in, opts, many, perFile, fileWorkers > 1, safeLogf)
-			// Recorded and logged as soon as this file is done rather than
+			// Logged and recorded as soon as this file is done rather than
 			// after the wait: a run killed while the other files are still
 			// converting must not lose the record of this one.
-			live.Record(results[i])
+			//
+			// The log line goes first because it is one write and the
+			// manifest save is a whole file: recording first would leave a
+			// window, as wide as it takes to rewrite a large manifest, in
+			// which the output exists and neither record of it does.
 			logResult(results[i])
+			live.Record(results[i])
 		}(i, in)
 	}
 	wg.Wait()
@@ -548,12 +566,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			ManifestName, err)
 	}
 
-	// An unreadable input is a failure of that input, not of the run.
-	for _, p := range many.Problems {
-		problem := FileResult{Input: p.Path, Err: p.Err, Started: start}
-		results = append(results, problem)
-		logResult(problem)
-	}
+	results = append(results, problems...)
 	sort.Slice(results, func(i, j int) bool { return results[i].Input < results[j].Input })
 
 	b := &BatchResult{Results: results, Elapsed: time.Since(start)}

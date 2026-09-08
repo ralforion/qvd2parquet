@@ -520,14 +520,20 @@ func TestLogAndManifestAreWrittenAsTheRunGoes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputs := FindInputs([]string{src}, InputSelection{Recursive: true}).Files
-	if len(inputs) < 3 {
-		t.Fatalf("the fixture must hold at least three inputs, got %d", len(inputs))
+	// A path that could not even be examined is a failure this run already
+	// knows about before it converts anything, so its record has to be there
+	// from the start rather than after the last file.
+	missing := filepath.Join(src, "gone.qvd")
+	found := FindInputs([]string{src, missing}, InputSelection{Recursive: true})
+	inputs := found.Files
+	if len(inputs) < 3 || len(found.Problems) != 1 {
+		t.Fatalf("want at least three inputs and one unreadable path, got %d and %d",
+			len(inputs), len(found.Problems))
 	}
 
 	var mu sync.Mutex
 	var wrote int
-	var linesMidRun, manifestMidRun int
+	var linesAtFirst, linesMidRun, manifestMidRun int
 	logf := func(format string, args ...any) {
 		if !strings.HasPrefix(format, "ok ") {
 			return
@@ -535,6 +541,9 @@ func TestLogAndManifestAreWrittenAsTheRunGoes(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		wrote++
+		if wrote == 1 {
+			linesAtFirst = len(logLines(t, logPath))
+		}
 		if wrote != len(inputs) {
 			return
 		}
@@ -545,7 +554,8 @@ func TestLogAndManifestAreWrittenAsTheRunGoes(t *testing.T) {
 
 	opts := testOptions()
 	if _, err := RunMany(context.Background(), inputs, &opts, &ManyOptions{
-		OutDir: outDir, FileWorkers: 1, Log: log, SkipUpToDate: true, ToolVersion: "2.4.0",
+		OutDir: outDir, FileWorkers: 1, Log: log, Problems: found.Problems,
+		SkipUpToDate: true, ToolVersion: "2.4.0",
 	}, logf); err != nil {
 		t.Fatal(err)
 	}
@@ -553,6 +563,11 @@ func TestLogAndManifestAreWrittenAsTheRunGoes(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if linesAtFirst < len(found.Problems) {
+		t.Errorf("the log held %d line(s) while the first file was still converting; "+
+			"the %d unreadable input(s) were known before it started",
+			linesAtFirst, len(found.Problems))
+	}
 	if linesMidRun < len(inputs)-1 {
 		t.Errorf("the log held %d line(s) while the last of %d files was still converting; "+
 			"a run killed here would lose them", linesMidRun, len(inputs))
@@ -561,8 +576,9 @@ func TestLogAndManifestAreWrittenAsTheRunGoes(t *testing.T) {
 		t.Error("the manifest named nothing while the last file was still converting; " +
 			"a run killed here would convert the whole folder again")
 	}
-	if got := len(logLines(t, logPath)); got != len(inputs)+1 {
-		t.Errorf("the finished log has %d lines, want %d files plus a summary", got, len(inputs))
+	if want := len(inputs) + len(found.Problems) + 1; len(logLines(t, logPath)) != want {
+		t.Errorf("the finished log has %d lines, want %d files plus a summary",
+			len(logLines(t, logPath)), want)
 	}
 }
 
