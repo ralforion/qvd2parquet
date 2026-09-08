@@ -99,6 +99,7 @@ type Writer struct {
 	rows    []Row
 	path    string
 	force   bool
+	started bool
 	runAt   time.Time
 	version string
 }
@@ -111,6 +112,37 @@ func NewWriter(path, toolVersion string, force bool) (*Writer, error) {
 		return nil, err
 	}
 	return &Writer{path: path, force: force, runAt: time.Now().UTC(), version: toolVersion}, nil
+}
+
+// Begin marks the run as started, which is what licenses Close to write.
+//
+// A catalog describes a run. Between opening the writer and starting the
+// conversion the caller may still fail -- another output cannot be created,
+// some other guard refuses -- and a catalog written then would replace a real
+// one with the record of a run that never happened. Nothing about the ordering
+// of the caller's setup steps prevents that; only asking the run to say it
+// began does.
+//
+// This is deliberately not the same thing as converting something. A run that
+// began and converted nothing does write its catalog, empty, so that a
+// scheduled job can tell it apart from a run that never started.
+func (w *Writer) Begin() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.started = true
+}
+
+// Started reports whether Begin was called.
+func (w *Writer) Started() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.started
 }
 
 // Path is where the catalog will be written.
@@ -168,12 +200,18 @@ func (w *Writer) Rows() []Row {
 // Close writes the catalog. A run that recorded no columns still writes the
 // file, empty, so a scheduled job can tell "converted nothing" from "did not
 // run" without a special case.
+//
+// A writer that was never begun writes nothing at all and leaves whatever is
+// at its path untouched, since there was no run to describe.
 func (w *Writer) Close() error {
 	if w == nil {
 		return nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.started {
+		return nil
+	}
 
 	rec, err := buildRecord(w.rows)
 	if err != nil {

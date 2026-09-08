@@ -995,3 +995,64 @@ func TestOutputCollisionLeavesLogAndCatalogAlone(t *testing.T) {
 		}
 	}
 }
+
+// TestLogOpenFailureLeavesTheCatalogAlone covers a setup step that fails after
+// the catalog writer exists.
+//
+// Reordering guards ahead of the writers did not cover this: NewLogWriter runs
+// after both are open and can fail on its own, at which point the deferred
+// close wrote a catalog for a run that never converted anything, over whatever
+// catalog was already there. The writer is now armed by the run starting, so
+// the caller's setup ordering cannot reintroduce this.
+func TestLogOpenFailureLeavesTheCatalogAlone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	const sentinel = "not a parquet file"
+
+	for _, tc := range []struct {
+		name string
+		args func(dir, catalog, log string) []string
+	}{
+		{"single", func(dir, catalog, log string) []string {
+			return []string{"--progress", "0", "--force",
+				"--catalog-out", catalog, "--log", log,
+				fixture, filepath.Join(dir, "out.parquet")}
+		}},
+		{"batch", func(dir, catalog, log string) []string {
+			return []string{"--progress", "0", "--force",
+				"--out-dir", filepath.Join(dir, "out"),
+				"--catalog-out", catalog, "--log", log, fixture}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			// A regular file where the log needs a directory, so NewLogWriter
+			// fails after both writers have been created.
+			blocker := filepath.Join(dir, "blocker")
+			if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			catalogPath := filepath.Join(dir, "catalog.parquet")
+			if err := os.WriteFile(catalogPath, []byte(sentinel), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			args := tc.args(dir, catalogPath, filepath.Join(blocker, "run.jsonl"))
+			combined, err := exec.Command(bin, args...).CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != exitOutput {
+				t.Fatalf("exit = %v, want %d\n%s", err, exitOutput, combined)
+			}
+			got, err := os.ReadFile(catalogPath)
+			if err != nil {
+				t.Fatalf("read catalog after failure: %v", err)
+			}
+			if string(got) != sentinel {
+				t.Fatalf("a run that never started rewrote the catalog: %q", string(got))
+			}
+		})
+	}
+}

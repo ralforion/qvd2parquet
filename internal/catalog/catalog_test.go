@@ -132,6 +132,7 @@ func TestWriterRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
+	w.Begin()
 	w.Add([]Row{{
 		Source: SourceQVD, SourceFile: "A057.qvd", SourceTable: "A057",
 		Ordinal: 1, ColumnName: "KBETR", Comment: "Betrag",
@@ -167,11 +168,45 @@ func TestEmptyRunStillWritesACatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
+	w.Begin()
 	if err := w.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("no catalog written: %v", err)
+	}
+}
+
+// TestUnbegunWriterWritesNothing is the invariant that makes the caller's
+// setup ordering irrelevant. A writer opened and then abandoned, because some
+// later setup step failed and the run never started, must leave whatever is at
+// its path alone: replacing a real catalog with the record of a run that never
+// happened is worse than writing none.
+func TestUnbegunWriterWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "catalog.parquet")
+	const sentinel = "not a parquet file"
+	if err := os.WriteFile(path, []byte(sentinel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewWriter(path, "test", true)
+	if err != nil {
+		t.Fatalf("new writer: %v", err)
+	}
+	w.Add([]Row{{Source: SourceQVD, ColumnName: "a", Ordinal: 1}})
+	if err := w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if w.Started() {
+		t.Error("writer reports having begun")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("an unbegun writer replaced the file: %q", string(got))
 	}
 }
 
@@ -207,6 +242,7 @@ func TestFailedCommitLeavesNoTemporaryFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
+	w.Begin()
 	w.Add([]Row{{Source: SourceQVD, ColumnName: "a", Ordinal: 1}})
 	if err := w.Close(); err == nil {
 		t.Fatal("expected the commit to fail")

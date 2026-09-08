@@ -619,9 +619,13 @@ same terms as `--log`, and for the same reason: it is written by truncating.
 That covers the whole expanded input list, including an input the run could not
 examine, and the outputs and per-file reports derived from it under `--out-dir`.
 A run correctly refused for any reason must not destroy a file on its way out,
-so neither the log nor the catalog is created until every check that can refuse
-the run has passed. That includes the checks concerning neither of them, such as
-two inputs whose names would produce one output.
+so the checks that can refuse a run all happen before either writer is created,
+including those concerning neither file, such as two inputs whose names would
+produce one output. Ordering alone is not relied on for this: the catalog is
+written only once the conversion has actually started, so a setup step that
+fails after the writer exists leaves whatever is at that path untouched. A run
+that started and converted nothing still writes its catalog, empty, which is
+what distinguishes it from a run that never began.
 
 A catalog that cannot be written fails the run. The conversion may well have
 succeeded, but a job waiting on the catalog has not got what it asked for, so

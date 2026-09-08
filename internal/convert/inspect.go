@@ -69,6 +69,7 @@ func Inspect(ctx context.Context, inputPath string, opts *Options) (*InspectRepo
 	if err := opts.Validate(); err != nil {
 		return nil, err
 	}
+	opts.Catalog.Begin()
 	start := time.Now()
 
 	f, err := qvd.Open(inputPath)

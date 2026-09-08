@@ -358,6 +358,11 @@ func openCatalog(path string, opts *convert.Options, logf convert.Logf) (func() 
 			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
 			return exitCodeFor(err)
 		}
+		// A run that never began writes no catalog, so there is nothing to
+		// announce and the existing file at that path is still whatever it was.
+		if !cat.Started() {
+			return exitOK
+		}
 		logf("wrote catalog to %s: %d column(s)", cat.Path(), cat.Len())
 		return exitOK
 	}, nil
@@ -807,6 +812,8 @@ func runCatalogScan(paths []string, catalogPath string, recursive, force bool, l
 		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)
 	}
+
+	cat.Begin()
 
 	// A file that cannot be read is reported and the scan continues, so one
 	// bad file in a folder of hundreds does not cost the whole catalog.
