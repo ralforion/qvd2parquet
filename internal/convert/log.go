@@ -67,6 +67,9 @@ type fileRecord struct {
 	Error     string `json:"error"`
 	ElapsedMs int64  `json:"elapsedMs"`
 
+	// Table is the QVD's own table name. It is empty on a failed or skipped
+	// file, where no conversion ran to read it, exactly as the counts below
+	// are zero.
 	Table       string `json:"table"`
 	Rows        int64  `json:"rows"`
 	Columns     int    `json:"columns"`
@@ -126,6 +129,7 @@ func (w *LogWriter) File(r FileResult) {
 		rec.Status = "skipped"
 	}
 	if r.Stats != nil {
+		rec.Table = r.Stats.TableName
 		rec.Rows = r.Stats.Rows
 		rec.Columns = r.Stats.Columns
 		rec.OutputBytes = r.Stats.OutputBytes

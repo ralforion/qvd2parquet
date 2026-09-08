@@ -565,6 +565,61 @@ func TestLogWriterRecords(t *testing.T) {
 	}
 }
 
+// The table name comes from inside the QVD, not from the file it was read
+// from. The fixture is deliberately built as a.qvd and b.qvd holding a table
+// called Sales, so a record echoing the input path would fail here.
+func TestLogRecordsCarryTheTableName(t *testing.T) {
+	src := folderFixture(t, false, true)
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "run.jsonl")
+
+	log, err := NewLogWriter(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+	if _, err := RunMany(context.Background(), inputs, &opts,
+		&ManyOptions{OutDir: filepath.Join(dir, "out"), Log: log}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named, blank int
+	for _, l := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(l), &rec); err != nil {
+			t.Fatalf("line is not JSON: %v\n%s", err, l)
+		}
+		if rec["type"] != "file" {
+			continue // the summary has no table of its own
+		}
+		switch rec["status"] {
+		case "ok":
+			if rec["table"] != "Sales" {
+				t.Errorf("converted record has table %q, want \"Sales\": %v", rec["table"], rec)
+			}
+			named++
+		case "failed":
+			// Nothing opened the file, so there is no name to report. The
+			// key still has to be present, like every other empty field.
+			if rec["table"] != "" {
+				t.Errorf("failed record should have an empty table, got %q", rec["table"])
+			}
+			blank++
+		}
+	}
+	if named != 2 || blank != 1 {
+		t.Errorf("got %d named and %d blank table records, want 2 and 1", named, blank)
+	}
+}
+
 // A per-file report path must not have every file overwrite one document.
 func TestPerFileReportPaths(t *testing.T) {
 	got := PerFileReportPath(filepath.Join("reports", "schema.json"), filepath.Join("in", "sales.qvd"), "out")

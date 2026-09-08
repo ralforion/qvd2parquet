@@ -13,6 +13,17 @@ restarts from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- The `table` field in the `--log` JSON Lines records is populated instead of
+  being empty on every line. The field was declared in the record and never
+  assigned, so a folder of nightly extracts could only be grouped by table by
+  parsing the input path, which does not carry the table name: an extract is
+  named for the table and the timestamp it was taken at, or for neither. The
+  value is the QVD header's own table name. It stays empty on a failed or
+  skipped file, where no conversion ran to read it, exactly as the row and
+  column counts stay zero.
+
 ## [2.3.1] - 2026-08-29
 
 The release archives were incomplete. They carried the binary, `README.md` and
