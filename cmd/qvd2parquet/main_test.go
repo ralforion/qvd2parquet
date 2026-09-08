@@ -1199,3 +1199,61 @@ func TestRunThatConvertsNothingLeavesTheCatalogAlone(t *testing.T) {
 		})
 	}
 }
+
+// TestScanThatReadsNothingSaysSo checks the reporting, not the writing.
+//
+// A scan in which every file failed accounts for nothing, so no catalog is
+// written and the path keeps whatever it held. The summary line was printed
+// unconditionally, so the run named a catalog that does not exist, which is
+// the one thing a message about an output must not do.
+func TestScanThatReadsNothingSaysSo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	junk := filepath.Join(dir, "junk")
+	if err := os.Mkdir(junk, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(junk, "a.parquet"), []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+
+	combined, err := exec.Command(bin, "--progress", "0", "--catalog-scan",
+		"--catalog-out", catalogPath, junk).CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitInput {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitInput, combined)
+	}
+	if strings.Contains(string(combined), "wrote catalog to") {
+		t.Errorf("announced a catalog it did not write:\n%s", combined)
+	}
+	if !strings.Contains(string(combined), "no catalog written") {
+		t.Errorf("did not say the catalog was skipped:\n%s", combined)
+	}
+	if _, err := os.Stat(catalogPath); !os.IsNotExist(err) {
+		t.Errorf("catalog exists after a scan that read nothing (err = %v)", err)
+	}
+
+	// A scan that read something still announces it, counting only the files
+	// it managed to read.
+	good := filepath.Join(junk, "good.parquet")
+	if out, err := exec.Command(bin, "--progress", "0",
+		filepath.Join("..", "..", "testdata", "sample-small.qvd"), good).CombinedOutput(); err != nil {
+		t.Fatalf("convert: %v\n%s", err, out)
+	}
+	combined, err = exec.Command(bin, "--progress", "0", "--catalog-scan",
+		"--catalog-out", catalogPath, junk).CombinedOutput()
+	exitErr, ok = err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitInput {
+		t.Fatalf("partial scan exit = %v, want %d\n%s", err, exitInput, combined)
+	}
+	if !strings.Contains(string(combined), "from 1 file(s)") {
+		t.Errorf("partial scan should count only what it read:\n%s", combined)
+	}
+	if _, err := os.Stat(catalogPath); err != nil {
+		t.Errorf("partial scan wrote no catalog: %v", err)
+	}
+}

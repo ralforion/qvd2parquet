@@ -829,10 +829,19 @@ func runCatalogScan(paths []string, catalogPath string, recursive, force bool, l
 		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
 		return exitOutput
 	}
-	logf("wrote catalog to %s: %d column(s) from %d file(s)",
-		cat.Path(), cat.Len(), len(files)-failed)
+	// A scan in which every file failed accounted for nothing, so Close wrote
+	// no catalog and the path holds whatever it held before. Announcing one
+	// anyway named a file that does not exist, which is the one thing a
+	// message about an output must not do.
+	if cat.Started() {
+		logf("wrote catalog to %s: %d column(s) from %d file(s)",
+			cat.Path(), cat.Len(), len(files)-failed)
+	}
 	if failed > 0 {
 		logf("note: %d of %d file(s) could not be read", failed, len(files))
+		if !cat.Started() {
+			logf("no catalog written: %s is unchanged", cat.Path())
+		}
 		return exitInput
 	}
 	return exitOK

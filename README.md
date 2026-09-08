@@ -603,7 +603,11 @@ qvd2parquet --catalog-scan --catalog-out catalog.parquet out/
 ```
 
 It reads each file's footer and never a data page, so it costs a seek per file
-however many rows they hold, and it converts nothing. What it cannot recover is
+however many rows they hold, and it converts nothing. A file it cannot read is
+reported and the scan continues, so one bad file in a folder of hundreds does
+not cost the whole catalog; the run exits non-zero and the summary counts only
+the files it managed to read. A scan in which every file failed accounted for
+nothing, so no catalog is written and the run says so rather than naming one. What it cannot recover is
 the QVD side -- `qlik_type`, `symbols`, `value_range`, `strategy`, `note` --
 which never reached the Parquet. Those rows say `source='parquet'` rather than
 `source='qvd'` so a query can tell the difference instead of inferring it from
