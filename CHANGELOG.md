@@ -13,6 +13,17 @@ restarts from it.
 
 ## [Unreleased]
 
+### Added
+
+- `--console-log PATH` copies the screen output to a file as it is printed. It
+  is the half the JSON log does not carry: the notes, the progress, and what
+  the run was doing when it stopped. It is a copy rather than a redirect, so
+  the screen keeps everything; the file opens with the banner, so it says which
+  build wrote it; and nothing buffers, so a stopped or killed run keeps every
+  line it had printed. It works in every mode and takes the same path guards as
+  `--log`. The shell does the same job with `2> run.txt`; this is for the
+  scheduled job that runs the binary directly and has no shell to do it with.
+
 ### Fixed
 
 - A batch that is stopped or killed now keeps what it already did. The `--log`

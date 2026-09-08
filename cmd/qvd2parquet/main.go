@@ -148,6 +148,7 @@ func run() int {
 		excludeFiles  = fs.String("exclude-files", "", "With --out-dir, skip the files matching these comma-separated wildcard patterns")
 		skipUpToDate  = fs.Bool("skip-up-to-date", false, "With --out-dir, leave a file alone when this exact run already produced its output")
 		logPath       = fs.String("log", "", "Write one JSON Lines record per input, then a summary")
+		consolePath   = fs.String("console-log", "", "Also write the screen output to this file, as it is printed")
 		inspect       = fs.Bool("inspect", false, "Read only the header and symbol tables, print the schema, and exit")
 		catalogOut    = fs.String("catalog-out", "", "Write a column-grain catalog of the run to this Parquet path: one row per output column, with its comment")
 		catalogScan   = fs.Bool("catalog-scan", false, "With --catalog-out, read the columns out of existing .parquet inputs instead of converting")
@@ -170,37 +171,37 @@ func run() int {
 	scan := *catalogScan
 	switch {
 	case scan && *catalogOut == "":
-		fmt.Fprintf(os.Stderr, "%s: --catalog-scan needs --catalog-out to write to\n", programName)
+		fmt.Fprintf(stderr, "%s: --catalog-scan needs --catalog-out to write to\n", programName)
 		return exitUsage
 	case scan && *logPath != "":
-		fmt.Fprintf(os.Stderr, "%s: --log records conversions and cannot be combined with --catalog-scan\n", programName)
+		fmt.Fprintf(stderr, "%s: --log records conversions and cannot be combined with --catalog-scan\n", programName)
 		return exitUsage
 	case scan && (batch || *inspect):
-		fmt.Fprintf(os.Stderr, "%s: --catalog-scan reads finished Parquet files and "+
+		fmt.Fprintf(stderr, "%s: --catalog-scan reads finished Parquet files and "+
 			"converts nothing, so it cannot be combined with --out-dir or --inspect\n", programName)
 		return exitUsage
 	case scan && fs.NArg() < 1:
-		fmt.Fprintf(os.Stderr, "%s: --catalog-scan needs at least one .parquet file or directory\n\n", programName)
+		fmt.Fprintf(stderr, "%s: --catalog-scan needs at least one .parquet file or directory\n\n", programName)
 		fs.Usage()
 		return exitUsage
 	case batch && fs.NArg() < 1:
-		fmt.Fprintf(os.Stderr, "%s: --out-dir needs at least one input file or directory\n\n", programName)
+		fmt.Fprintf(stderr, "%s: --out-dir needs at least one input file or directory\n\n", programName)
 		fs.Usage()
 		return exitUsage
 	case batch && *inspect:
-		fmt.Fprintf(os.Stderr, "%s: --inspect and --out-dir cannot be combined; "+
+		fmt.Fprintf(stderr, "%s: --inspect and --out-dir cannot be combined; "+
 			"inspect one file at a time\n", programName)
 		return exitUsage
 	case *inspect && *logPath != "":
-		fmt.Fprintf(os.Stderr, "%s: --log records conversions and cannot be combined with --inspect\n", programName)
+		fmt.Fprintf(stderr, "%s: --log records conversions and cannot be combined with --inspect\n", programName)
 		return exitUsage
 	case !batch && !scan && *inspect && fs.NArg() != 1:
-		fmt.Fprintf(os.Stderr, "%s: --inspect expects an input path, got %d argument(s)\n\n",
+		fmt.Fprintf(stderr, "%s: --inspect expects an input path, got %d argument(s)\n\n",
 			programName, fs.NArg())
 		fs.Usage()
 		return exitUsage
 	case !batch && !scan && !*inspect && fs.NArg() != 2:
-		fmt.Fprintf(os.Stderr, "%s: expected an input and an output path, got %d argument(s); "+
+		fmt.Fprintf(stderr, "%s: expected an input and an output path, got %d argument(s); "+
 			"use --out-dir to convert several files\n\n", programName, fs.NArg())
 		fs.Usage()
 		return exitUsage
@@ -298,7 +299,7 @@ func run() int {
 		case <-signals:
 			cancel()
 			signal.Stop(signals)
-			fmt.Fprintf(os.Stderr,
+			fmt.Fprintf(stderr,
 				"%s: cancelling, finishing the current step; press Ctrl-C again to stop now\n",
 				programName)
 		case <-ctx.Done():
@@ -307,18 +308,18 @@ func run() int {
 		}
 	}()
 
-	fmt.Fprintln(os.Stderr, banner())
+	fmt.Fprintln(stderr, banner())
 
 	logf := func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, programName+": "+format+"\n", args...)
+		fmt.Fprintf(stderr, programName+": "+format+"\n", args...)
 	}
 
 	if scan {
-		return runCatalogScan(fs.Args(), *catalogOut, *recursive, opts.Force, logf)
+		return runCatalogScan(fs.Args(), *catalogOut, *consolePath, *recursive, opts.Force, logf)
 	}
 
 	if *inspect {
-		return runInspect(ctx, inputPath, &opts, *catalogOut, logf)
+		return runInspect(ctx, inputPath, &opts, *catalogOut, *consolePath, logf)
 	}
 	if batch {
 		sel := convert.InputSelection{
@@ -326,10 +327,11 @@ func run() int {
 			Include:   splitList(*includeFiles),
 			Exclude:   splitList(*excludeFiles),
 		}
-		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, sel, *skipUpToDate, *logPath, *catalogOut, logf)
+		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, sel, *skipUpToDate,
+			*logPath, *catalogOut, *consolePath, logf)
 	}
 
-	return runSingle(ctx, inputPath, outputPath, &opts, *logPath, *catalogOut, logf)
+	return runSingle(ctx, inputPath, outputPath, &opts, *logPath, *catalogOut, *consolePath, logf)
 }
 
 // openCatalog creates the run's catalog writer and returns a function that
@@ -355,7 +357,7 @@ func openCatalog(path string, opts *convert.Options, logf convert.Logf) (func() 
 	opts.Catalog = cat
 	return func() int {
 		if err := cat.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+			fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 			return exitCodeFor(err)
 		}
 		// A run that never began writes no catalog, so there is nothing to
@@ -381,7 +383,7 @@ func closeCatalogInto(code *int, closeCatalog func() int) {
 // file-plus-summary records as runBatch so automation can query either mode
 // without knowing how many files the command converted.
 func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.Options,
-	logPath, catalogPath string, logf convert.Logf) (code int) {
+	logPath, catalogPath, consolePath string, logf convert.Logf) (code int) {
 
 	// Every path guard runs before either writer is created. Both the log and
 	// the catalog are written by truncating, so a writer opened ahead of a
@@ -399,10 +401,19 @@ func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.
 			return usageErr(err)
 		}
 	}
+	if err := validateWriterPath(consolePath, "--console-log", inputPath, outputPath, opts); err != nil {
+		return usageErr(err)
+	}
+	if code := startConsoleLog(consolePath, []logCollision{
+		{"--log", logPath}, {"--catalog-out", catalogPath},
+	}); code != exitOK {
+		return code
+	}
+	defer stderr.Close()
 
 	closeCatalog, err := openCatalog(catalogPath, opts, logf)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)
 	}
 	defer closeCatalogInto(&code, closeCatalog)
@@ -411,7 +422,7 @@ func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.
 	if logPath != "" {
 		var err error
 		if log, err = convert.NewLogWriter(logPath); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+			fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 			return exitOutput
 		}
 		defer log.Close()
@@ -441,11 +452,11 @@ func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.
 		}
 		log.File(result)
 		log.Summary(summary)
-		fmt.Fprintf(os.Stderr, "%s: wrote %s\n", programName, logPath)
+		fmt.Fprintf(stderr, "%s: wrote %s\n", programName, logPath)
 	}
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)
 	}
 
@@ -481,10 +492,15 @@ func checkCollisions(path, flag string, paths []logCollision) error {
 	return nil
 }
 
-// validateLogPath prevents NewLogWriter from truncating a conversion input or
-// sharing a destination with another output.
-func validateLogPath(logPath, inputPath, outputPath string, opts *convert.Options) error {
-	return checkLogCollisions(logPath, []logCollision{
+// validateWriterPath prevents a writer that truncates what it opens from
+// destroying a conversion input or sharing a destination with another output.
+// Three flags need it and need exactly the same list: --log, --catalog-out and
+// --console-log.
+func validateWriterPath(path, flag, inputPath, outputPath string, opts *convert.Options) error {
+	if path == "" {
+		return nil
+	}
+	return checkCollisions(path, flag, []logCollision{
 		{"the input path", inputPath},
 		{"the output path", outputPath},
 		{"--schema", opts.SchemaOverridePath},
@@ -493,86 +509,45 @@ func validateLogPath(logPath, inputPath, outputPath string, opts *convert.Option
 	})
 }
 
-// validateCatalogPath applies the same guard to --catalog-out. Its writer
+// validateLogPath is the guard for --log.
+func validateLogPath(logPath, inputPath, outputPath string, opts *convert.Options) error {
+	return validateWriterPath(logPath, "--log", inputPath, outputPath, opts)
+}
+
+// validateCatalogPath is the same guard for --catalog-out. Its writer
 // truncates whatever it opens, exactly as the log's does, so pointing it at an
 // input would destroy the file the run was asked to read.
 func validateCatalogPath(catalogPath, inputPath, outputPath string, opts *convert.Options) error {
-	if catalogPath == "" {
-		return nil
-	}
-	return checkCollisions(catalogPath, "--catalog-out", []logCollision{
-		{"the input path", inputPath},
-		{"the output path", outputPath},
-		{"--schema", opts.SchemaOverridePath},
-		{"--schema-report", opts.SchemaReportPath},
-		{"--quality-report", opts.QualityReportPath},
-	})
+	return validateWriterPath(catalogPath, "--catalog-out", inputPath, outputPath, opts)
 }
 
-// validateBatchCatalogPath is the batch equivalent, checking every derived
-// path the way validateBatchLogPath does.
-func validateBatchCatalogPath(catalogPath string, inputs []string,
-	problems []convert.InputProblem, outDir string, opts *convert.Options) error {
-
-	if catalogPath == "" {
-		return nil
-	}
-	if err := checkCollisions(catalogPath, "--catalog-out", []logCollision{
-		{"--schema", opts.SchemaOverridePath},
-	}); err != nil {
-		return err
-	}
-	// A path FindInputs could not examine never reaches the inputs list, so
-	// the loop below would not see it and the catalog would take the name of
-	// the file the run is about to report as missing, creating it in the same
-	// breath. The log guard covers this; so must this one.
-	for _, p := range problems {
-		if err := checkCollisions(catalogPath, "--catalog-out", []logCollision{
-			{"the input " + p.Path, p.Path},
-		}); err != nil {
-			return err
-		}
-	}
-	for _, in := range inputs {
-		out := convert.OutputPathFor(in, outDir)
-		if err := checkCollisions(catalogPath, "--catalog-out", []logCollision{
-			{"the input " + in, in},
-			{"the output " + out, out},
-			{"the --schema-report for " + in,
-				convert.PerFileReportPath(opts.SchemaReportPath, in, outDir)},
-			{"the --quality-report for " + in,
-				convert.PerFileReportPath(opts.QualityReportPath, in, outDir)},
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// validateBatchLogPath is the same guard for a batch, where none of the paths
-// at risk were typed on the command line: the inputs come from expanding
-// directories, and every output and per-file report is derived from an input
-// under --out-dir. It has to run after FindInputs for that reason, and before
-// NewLogWriter, which truncates whatever it opens.
+// validateBatchWriterPath is the batch guard, where none of the paths at risk
+// were typed on the command line: the inputs come from expanding directories,
+// and every output and per-file report is derived from an input under
+// --out-dir. It has to run after FindInputs for that reason, and before the
+// writer, which truncates whatever it opens.
 //
 // The message names the offending file rather than its role, because a batch
 // may have found hundreds and "the input path" would not say which one.
-func validateBatchLogPath(logPath string, inputs []string, problems []convert.InputProblem,
-	outDir string, opts *convert.Options) error {
+func validateBatchWriterPath(path, flag string, inputs []string,
+	problems []convert.InputProblem, outDir string, opts *convert.Options) error {
 
-	if err := checkLogCollisions(logPath, []logCollision{
+	if path == "" {
+		return nil
+	}
+	if err := checkCollisions(path, flag, []logCollision{
 		{"--schema", opts.SchemaOverridePath},
 	}); err != nil {
 		return err
 	}
 	// A path FindInputs could not examine is still an input: the run reports it
-	// as a failed file and writes it to the log. Letting the log take that path
-	// produced a run that named the file as missing and created it in the same
-	// breath, the log's first record reporting the failure of the path it was
-	// being written to. No output or report is derived from one, so the path
-	// itself is the whole check.
+	// as a failed file and writes it to the log. Letting a writer take that
+	// path produced a run that named the file as missing and created it in the
+	// same breath, the log's first record reporting the failure of the path it
+	// was being written to. No output or report is derived from one, so the
+	// path itself is the whole check.
 	for _, p := range problems {
-		if err := checkLogCollisions(logPath, []logCollision{
+		if err := checkCollisions(path, flag, []logCollision{
 			{"the input " + p.Path, p.Path},
 		}); err != nil {
 			return err
@@ -580,7 +555,7 @@ func validateBatchLogPath(logPath string, inputs []string, problems []convert.In
 	}
 	for _, in := range inputs {
 		out := convert.OutputPathFor(in, outDir)
-		if err := checkLogCollisions(logPath, []logCollision{
+		if err := checkCollisions(path, flag, []logCollision{
 			{"the input " + in, in},
 			{"the output " + out, out},
 			{"the --schema-report for " + in,
@@ -592,6 +567,41 @@ func validateBatchLogPath(logPath string, inputs []string, problems []convert.In
 		}
 	}
 	return nil
+}
+
+// validateBatchCatalogPath is the batch guard for --catalog-out.
+func validateBatchCatalogPath(catalogPath string, inputs []string,
+	problems []convert.InputProblem, outDir string, opts *convert.Options) error {
+
+	return validateBatchWriterPath(catalogPath, "--catalog-out", inputs, problems, outDir, opts)
+}
+
+// validateBatchLogPath is the batch guard for --log.
+func validateBatchLogPath(logPath string, inputs []string, problems []convert.InputProblem,
+	outDir string, opts *convert.Options) error {
+
+	return validateBatchWriterPath(logPath, "--log", inputs, problems, outDir, opts)
+}
+
+// startConsoleLog checks --console-log against every path the run reads or
+// writes and then attaches it, so from here on the screen output is recorded.
+// It returns the exit code to fail with, or exitOK.
+//
+// The guards matter more here than anywhere else: the file is created by
+// truncating, and it is the one output a user is likely to point at a folder
+// full of the run's own files.
+func startConsoleLog(path string, paths []logCollision) int {
+	if path == "" {
+		return exitOK
+	}
+	if err := checkCollisions(path, "--console-log", paths); err != nil {
+		return usageErr(err)
+	}
+	if err := stderr.attach(path); err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
+		return exitOutput
+	}
+	return exitOK
 }
 
 // samePath resolves existing symlinks and the nearest existing parent. The
@@ -666,7 +676,7 @@ func canonicalPath(path string) string {
 // one bad file does not hide the state of the rest.
 func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	outDir string, fileWorkers int, sel convert.InputSelection, skipUpToDate bool,
-	logPath, catalogPath string, logf convert.Logf) (code int) {
+	logPath, catalogPath, consolePath string, logf convert.Logf) (code int) {
 
 	found := convert.FindInputs(paths, sel)
 	inputs, problems := found.Files, found.Problems
@@ -674,10 +684,10 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		// Saying only that nothing was found would read as an empty folder
 		// when it was the patterns that emptied it.
 		if found.Filtered > 0 {
-			fmt.Fprintf(os.Stderr, "%s: --include-files/--exclude-files %s left none of the %d .qvd file(s) found in %s\n",
+			fmt.Fprintf(stderr, "%s: --include-files/--exclude-files %s left none of the %d .qvd file(s) found in %s\n",
 				programName, sel.Patterns(), found.Filtered, strings.Join(paths, ", "))
 		} else {
-			fmt.Fprintf(os.Stderr, "%s: no .qvd files found in %s\n",
+			fmt.Fprintf(stderr, "%s: no .qvd files found in %s\n",
 				programName, strings.Join(paths, ", "))
 		}
 		return exitUsage
@@ -691,7 +701,7 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	// The output directory has to exist before the log, which commonly lives
 	// inside it.
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: create output directory %s: %v\n", programName, outDir, err)
+		fmt.Fprintf(stderr, "%s: create output directory %s: %v\n", programName, outDir, err)
 		return exitOutput
 	}
 
@@ -707,7 +717,7 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	// as well. It is cheap and idempotent, and RunMany keeps its own copy for
 	// callers that are not this one.
 	if err := convert.CheckOutputCollisions(inputs, outDir); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)
 	}
 	if err := validateBatchCatalogPath(catalogPath, inputs, problems, outDir, opts); err != nil {
@@ -734,10 +744,21 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 			return usageErr(err)
 		}
 	}
+	if err := validateBatchWriterPath(consolePath, "--console-log", inputs, problems, outDir, opts); err != nil {
+		return usageErr(err)
+	}
+	if code := startConsoleLog(consolePath, []logCollision{
+		{"--log", logPath},
+		{"--catalog-out", catalogPath},
+		{"the --skip-up-to-date manifest", manifestPathIf(skipUpToDate, outDir)},
+	}); code != exitOK {
+		return code
+	}
+	defer stderr.Close()
 
 	closeCatalog, err := openCatalog(catalogPath, opts, logf)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)
 	}
 	defer closeCatalogInto(&code, closeCatalog)
@@ -746,7 +767,7 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	if logPath != "" {
 		var err error
 		if log, err = convert.NewLogWriter(logPath); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+			fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 			return exitOutput
 		}
 		defer log.Close()
@@ -762,13 +783,13 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		ToolVersion:  version,
 	}, logf)
 	if err2 != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err2)
+		fmt.Fprintf(stderr, "%s: %v\n", programName, err2)
 		return exitCodeFor(err2)
 	}
 
-	fmt.Fprintln(os.Stderr, result.Summary())
+	fmt.Fprintln(stderr, result.Summary())
 	if logPath != "" {
-		fmt.Fprintf(os.Stderr, "%s: wrote %s\n", programName, logPath)
+		fmt.Fprintf(stderr, "%s: wrote %s\n", programName, logPath)
 	}
 	return result.ExitCode(exitCodeFor)
 }
@@ -790,26 +811,33 @@ func manifestPathIf(skipUpToDate bool, outDir string) string {
 // a scan cannot recover is the QVD-side profile -- the Qlik type, the symbol
 // count, the resolver's note -- which never reached the Parquet. Every row it
 // writes says source='parquet' so a query can tell the two apart.
-func runCatalogScan(paths []string, catalogPath string, recursive, force bool, logf convert.Logf) int {
+func runCatalogScan(paths []string, catalogPath, consolePath string, recursive, force bool, logf convert.Logf) int {
 	files, err := catalog.FindParquet(paths, recursive)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 		return exitInput
 	}
 	if len(files) == 0 {
-		fmt.Fprintf(os.Stderr, "%s: no .parquet files found in %s\n",
+		fmt.Fprintf(stderr, "%s: no .parquet files found in %s\n",
 			programName, strings.Join(paths, ", "))
 		return exitUsage
 	}
+	scanned := make([]logCollision, 0, len(files)+1)
+	scanned = append(scanned, logCollision{"--catalog-out", catalogPath})
 	for _, f := range files {
 		if samePath(f, catalogPath) {
 			return usageErr(fmt.Errorf("--catalog-out %s is one of the files being scanned", catalogPath))
 		}
+		scanned = append(scanned, logCollision{"the scanned file " + f, f})
 	}
+	if code := startConsoleLog(consolePath, scanned); code != exitOK {
+		return code
+	}
+	defer stderr.Close()
 
 	cat, err := catalog.NewWriter(catalogPath, version, force)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)
 	}
 
@@ -819,14 +847,14 @@ func runCatalogScan(paths []string, catalogPath string, recursive, force bool, l
 	for _, f := range files {
 		rows, err := catalog.ScanFile(f)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+			fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 			failed++
 			continue
 		}
 		cat.Add(rows)
 	}
 	if err := cat.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 		return exitOutput
 	}
 	// A scan in which every file failed accounted for nothing, so Close wrote
@@ -851,27 +879,36 @@ func runCatalogScan(paths []string, catalogPath string, recursive, force bool, l
 // conversion would produce. The report is the command's result, so it goes to
 // stdout; diagnostics stay on stderr.
 func runInspect(ctx context.Context, inputPath string, opts *convert.Options,
-	catalogPath string, logf convert.Logf) (code int) {
+	catalogPath, consolePath string, logf convert.Logf) (code int) {
 
 	if err := validateCatalogPath(catalogPath, inputPath, "", opts); err != nil {
 		return usageErr(err)
 	}
+	if err := validateWriterPath(consolePath, "--console-log", inputPath, "", opts); err != nil {
+		return usageErr(err)
+	}
+	if code := startConsoleLog(consolePath, []logCollision{
+		{"--catalog-out", catalogPath},
+	}); code != exitOK {
+		return code
+	}
+	defer stderr.Close()
 	closeCatalog, err := openCatalog(catalogPath, opts, logf)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)
 	}
 	defer closeCatalogInto(&code, closeCatalog)
 
 	rep, err := convert.Inspect(ctx, inputPath, opts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)
 	}
 	defer rep.Close()
 
 	if err := rep.Write(os.Stdout); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 		return exitOutput
 	}
 	if opts.Catalog != nil && rep.Schema != nil {
@@ -881,14 +918,14 @@ func runInspect(ctx context.Context, inputPath string, opts *convert.Options,
 	}
 	if opts.SchemaReportPath != "" {
 		if rep.Schema == nil {
-			fmt.Fprintf(os.Stderr, "%s: no schema to report: %v\n", programName, rep.SchemaErr)
+			fmt.Fprintf(stderr, "%s: no schema to report: %v\n", programName, rep.SchemaErr)
 			return exitSchema
 		}
 		if err := convert.WriteSchemaReport(opts.SchemaReportPath, inputPath, rep.File, rep.Schema, opts, rep.Encodings); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+			fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 			return exitOutput
 		}
-		fmt.Fprintf(os.Stderr, "%s: wrote schema report to %s\n", programName, opts.SchemaReportPath)
+		fmt.Fprintf(stderr, "%s: wrote schema report to %s\n", programName, opts.SchemaReportPath)
 	}
 	// A file the type policy rejects exits non-zero, so scripts can gate on it.
 	if rep.SchemaErr != nil {
@@ -899,7 +936,7 @@ func runInspect(ctx context.Context, inputPath string, opts *convert.Options,
 	// than none: a script gating on it would go on to start the conversion
 	// that is about to fail.
 	if rep.EncodingErr != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, rep.EncodingErr)
+		fmt.Fprintf(stderr, "%s: %v\n", programName, rep.EncodingErr)
 		return exitCodeFor(rep.EncodingErr)
 	}
 	return exitOK
@@ -928,7 +965,7 @@ func fsSet(fs *flag.FlagSet, name string) bool {
 }
 
 func usageErr(err error) int {
-	fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+	fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 	return exitUsage
 }
 

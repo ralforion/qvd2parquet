@@ -115,6 +115,7 @@ qvd2parquet --catalog-scan --catalog-out catalog.parquet <file-or-directory>...
   -exclude-files '*_TMP'     With --out-dir, skip files matching these patterns
   -skip-up-to-date           With --out-dir, leave a file this run already produced
   -log path.jsonl            Write one JSON Lines record per input, then a summary
+  -console-log run.txt       Also write the screen output to this file, as it is printed
   -catalog-out cat.parquet   Write a column-grain catalog of the run: one row per
                              output column, with its comment
   -catalog-scan              With --catalog-out, read the columns out of existing
@@ -542,17 +543,36 @@ The path is yours to name. It is created if its directory does not exist, so
 `--log logs/run-$(date +%F).jsonl` works in a scheduled job, and a run that
 would otherwise leave nothing behind names its own log per day.
 
-The screen output is a separate thing: it is prose on stderr, meant to be read,
-and the shell captures it.
+### The screen output
+
+The screen output is a separate thing: prose on stderr, meant to be read.
+`--console-log` copies it to a file as it is printed.
 
 ```sh
-qvd2parquet --out-dir ./parquet --log run.jsonl ./qvds 2> run.txt      # to a file
-qvd2parquet --out-dir ./parquet --log run.jsonl ./qvds 2>&1 | tee run.txt   # and on screen
+qvd2parquet --out-dir ./parquet --log run.jsonl --console-log run.txt ./qvds
 ```
 
-Nothing buffers it, so that file survives a kill too. Use both: the JSON log is
-what a query reads, and the screen log is what someone reads when a file
-failed and the record says why but not what led up to it.
+It is a copy, not a redirect: the same lines still reach the screen. The file
+opens with the banner, so it says which build wrote it, and nothing buffers, so
+a run that is stopped or killed keeps every line it had printed, down to the
+progress of the file that was still converting. It works in every mode,
+including `--inspect` and `--catalog-scan`, and it takes the same path guards
+as `--log`: it must not name an input, an output, a report, the manifest, or
+either of the other two logs, since it is created by truncating.
+
+The shell does the same job where there is a shell to do it with:
+
+```sh
+qvd2parquet --out-dir ./parquet ./qvds 2> run.txt            # to a file
+qvd2parquet --out-dir ./parquet ./qvds 2>&1 | tee run.txt    # and on screen
+```
+
+`--console-log` is for the scheduled job that runs the binary directly, through
+systemd or a Windows task, where there is not one. Use both logs: the JSON log
+is what a query reads, and the screen log is what someone reads when a file
+failed and the record says why but not what led up to it. A failure that cannot
+be written is dropped with one note rather than failing the run, since the
+conversion is what the run is for and the screen still has the output.
 
 The log path has to differ from every file the run writes or reads: the inputs,
 the outputs, `--schema`, and the schema and quality reports. In batch mode that
