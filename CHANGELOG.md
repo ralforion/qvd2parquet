@@ -13,6 +13,18 @@ restarts from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- A batch that is stopped or killed now keeps what it already did. The `--log`
+  records and the `--skip-up-to-date` manifest were both written only after the
+  last file, so a run that did not reach the end left an empty log and a
+  manifest naming nothing, and the rerun converted the whole folder again. Each
+  log record is now written the moment its file is finished, and the manifest
+  is saved during the run: the first file to finish at once, and at intervals
+  after that. Two consequences worth knowing: the log's lines are in
+  completion order rather than input order, and a log with no `summary` line is
+  a run that did not finish.
+
 ## [2.4.0] - 2026-09-08
 
 ### Added

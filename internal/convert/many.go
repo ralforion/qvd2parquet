@@ -444,6 +444,14 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		logf(format, args...)
 	}
 
+	// Both records are written as the run goes rather than all at the end, so
+	// a batch that is stopped or killed halfway keeps what it has already
+	// done: the log holds a line per finished file instead of nothing, and the
+	// manifest names the outputs so the next --skip-up-to-date run resumes
+	// rather than converting the whole folder again.
+	live := newLiveManifest(manifest, many.OutDir, fingerprint, safeLogf)
+	logResult := func(r FileResult) { many.Log.File(r) } // a nil log writes nothing
+
 	start := time.Now()
 	results := make([]FileResult, len(inputs))
 	sem := make(chan struct{}, fileWorkers)
@@ -462,6 +470,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 					Input: inputs[j],
 					Err:   fmt.Errorf("%w before this file was converted", ErrCanceled),
 				}
+				logResult(results[j])
 			}
 			i = len(inputs)
 		default:
@@ -470,17 +479,16 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			break
 		}
 
-		if out := OutputPathFor(in, many.OutDir); manifest.UpToDate(in, out, fingerprint) {
+		if out := OutputPathFor(in, many.OutDir); live.UpToDate(in, out) {
 			// A manifest written before entries carried the table name has
 			// none to give, and the file would skip forever without ever
-			// filling it in, so read the header this once and keep it. Skips
-			// are decided on this goroutine, and nothing else touches the
-			// manifest until every conversion has finished, so this needs no
-			// lock.
-			table := manifest.TableFor(out)
+			// filling it in, so read the header this once and keep it. A
+			// conversion running alongside this loop records into the manifest
+			// as it finishes, so both go through the guarded wrapper.
+			table := live.TableFor(out)
 			if table == "" {
 				table = TableNameOf(in)
-				manifest.NoteTable(out, table)
+				live.NoteTable(out, table)
 			}
 			results[i] = FileResult{Input: in, Output: out, Table: table, Skipped: true, Started: time.Now()}
 			// A skipped file writes no catalog rows of its own, which would
@@ -501,6 +509,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 					results[i].Err = fmt.Errorf("%w: catalog: %v; rerun with "+
 						"--force to reconvert it", parquetwrite.ErrOutput, err)
 					safeLogf("catalog: %s is up to date but could not be read: %v", DisplayPath(out), err)
+					logResult(results[i])
 					continue
 				}
 				for j := range rows {
@@ -512,6 +521,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			// Serialized like every other per-file line: a conversion already
 			// running can be writing progress at the same moment.
 			safeLogf("skip %s (up to date)", DisplayPath(in))
+			logResult(results[i])
 			continue
 		}
 
@@ -521,30 +531,28 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			defer wg.Done()
 			defer func() { <-sem }()
 			results[i] = convertOne(ctx, in, opts, many, perFile, fileWorkers > 1, safeLogf)
+			// Recorded and logged as soon as this file is done rather than
+			// after the wait: a run killed while the other files are still
+			// converting must not lose the record of this one.
+			live.Record(results[i])
+			logResult(results[i])
 		}(i, in)
 	}
 	wg.Wait()
 
-	// The manifest describes what is on disk now, so it is written after the
-	// conversions and includes only the ones that produced a file. A file
-	// that failed leaves its previous entry alone: the writer renames a
-	// temporary into place, so a failed conversion cannot have replaced the
-	// output the entry describes.
-	if manifest != nil {
-		for _, r := range results {
-			if r.Err == nil && !r.Skipped && r.Stats != nil {
-				manifest.Record(r.Input, r.Output, fingerprint, r.Stats.Rows, r.Stats.TableName)
-			}
-		}
-		if err := manifest.Save(many.OutDir); err != nil {
-			logf("note: could not write %s: %v; the next --skip-up-to-date run will convert these files again",
-				ManifestName, err)
-		}
+	// The last save is unconditional: the saves during the run are throttled,
+	// so the files converted since the most recent one are in the manifest but
+	// not yet on disk.
+	if err := live.Save(); err != nil {
+		logf("note: could not write %s: %v; the next --skip-up-to-date run will convert these files again",
+			ManifestName, err)
 	}
 
 	// An unreadable input is a failure of that input, not of the run.
 	for _, p := range many.Problems {
-		results = append(results, FileResult{Input: p.Path, Err: p.Err, Started: start})
+		problem := FileResult{Input: p.Path, Err: p.Err, Started: start}
+		results = append(results, problem)
+		logResult(problem)
 	}
 	sort.Slice(results, func(i, j int) bool { return results[i].Input < results[j].Input })
 
@@ -562,13 +570,9 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 				b.Bytes += r.Stats.OutputBytes
 			}
 		}
-		if many.Log != nil {
-			many.Log.File(r)
-		}
 	}
-	if many.Log != nil {
-		many.Log.Summary(b)
-	}
+	// Every file record is on disk already; the summary closes the log.
+	many.Log.Summary(b)
 	return b, nil
 }
 

@@ -13,6 +13,24 @@ import (
 // and a final "summary". JSON Lines is used so a finished run can be queried
 // directly -- DuckDB's read_json_auto, jq, pandas -- rather than parsed out of
 // prose, which is the point of keeping a log at all.
+//
+// A record is written the moment its file is finished, not at the end of the
+// run, and nothing here buffers: each line reaches the file with one write, so
+// a batch that is stopped or killed leaves the lines for the files it did
+// convert. Collecting the records and writing them at the end left an empty
+// log for exactly the runs whose log was worth having. It follows that
+//
+//   - the lines are in completion order, not input order. Files convert
+//     concurrently, so there was never a useful order to preserve; every
+//     record carries "time" and the input path to sort or group by.
+//   - a log with no "summary" line is a run that did not finish. That is a
+//     fact worth having rather than a defect, and a query that needs the
+//     totals should select the summary rather than assume the last line is
+//     one.
+//
+// Lines are not fsynced. Losing them needs the machine to go down, not the
+// process, and a run over a folder of small files would otherwise spend more
+// time syncing the log than converting.
 type LogWriter struct {
 	mu   sync.Mutex
 	f    *os.File
@@ -193,9 +211,10 @@ func (w *LogWriter) Summary(b *BatchResult) {
 	})
 }
 
-// write serializes one record. Files convert concurrently, so the encoder is
-// guarded; a log write failure must not abort a conversion that succeeded, so
-// it is reported to stderr and the run continues.
+// write serializes one record. Files convert concurrently and each writes its
+// own line as it finishes, so the encoder is guarded; a log write failure must
+// not abort a conversion that succeeded, so it is reported to stderr and the
+// run continues.
 func (w *LogWriter) write(v any) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

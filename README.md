@@ -466,6 +466,13 @@ Worth knowing:
 - A manifest that is missing, corrupt or from a newer format converts the
   folder again rather than failing the run. The worst a lost manifest can do is
   repeat work.
+- It is saved **while the run is going**, not once at the end: the first file
+  to finish is written out at once, and again at intervals after that, spaced
+  from how long a save takes so a folder of tens of thousands does not spend
+  its time rewriting it. A batch that is stopped or killed halfway therefore
+  resumes on the next run instead of converting the whole folder again. Each
+  save goes through a temporary file and a rename, so an interrupted one
+  leaves the previous manifest intact rather than a truncated one.
 - A skipped file is still a record in `--log`, with `"status": "skipped"`, so a
   run's log accounts for every input it was given. It carries `table` as well,
   taken from the manifest entry rather than by re-reading the input the run
@@ -521,6 +528,31 @@ qvd2parquet --log run.jsonl input.qvd output.parquet
 
 A single-file conversion writes exactly two records: its file record and the
 summary. Folder conversion writes one file record per input before the summary.
+
+Each record is written the moment its file is finished, so a batch that is
+stopped or killed leaves the lines for the files it did convert rather than an
+empty file. Two things follow. The lines are in completion order rather than
+input order, since files convert concurrently; every record carries `time` and
+`input`, so sort or group by those. And a log with no `summary` line is a run
+that did not finish, which is worth knowing rather than a defect: a query that
+wants the totals should select the summary record rather than assume the last
+line is one.
+
+The path is yours to name. It is created if its directory does not exist, so
+`--log logs/run-$(date +%F).jsonl` works in a scheduled job, and a run that
+would otherwise leave nothing behind names its own log per day.
+
+The screen output is a separate thing: it is prose on stderr, meant to be read,
+and the shell captures it.
+
+```sh
+qvd2parquet --out-dir ./parquet --log run.jsonl ./qvds 2> run.txt      # to a file
+qvd2parquet --out-dir ./parquet --log run.jsonl ./qvds 2>&1 | tee run.txt   # and on screen
+```
+
+Nothing buffers it, so that file survives a kill too. Use both: the JSON log is
+what a query reads, and the screen log is what someone reads when a file
+failed and the record says why but not what led up to it.
 
 The log path has to differ from every file the run writes or reads: the inputs,
 the outputs, `--schema`, and the schema and quality reports. In batch mode that
