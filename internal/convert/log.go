@@ -67,6 +67,11 @@ type fileRecord struct {
 	Error     string `json:"error"`
 	ElapsedMs int64  `json:"elapsedMs"`
 
+	// Table is the QVD's own table name, present on a skipped and on a failed
+	// file too, so it is a stable key to group a run by. It is empty only
+	// when nothing could read the header at all. The counts below are
+	// different: they measure work this run did, so a skipped file reports
+	// zero rows.
 	Table       string `json:"table"`
 	Rows        int64  `json:"rows"`
 	Columns     int    `json:"columns"`
@@ -118,6 +123,7 @@ func (w *LogWriter) File(r FileResult) {
 		Output:            r.Output,
 		Status:            "ok",
 		ElapsedMs:         r.Elapsed.Milliseconds(),
+		Table:             r.TableName(),
 	}
 	switch {
 	case r.Err != nil:

@@ -62,6 +62,11 @@ type ManifestEntry struct {
 	// with, so changing a flag invalidates it.
 	Fingerprint string `json:"fingerprint"`
 	Rows        int64  `json:"rows"`
+	// Table is the QVD's own table name, kept so a skipped file can still be
+	// reported by table. The skip exists to avoid reading the input, and the
+	// name is not in the output path, so without this it could only come from
+	// re-opening the file the run just decided not to touch.
+	Table       string `json:"table"`
 	ConvertedAt string `json:"convertedAt"`
 }
 
@@ -144,7 +149,7 @@ func (m *Manifest) UpToDate(input, output, fingerprint string) bool {
 // Record notes a file this run converted. A file it could not stat afterwards
 // is left out of the manifest, so the next run converts it again rather than
 // trusting a half-known entry.
-func (m *Manifest) Record(input, output, fingerprint string, rows int64) {
+func (m *Manifest) Record(input, output, fingerprint string, rows int64, table string) {
 	if m == nil {
 		return
 	}
@@ -164,8 +169,60 @@ func (m *Manifest) Record(input, output, fingerprint string, rows int64) {
 		OutputModTime: stamp(out.ModTime()),
 		Fingerprint:   fingerprint,
 		Rows:          rows,
+		Table:         table,
 		ConvertedAt:   stamp(time.Now()),
 	}
+}
+
+// TableFor is the table name recorded for an output, empty when the manifest
+// does not name it. An entry written before the manifest carried the name is
+// empty rather than absent, which is why the caller heals it rather than
+// treating this as the last word.
+func (m *Manifest) TableFor(output string) string {
+	if m == nil {
+		return ""
+	}
+	return m.Entries[filepath.Base(output)].Table
+}
+
+// NoteTable fills in a name an older binary did not record, so the field is
+// right on the first run after an upgrade rather than only after the input
+// next changes. It is deliberately not a general setter: an entry that already
+// names a table describes the output on disk, and this run has not converted
+// anything that could have changed it.
+//
+// Nothing else about the entry is touched, so an entry healed this way still
+// describes the conversion that produced the file, not this run.
+func (m *Manifest) NoteTable(output, table string) {
+	if m == nil || table == "" {
+		return
+	}
+	key := filepath.Base(output)
+	e, ok := m.Entries[key]
+	if !ok || e.Table != "" {
+		return
+	}
+	e.Table = table
+	m.Entries[key] = e
+}
+
+// TableNameOf reads just the QVD's header for its table name, which costs one
+// open and an XML parse rather than a symbol pass. It answers for the two
+// results that have no Stats to ask: a manifest entry written before the name
+// was recorded, and a file that failed. A file that will not open yields no
+// name and no error, since neither caller is in a position to fail: one has
+// already decided the output is up to date, and the other is describing a
+// conversion that has failed already.
+//
+// It is exported for the single-file path in the command, which assembles its
+// own FileResult.
+func TableNameOf(input string) string {
+	f, err := qvd.Open(input)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	return f.Header.TableName
 }
 
 // canonicalInputPath is the identity an entry records, so the same file

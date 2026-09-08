@@ -335,6 +335,12 @@ func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.
 			Input: inputPath, Output: outputPath, Stats: stats, Quality: quality,
 			Err: err, Started: started, Elapsed: elapsed,
 		}
+		if err != nil {
+			// A conversion that got past the header knows the table, and a
+			// failed record is the one worth being able to group. Stats
+			// carries it when the conversion succeeded.
+			result.Table = convert.TableNameOf(inputPath)
+		}
 		summary := &convert.BatchResult{Results: []convert.FileResult{result}, Elapsed: elapsed}
 		if err != nil {
 			summary.Failed = 1

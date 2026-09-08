@@ -462,7 +462,11 @@ Worth knowing:
   folder again rather than failing the run. The worst a lost manifest can do is
   repeat work.
 - A skipped file is still a record in `--log`, with `"status": "skipped"`, so a
-  run's log accounts for every input it was given.
+  run's log accounts for every input it was given. It carries `table` as well,
+  taken from the manifest entry rather than by re-reading the input the run
+  just decided not to touch, so a folder can be grouped by table on the runs
+  where almost everything skips. Its counts stay zero, because they measure
+  work this run did.
 
 ### Parallelism
 
@@ -525,13 +529,22 @@ as the same path, because the filesystem may well agree.
 duckdb -c "select status, count(*), sum(rows) from read_json_auto('run.jsonl')
            where type='file' group by 1"
 duckdb -c "select input, error from read_json_auto('run.jsonl') where status='failed'"
+duckdb -c "select \"table\", count(*), sum(rows), sum(elapsedMs)
+           from read_json_auto('run.jsonl') where type='file' group by 1 order by 4 desc"
 ```
 
-Each file record carries the row and column counts, output size, elapsed time,
-throughput, `excludeNoMatch` with any pattern that dropped nothing from that
-file, `fieldsRenamed` and `fieldsUnchanged`, `encodings` with any column not
-written the default way, and the quality gate's verdict with any errors, so a
-run can be audited without opening every per-file report. `--schema-report` and
+Each file record carries `table` with the QVD's own table name, the row and
+column counts, output size, elapsed time, throughput, `excludeNoMatch` with any
+pattern that dropped nothing from that file, `fieldsRenamed` and
+`fieldsUnchanged`, `encodings` with any column not written the default way, and
+the quality gate's verdict with any errors, so a run can be audited without
+opening every per-file report. `table` is what a query groups by when a folder
+holds one table's daily extracts under names that carry a timestamp rather than
+the table. It is filled in on a skipped file, from the manifest, and on a
+failed one, by reading that file's header on its own, so a failure past the
+header is still grouped with the table it belongs to. It is empty only when
+nothing could read the header at all, which is the case where there is no name
+to give. `--schema-report` and
 `--quality-report` also work in batch mode; each file gets its own document,
 named after the input.
 

@@ -16,8 +16,13 @@ import (
 
 // FileResult is the outcome of converting one input file.
 type FileResult struct {
-	Input   string
-	Output  string
+	Input  string
+	Output string
+	// Table names the QVD's table for a result that has no Stats to ask: a
+	// skipped file, where the manifest kept the name, or a failed one, where
+	// the header was read on its own. Read it through TableName rather than
+	// directly, so a conversion that did run answers from its own Stats.
+	Table   string
 	Stats   *Stats
 	Quality *QualityReport
 	Err     error
@@ -30,6 +35,21 @@ type FileResult struct {
 
 // Failed reports whether the file did not convert.
 func (r FileResult) Failed() bool { return r.Err != nil }
+
+// TableName is the QVD's own table name, or empty when nothing managed to
+// read it.
+//
+// It is a method rather than a field every caller has to remember to set.
+// A FileResult is built in two places, the batch loop and the single-file
+// path, and a field was silently left empty by the second of them; a
+// conversion that produced Stats now answers from Stats wherever it was
+// assembled, and Table is consulted only when there is no Stats.
+func (r FileResult) TableName() string {
+	if r.Stats != nil {
+		return r.Stats.TableName
+	}
+	return r.Table
+}
 
 // BatchResult summarizes a whole run.
 type BatchResult struct {
@@ -450,7 +470,18 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		}
 
 		if out := OutputPathFor(in, many.OutDir); manifest.UpToDate(in, out, fingerprint) {
-			results[i] = FileResult{Input: in, Output: out, Skipped: true, Started: time.Now()}
+			// A manifest written before entries carried the table name has
+			// none to give, and the file would skip forever without ever
+			// filling it in, so read the header this once and keep it. Skips
+			// are decided on this goroutine, and nothing else touches the
+			// manifest until every conversion has finished, so this needs no
+			// lock.
+			table := manifest.TableFor(out)
+			if table == "" {
+				table = TableNameOf(in)
+				manifest.NoteTable(out, table)
+			}
+			results[i] = FileResult{Input: in, Output: out, Table: table, Skipped: true, Started: time.Now()}
 			// Serialized like every other per-file line: a conversion already
 			// running can be writing progress at the same moment.
 			safeLogf("skip %s (up to date)", DisplayPath(in))
@@ -475,7 +506,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	if manifest != nil {
 		for _, r := range results {
 			if r.Err == nil && !r.Skipped && r.Stats != nil {
-				manifest.Record(r.Input, r.Output, fingerprint, r.Stats.Rows)
+				manifest.Record(r.Input, r.Output, fingerprint, r.Stats.Rows, r.Stats.TableName)
 			}
 		}
 		if err := manifest.Save(many.OutDir); err != nil {
@@ -581,6 +612,15 @@ func convertOne(ctx context.Context, in string, opts *Options, many *ManyOptions
 	stats, quality, err := Run(ctx, in, r.Output, &o, fileLogf)
 	r.Elapsed = time.Since(r.Started)
 	r.Stats, r.Quality, r.Err = stats, quality, err
+	if err != nil {
+		// A conversion can fail well after the header was read, on a bad
+		// --encoding or a quality gate, and a failed record is exactly the
+		// one an operator goes looking for. Reading the header again costs
+		// an open and an XML parse on a path that is already the slow one,
+		// and a file that failed because it is not a QVD simply has no name
+		// to give.
+		r.Table = TableNameOf(in)
+	}
 
 	switch {
 	case err == nil:

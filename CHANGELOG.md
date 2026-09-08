@@ -13,6 +13,30 @@ restarts from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- The `table` field in the `--log` JSON Lines records is populated instead of
+  being empty on every line. The field was declared in the record and never
+  assigned, so a folder of nightly extracts could only be grouped by table by
+  parsing the input path, which does not carry the table name: an extract is
+  named for the table and the timestamp it was taken at, or for neither. The
+  value is the QVD header's own table name.
+- A **failed** file names its table too. A conversion can fail well after the
+  header was read, on an unknown `--columns` or a quality gate, and that record
+  is the one worth being able to group; the header is re-read on its own for a
+  failure, which costs an open and an XML parse on a path that is already the
+  slow one. `table` is empty only when nothing could read the header at all.
+- A file skipped by `--skip-up-to-date` reports its `table` too, which is the
+  case the field is most wanted for: in the steady state the flag is for,
+  almost every file skips, so a log without it could not be grouped by table
+  on the runs that matter. The name is kept in `.qvd2parquet-manifest.json` by
+  the run that converted the file, rather than read back from an input the run
+  has just decided not to touch. A manifest from an earlier version does not
+  carry it, and the file it describes may never convert again, so the first run
+  after upgrading reads that one header and keeps the answer. The manifest
+  format is unchanged, so upgrading does not reconvert a folder. A skipped
+  file's row and column counts stay zero: those measure work the run did.
+
 ## [2.3.1] - 2026-08-29
 
 The release archives were incomplete. They carried the binary, `README.md` and

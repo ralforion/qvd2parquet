@@ -15,6 +15,11 @@ import (
 
 // Stats summarizes a finished conversion.
 type Stats struct {
+	// TableName is the QVD's own table name, which is what a downstream
+	// query groups by. It is not derivable from the file name: a batch
+	// names its outputs after the input files, and those carry extract
+	// timestamps rather than the table.
+	TableName   string
 	Rows        int64
 	Columns     int
 	OutputBytes int64
@@ -283,6 +288,7 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	committed = true
 
 	st := &Stats{
+		TableName:         f.Header.TableName,
 		Rows:              metrics.Rows,
 		Columns:           len(rs.Columns),
 		Elapsed:           time.Since(start),
