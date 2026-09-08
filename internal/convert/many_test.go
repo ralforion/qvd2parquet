@@ -500,6 +500,167 @@ func TestRunManyConcurrent(t *testing.T) {
 	}
 }
 
+// A run that is stopped or killed has to leave behind what it already did.
+// Both records used to be written only after the last file: a batch killed
+// halfway left an empty log and a manifest naming nothing, so the rerun
+// converted the whole folder again.
+//
+// The property is checked while the run is still going, since that is what
+// "killed halfway" means. With one file at a time, a conversion reports its
+// "ok" line before its record is written and the next file does not start
+// until that record is on disk, so by the message for the last file every
+// earlier one must be there.
+func TestLogAndManifestAreWrittenAsTheRunGoes(t *testing.T) {
+	src := folderFixture(t, true, false)
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "out")
+	logPath := filepath.Join(dir, "run.jsonl")
+
+	log, err := NewLogWriter(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A path that could not even be examined is a failure this run already
+	// knows about before it converts anything, so its record has to be there
+	// from the start rather than after the last file.
+	missing := filepath.Join(src, "gone.qvd")
+	found := FindInputs([]string{src, missing}, InputSelection{Recursive: true})
+	inputs := found.Files
+	if len(inputs) < 3 || len(found.Problems) != 1 {
+		t.Fatalf("want at least three inputs and one unreadable path, got %d and %d",
+			len(inputs), len(found.Problems))
+	}
+
+	var mu sync.Mutex
+	var wrote int
+	var linesAtFirst, linesMidRun, manifestMidRun int
+	logf := func(format string, args ...any) {
+		if !strings.HasPrefix(format, "ok ") {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		wrote++
+		if wrote == 1 {
+			linesAtFirst = len(logLines(t, logPath))
+		}
+		if wrote != len(inputs) {
+			return
+		}
+		// The last file is converting; everything before it has finished.
+		linesMidRun = len(logLines(t, logPath))
+		manifestMidRun = len(LoadManifest(outDir).Entries)
+	}
+
+	opts := testOptions()
+	if _, err := RunMany(context.Background(), inputs, &opts, &ManyOptions{
+		OutDir: outDir, FileWorkers: 1, Log: log, Problems: found.Problems,
+		SkipUpToDate: true, ToolVersion: "2.4.0",
+	}, logf); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if linesAtFirst < len(found.Problems) {
+		t.Errorf("the log held %d line(s) while the first file was still converting; "+
+			"the %d unreadable input(s) were known before it started",
+			linesAtFirst, len(found.Problems))
+	}
+	if linesMidRun < len(inputs)-1 {
+		t.Errorf("the log held %d line(s) while the last of %d files was still converting; "+
+			"a run killed here would lose them", linesMidRun, len(inputs))
+	}
+	if manifestMidRun == 0 {
+		t.Error("the manifest named nothing while the last file was still converting; " +
+			"a run killed here would convert the whole folder again")
+	}
+	if want := len(inputs) + len(found.Problems) + 1; len(logLines(t, logPath)) != want {
+		t.Errorf("the finished log has %d lines, want %d files plus a summary",
+			len(logLines(t, logPath)), want)
+	}
+}
+
+// A cancelled run still closes its log with every file accounted for, and the
+// files it did convert stay in the manifest.
+func TestCancelledRunKeepsWhatItConverted(t *testing.T) {
+	src := folderFixture(t, true, false)
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "out")
+	logPath := filepath.Join(dir, "run.jsonl")
+
+	log, err := NewLogWriter(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := FindInputs([]string{src}, InputSelection{Recursive: true}).Files
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	logf := func(format string, args ...any) {
+		if !strings.HasPrefix(format, "ok ") {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		cancel() // stop after the first file, as a Ctrl-C would
+	}
+
+	opts := testOptions()
+	b, err := RunMany(ctx, inputs, &opts, &ManyOptions{
+		OutDir: outDir, FileWorkers: 1, Log: log, SkipUpToDate: true, ToolVersion: "2.4.0",
+	}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if b.Converted == 0 || b.Failed == 0 {
+		t.Fatalf("a cancelled run should report what it converted and what it did not: %+v", b)
+	}
+
+	var ok, cancelled int
+	for _, l := range logLines(t, logPath) {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(l), &rec); err != nil {
+			t.Fatalf("line is not JSON: %v\n%s", err, l)
+		}
+		switch {
+		case rec["type"] == "summary":
+		case rec["status"] == "ok":
+			ok++
+		default:
+			cancelled++
+		}
+	}
+	if ok != b.Converted || cancelled != b.Failed {
+		t.Errorf("the log has %d converted and %d unconverted records, want %d and %d",
+			ok, cancelled, b.Converted, b.Failed)
+	}
+	if len(LoadManifest(outDir).Entries) != b.Converted {
+		t.Errorf("the manifest names %d output(s), want the %d that were converted",
+			len(LoadManifest(outDir).Entries), b.Converted)
+	}
+}
+
+// logLines reads the JSON Lines log, which a partial run may have left without
+// its summary.
+func logLines(t *testing.T, path string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "\n")
+}
+
 // The log must be machine-readable, one record per file plus a summary.
 func TestLogWriterRecords(t *testing.T) {
 	src := folderFixture(t, false, true)

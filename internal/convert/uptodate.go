@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ralforion/qvd2parquet/internal/qvd"
@@ -111,6 +112,113 @@ func (m *Manifest) Save(outDir string) error {
 		return err
 	}
 	return nil
+}
+
+// liveManifest is the manifest as a batch run uses it: entries are recorded
+// and the file is saved while the run is still going, rather than once at the
+// end. A run that is killed halfway then keeps the record of the files it did
+// convert, and the next --skip-up-to-date run resumes instead of starting
+// over. Saving only at the end lost all of it.
+//
+// Files convert concurrently, so every access is guarded. A save rewrites the
+// whole file, so the saves during a run are throttled and the caller makes a
+// final, unthrottled one when the run ends.
+type liveManifest struct {
+	mu          sync.Mutex
+	m           *Manifest // nil unless --skip-up-to-date asked for one
+	outDir      string
+	fingerprint string
+	lastSave    time.Time
+	gap         time.Duration
+	warned      bool
+	logf        Logf
+}
+
+// The gap between saves is set from how long a save takes rather than fixed,
+// so the manifest costs about a tenth of the run whatever the size of the
+// folder: a hundred entries rewrite in no time and the gap stays at the floor,
+// fifty thousand take long enough that the gap grows to match. The floor is
+// what a kill can cost, and the ceiling stops a slow filesystem from turning
+// the throttle back into "at the end".
+const (
+	manifestSaveDutyCycle = 10
+	manifestSaveFloor     = time.Second
+	manifestSaveCeiling   = 30 * time.Second
+)
+
+// newLiveManifest starts with no last save and no gap, so the first file to
+// finish is written out at once. A run killed a few seconds in then still has
+// a manifest to resume from, and the throttle applies only from there on.
+func newLiveManifest(m *Manifest, outDir, fingerprint string, logf Logf) *liveManifest {
+	return &liveManifest{m: m, outDir: outDir, fingerprint: fingerprint, logf: logf}
+}
+
+// UpToDate answers for the run's fingerprint.
+func (l *liveManifest) UpToDate(input, output string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.m.UpToDate(input, output, l.fingerprint)
+}
+
+// TableFor is the table name recorded for an output.
+func (l *liveManifest) TableFor(output string) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.m.TableFor(output)
+}
+
+// NoteTable fills in a name an older binary did not record.
+func (l *liveManifest) NoteTable(output, table string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.m.NoteTable(output, table)
+}
+
+// Record notes a converted file and saves the manifest if it is time to. A
+// file that failed leaves its previous entry alone: the writer renames a
+// temporary into place, so a failed conversion cannot have replaced the output
+// the entry describes.
+func (l *liveManifest) Record(r FileResult) {
+	if r.Err != nil || r.Skipped || r.Stats == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.m == nil {
+		return
+	}
+	l.m.Record(r.Input, r.Output, l.fingerprint, r.Stats.Rows, r.Stats.TableName)
+	if time.Since(l.lastSave) < l.gap {
+		return
+	}
+	if err := l.save(); err != nil && !l.warned {
+		// Once only. A folder whose manifest cannot be written would
+		// otherwise report it on every file, and the run itself is fine:
+		// every file still converts, and the caller reports the failure
+		// again at the end if it persists.
+		l.warned = true
+		l.logf("note: could not write %s: %v", ManifestName, err)
+	}
+}
+
+// Save writes the manifest for the last time, describing what is on disk now.
+func (l *liveManifest) Save() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.m == nil {
+		return nil
+	}
+	return l.save()
+}
+
+// save writes the manifest and sets the gap before the next one. The caller
+// holds the lock.
+func (l *liveManifest) save() error {
+	started := time.Now()
+	err := l.m.Save(l.outDir)
+	l.lastSave = time.Now()
+	l.gap = min(max(manifestSaveDutyCycle*l.lastSave.Sub(started), manifestSaveFloor), manifestSaveCeiling)
+	return err
 }
 
 // UpToDate reports whether the output can be left alone: the manifest has to

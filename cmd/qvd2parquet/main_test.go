@@ -77,6 +77,155 @@ func TestSuccessfulRunDoesNotAnnounceCancellation(t *testing.T) {
 	}
 }
 
+// --console-log records the prose output, which is the half the JSON log does
+// not carry: the notes, the progress, and what the run was doing when it was
+// stopped. It is a tee rather than a redirect, so the screen keeps everything
+// too, and it starts with the banner so the file says which build wrote it.
+func TestConsoleLog(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+
+	t.Run("records the screen output", func(t *testing.T) {
+		dir := t.TempDir()
+		out := filepath.Join(dir, "out.parquet")
+		consolePath := filepath.Join(dir, "logs", "run.txt")
+
+		cmd := exec.Command(bin, "--force", "--progress", "0",
+			"--quality-gate", "none", "--console-log", consolePath, fixture, out)
+		var screen bytes.Buffer
+		cmd.Stderr = &screen
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("run failed: %v\n%s", err, screen.String())
+		}
+
+		raw, err := os.ReadFile(consolePath)
+		if err != nil {
+			t.Fatalf("the console log was not written: %v", err)
+		}
+		recorded := string(raw)
+		if !strings.HasPrefix(recorded, "qvd2parquet ") {
+			t.Errorf("the console log should open with the banner, got:\n%s", firstLine(recorded))
+		}
+		// The banner reaches the screen before the guards have run, so it is
+		// written to the file on its own; everything after it must match.
+		if want := "wrote " + out; !strings.Contains(recorded, want) {
+			t.Errorf("the console log is missing %q:\n%s", want, recorded)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(screen.String()), "\n") {
+			if !strings.Contains(recorded, line) {
+				t.Errorf("the screen printed a line the console log does not hold:\n%s", line)
+			}
+		}
+		if !strings.Contains(screen.String(), "wrote "+out) {
+			t.Error("the console log swallowed the screen output instead of copying it")
+		}
+	})
+
+	// The file cannot be opened until the path guards have run, and by then
+	// the run has printed its banner and any note about the inputs it
+	// selected. A mistyped --include-files pattern is exactly the line an
+	// operator goes looking for afterwards, so it has to be in the file too.
+	t.Run("records what was printed before it opened", func(t *testing.T) {
+		dir := t.TempDir()
+		outDir := filepath.Join(dir, "out")
+		consolePath := filepath.Join(dir, "run.txt")
+
+		cmd := exec.Command(bin, "--force", "--progress", "0", "--quality-gate", "none",
+			"--out-dir", outDir, "--include-files", "*,ZZNOPE",
+			"--console-log", consolePath, fixture)
+		var screen bytes.Buffer
+		cmd.Stderr = &screen
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("run failed: %v\n%s", err, screen.String())
+		}
+		if !strings.Contains(screen.String(), "ZZNOPE") {
+			t.Fatalf("the run printed no note to record:\n%s", screen.String())
+		}
+
+		raw, err := os.ReadFile(consolePath)
+		if err != nil {
+			t.Fatalf("the console log was not written: %v", err)
+		}
+		recorded := string(raw)
+		if !strings.HasPrefix(recorded, "qvd2parquet ") {
+			t.Errorf("the console log should open with the banner, got:\n%s", firstLine(recorded))
+		}
+		for _, line := range strings.Split(strings.TrimSpace(screen.String()), "\n") {
+			if !strings.Contains(recorded, line) {
+				t.Errorf("the screen printed a line the console log does not hold:\n%s\n\ngot:\n%s",
+					line, recorded)
+			}
+		}
+	})
+
+	// The file is created by truncating, so every path the run reads or writes
+	// has to be refused, exactly as --log and --catalog-out are.
+	t.Run("refuses a path the run uses", func(t *testing.T) {
+		dir := t.TempDir()
+		out := filepath.Join(dir, "out.parquet")
+		logPath := filepath.Join(dir, "run.jsonl")
+		cases := []struct {
+			name string
+			args []string
+			want string
+		}{
+			{"the input", []string{"--console-log", fixture}, "--console-log path must differ from the input"},
+			{"the output", []string{"--console-log", out}, "--console-log path must differ from the output"},
+			{"--log", []string{"--log", logPath, "--console-log", logPath},
+				"--console-log path must differ from --log"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				args := append([]string{"--force", "--progress", "0", "--quality-gate", "none"}, tc.args...)
+				cmd := exec.Command(bin, append(args, fixture, out)...)
+				combined, err := cmd.CombinedOutput()
+				exitErr, ok := err.(*exec.ExitError)
+				if !ok || exitErr.ExitCode() != exitUsage {
+					t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+				}
+				if !strings.Contains(string(combined), tc.want) {
+					t.Errorf("message = %s, want %q", combined, tc.want)
+				}
+			})
+		}
+		// The refusal must not have created the file it was refusing to share.
+		if _, err := os.Stat(logPath); err == nil {
+			t.Error("a refused run left the log path truncated")
+		}
+	})
+
+	// A batch derives its paths under --out-dir, so the guard has to run after
+	// the inputs are expanded, and before the file is created.
+	t.Run("refuses a batch output", func(t *testing.T) {
+		dir := t.TempDir()
+		outDir := filepath.Join(dir, "out")
+		consolePath := filepath.Join(outDir, "sample-small.parquet")
+
+		cmd := exec.Command(bin, "--force", "--progress", "0", "--quality-gate", "none",
+			"--out-dir", outDir, "--console-log", consolePath, fixture)
+		combined, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != exitUsage {
+			t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+		}
+		if !strings.Contains(string(combined), "--console-log path must differ from the output") {
+			t.Errorf("message = %s", combined)
+		}
+	})
+}
+
+// firstLine is the head of a message, for a failure that would otherwise print
+// a whole run's output.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
 func TestSingleFileLog(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a binary")

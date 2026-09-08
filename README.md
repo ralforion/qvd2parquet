@@ -115,6 +115,7 @@ qvd2parquet --catalog-scan --catalog-out catalog.parquet <file-or-directory>...
   -exclude-files '*_TMP'     With --out-dir, skip files matching these patterns
   -skip-up-to-date           With --out-dir, leave a file this run already produced
   -log path.jsonl            Write one JSON Lines record per input, then a summary
+  -console-log run.txt       Also write the screen output to this file, as it is printed
   -catalog-out cat.parquet   Write a column-grain catalog of the run: one row per
                              output column, with its comment
   -catalog-scan              With --catalog-out, read the columns out of existing
@@ -466,6 +467,13 @@ Worth knowing:
 - A manifest that is missing, corrupt or from a newer format converts the
   folder again rather than failing the run. The worst a lost manifest can do is
   repeat work.
+- It is saved **while the run is going**, not once at the end: the first file
+  to finish is written out at once, and again at intervals after that, spaced
+  from how long a save takes so a folder of tens of thousands does not spend
+  its time rewriting it. A batch that is stopped or killed halfway therefore
+  resumes on the next run instead of converting the whole folder again. Each
+  save goes through a temporary file and a rename, so an interrupted one
+  leaves the previous manifest intact rather than a truncated one.
 - A skipped file is still a record in `--log`, with `"status": "skipped"`, so a
   run's log accounts for every input it was given. It carries `table` as well,
   taken from the manifest entry rather than by re-reading the input the run
@@ -521,6 +529,75 @@ qvd2parquet --log run.jsonl input.qvd output.parquet
 
 A single-file conversion writes exactly two records: its file record and the
 summary. Folder conversion writes one file record per input before the summary.
+
+Each record is written the moment its file is finished, so a batch that is
+stopped or killed leaves the lines for the files it did convert rather than an
+empty file. Two things follow. The lines are in completion order rather than
+input order, since files convert concurrently; every record carries `time` and
+`input`, so sort or group by those. And a log with no `summary` line is a run
+that did not finish, which is worth knowing rather than a defect: a query that
+wants the totals should select the summary record rather than assume the last
+line is one.
+
+The path is yours to name. It is created if its directory does not exist, so
+`--log logs/run-$(date +%F).jsonl` works in a scheduled job, and a run that
+would otherwise leave nothing behind names its own log per day.
+
+### The screen output
+
+The screen output is a separate thing: prose on stderr, meant to be read.
+`--console-log` copies it to a file as it is printed.
+
+```sh
+qvd2parquet --out-dir ./parquet --log run.jsonl --console-log run.txt ./qvds
+```
+
+It is a copy, not a redirect: the same lines still reach the screen. The file
+opens with the banner, so it says which build wrote it, and nothing buffers
+once it is open, so a run that is stopped or killed keeps every line it had
+printed, down to the progress of the file that was still converting. The file
+itself cannot be created until the path guards below have run, so the lines
+printed before that -- the banner, and any note about which inputs were
+selected -- are held and written into it when it opens. It works in every mode,
+including `--inspect` and `--catalog-scan`, and it takes the same path guards
+as `--log`: it must not name an input, an output, a report, the manifest, or
+either of the other two logs, since it is created by truncating.
+
+The shell does the same job where there is a shell to do it with:
+
+```sh
+qvd2parquet --out-dir ./parquet ./qvds 2> run.txt            # to a file
+qvd2parquet --out-dir ./parquet ./qvds 2>&1 | tee run.txt    # and on screen
+```
+
+`--console-log` is for the scheduled job that runs the binary directly, through
+systemd or a Windows task, where there is not one. Use both logs: the JSON log
+is what a query reads, and the screen log is what someone reads when a file
+failed and the record says why but not what led up to it. A failure that cannot
+be written is dropped with one note rather than failing the run, since the
+conversion is what the run is for and the screen still has the output.
+
+### A run that looks stuck on Windows
+
+A conversion that stops printing, its last progress line frozen on screen, is
+usually not stuck: the console is paused. Windows consoles have QuickEdit on by
+default, and one click in the window enters selection mode, which blocks every
+write to the console. The next progress line blocks with it, and because
+progress is printed from the goroutine that writes rows, the conversion stops
+with it. The title bar says `Select` or `Mark` while it lasts. Press `Esc` or
+`Enter` in the window and the run carries on from where it was, with nothing
+lost.
+
+On a long run, turn QuickEdit off in the console properties (right-click the
+title bar, Properties, uncheck QuickEdit Mode), or use Windows Terminal, where
+selecting text does not stall the writer, or keep the prose off the console
+altogether with one of the forms above.
+
+If it really is stuck, the three signs come together: the process using no CPU,
+the output's `.parquet.tmp-*` file not growing, and the console not in
+selection mode. Start it with `GOTRACEBACK=all` set and press `Ctrl-Break`; the
+Go runtime dumps every goroutine's stack, which says where it is parked, and
+the run ends with the dump. On Linux and macOS that dump comes from `Ctrl-\`.
 
 The log path has to differ from every file the run writes or reads: the inputs,
 the outputs, `--schema`, and the schema and quality reports. In batch mode that
