@@ -65,10 +65,6 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	if err := opts.Validate(); err != nil {
 		return nil, nil, err
 	}
-	// The catalog describes a run, so it is armed by the run starting rather
-	// than by the caller remembering to. A writer opened and then abandoned
-	// because some other setup step failed leaves its file alone.
-	opts.Catalog.Begin()
 	start := time.Now()
 
 	f, err := qvd.Open(inputPath)

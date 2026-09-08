@@ -628,11 +628,16 @@ examine, and the outputs and per-file reports derived from it under `--out-dir`.
 A run correctly refused for any reason must not destroy a file on its way out,
 so the checks that can refuse a run all happen before either writer is created,
 including those concerning neither file, such as two inputs whose names would
-produce one output. Ordering alone is not relied on for this: the catalog is
-written only once the conversion has actually started, so a setup step that
-fails after the writer exists leaves whatever is at that path untouched. A run
-that started and converted nothing still writes its catalog, empty, which is
-what distinguishes it from a run that never began.
+produce one output.
+
+Ordering alone is not relied on for this, because the next thing able to fail
+always lands somewhere new. The catalog is written only once at least one input
+has been converted, skipped or scanned, which is the first moment there is
+anything to describe. A run that ends before that -- a missing input, an output
+that cannot be created, another output that fails to open -- leaves whatever is
+at the catalog path untouched, and reports its failure through the exit code
+and the log, which is where a failure belongs. A file that contributed no
+columns, because every one was excluded, still counts as described.
 
 A catalog that cannot be written fails the run. The conversion may well have
 succeeded, but a job waiting on the catalog has not got what it asked for, so

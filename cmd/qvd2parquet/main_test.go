@@ -1125,3 +1125,77 @@ func TestSkippedFileThatCannotBeCataloguedFailsTheRun(t *testing.T) {
 		t.Fatalf("a run not asking for a catalog should still skip: %v\n%s", err, out)
 	}
 }
+
+// TestRunThatConvertsNothingLeavesTheCatalogAlone covers every way a run can
+// end before a single input has been accounted for.
+//
+// Arming the catalog when the run "started" was still too early: Run begins
+// before it opens the input or checks the output, so a missing input exited 4
+// having replaced the catalog with an empty Parquet. The writer is now armed
+// by an input actually being converted, skipped or scanned, which is the only
+// point at which there is something to describe.
+func TestRunThatConvertsNothingLeavesTheCatalogAlone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	const sentinel = "not a parquet file"
+
+	for _, tc := range []struct {
+		name string
+		want int
+		args func(dir, catalog string) []string
+	}{
+		{"missing input", exitInput, func(dir, catalog string) []string {
+			return []string{"--progress", "0", "--force", "--catalog-out", catalog,
+				filepath.Join(dir, "missing.qvd"), filepath.Join(dir, "out.parquet")}
+		}},
+		{"batch missing input", exitInput, func(dir, catalog string) []string {
+			return []string{"--progress", "0", "--force",
+				"--out-dir", filepath.Join(dir, "out"), "--catalog-out", catalog,
+				filepath.Join(dir, "gone.qvd")}
+		}},
+		{"log cannot be opened", exitOutput, func(dir, catalog string) []string {
+			blocker := filepath.Join(dir, "blocker")
+			if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"--progress", "0", "--force", "--catalog-out", catalog,
+				"--log", filepath.Join(blocker, "run.jsonl"),
+				fixture, filepath.Join(dir, "out.parquet")}
+		}},
+		{"scan finds nothing readable", exitInput, func(dir, catalog string) []string {
+			junk := filepath.Join(dir, "junk")
+			if err := os.Mkdir(junk, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(junk, "a.parquet"), []byte("nope"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"--progress", "0", "--force", "--catalog-scan",
+				"--catalog-out", catalog, junk}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			catalogPath := filepath.Join(dir, "catalog.parquet")
+			if err := os.WriteFile(catalogPath, []byte(sentinel), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			combined, err := exec.Command(bin, tc.args(dir, catalogPath)...).CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != tc.want {
+				t.Fatalf("exit = %v, want %d\n%s", err, tc.want, combined)
+			}
+			got, err := os.ReadFile(catalogPath)
+			if err != nil {
+				t.Fatalf("read catalog after failure: %v", err)
+			}
+			if string(got) != sentinel {
+				t.Fatalf("a run that accounted for nothing rewrote the catalog: %q", string(got))
+			}
+		})
+	}
+}

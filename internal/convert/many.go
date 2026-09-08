@@ -397,9 +397,6 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	if many.OutDir == "" {
 		return nil, fmt.Errorf("no output directory given")
 	}
-	// Armed here as well as in Run, because a batch that skips every file
-	// converts nothing and still has a folder to describe.
-	opts.Catalog.Begin()
 	if err := os.MkdirAll(many.OutDir, 0o755); err != nil {
 		return nil, fmt.Errorf("%w: create output directory %s: %v", parquetwrite.ErrOutput, many.OutDir, err)
 	}

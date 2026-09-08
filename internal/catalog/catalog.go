@@ -114,18 +114,20 @@ func NewWriter(path, toolVersion string, force bool) (*Writer, error) {
 	return &Writer{path: path, force: force, runAt: time.Now().UTC(), version: toolVersion}, nil
 }
 
-// Begin marks the run as started, which is what licenses Close to write.
+// Begin marks that an input has been accounted for, which is what licenses
+// Close to write.
 //
-// A catalog describes a run. Between opening the writer and starting the
-// conversion the caller may still fail -- another output cannot be created,
-// some other guard refuses -- and a catalog written then would replace a real
-// one with the record of a run that never happened. Nothing about the ordering
-// of the caller's setup steps prevents that; only asking the run to say it
-// began does.
+// A catalog describes files. Until at least one input has been converted,
+// skipped or scanned there is nothing to describe, and writing then would
+// replace a real catalog with the record of a run that got nowhere: a missing
+// input, an output that could not be created, a setup step that failed after
+// the writer was opened. No amount of care about the order of the caller's
+// setup steps prevents that, because the next thing able to fail always lands
+// somewhere new. Only counting what was actually accounted for does.
 //
-// This is deliberately not the same thing as converting something. A run that
-// began and converted nothing does write its catalog, empty, so that a
-// scheduled job can tell it apart from a run that never started.
+// Add calls this, so the ordinary paths need not. It is separate because a
+// file can legitimately account for no columns -- every one excluded by
+// --columns, say -- and that is still a file the catalog has described.
 func (w *Writer) Begin() {
 	if w == nil {
 		return
@@ -135,7 +137,7 @@ func (w *Writer) Begin() {
 	w.started = true
 }
 
-// Started reports whether Begin was called.
+// Started reports whether any input has been accounted for.
 func (w *Writer) Started() bool {
 	if w == nil {
 		return false
@@ -163,12 +165,16 @@ func (w *Writer) RunAt() time.Time {
 
 // Add records the columns of one file. It is safe to call from the several
 // goroutines a --file-workers batch runs.
+//
+// Adding an empty slice is meaningful: it says a file was accounted for and
+// contributed no columns, which is not the same as never having looked.
 func (w *Writer) Add(rows []Row) {
-	if w == nil || len(rows) == 0 {
+	if w == nil {
 		return
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.started = true
 	for _, r := range rows {
 		r.RunAt = w.runAt
 		r.ToolVersion = w.version
@@ -201,8 +207,8 @@ func (w *Writer) Rows() []Row {
 // file, empty, so a scheduled job can tell "converted nothing" from "did not
 // run" without a special case.
 //
-// A writer that was never begun writes nothing at all and leaves whatever is
-// at its path untouched, since there was no run to describe.
+// A writer that accounted for no input at all writes nothing and leaves
+// whatever is at its path untouched, since there was nothing to describe.
 func (w *Writer) Close() error {
 	if w == nil {
 		return nil

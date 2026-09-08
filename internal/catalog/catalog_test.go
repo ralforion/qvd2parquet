@@ -177,12 +177,16 @@ func TestEmptyRunStillWritesACatalog(t *testing.T) {
 	}
 }
 
-// TestUnbegunWriterWritesNothing is the invariant that makes the caller's
-// setup ordering irrelevant. A writer opened and then abandoned, because some
-// later setup step failed and the run never started, must leave whatever is at
-// its path alone: replacing a real catalog with the record of a run that never
-// happened is worse than writing none.
-func TestUnbegunWriterWritesNothing(t *testing.T) {
+// TestWriterThatAccountedForNothingWritesNothing is the invariant that makes
+// the caller's setup ordering irrelevant.
+//
+// A writer opened and then abandoned -- a missing input, an output that could
+// not be created, a setup step that failed after the writer existed -- must
+// leave whatever is at its path alone. Replacing a real catalog with the
+// record of a run that got nowhere is worse than writing none, and no ordering
+// of the caller's guards achieves this on its own, because the next thing able
+// to fail always lands somewhere new.
+func TestWriterThatAccountedForNothingWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "catalog.parquet")
 	const sentinel = "not a parquet file"
@@ -194,19 +198,39 @@ func TestUnbegunWriterWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
-	w.Add([]Row{{Source: SourceQVD, ColumnName: "a", Ordinal: 1}})
 	if err := w.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 	if w.Started() {
-		t.Error("writer reports having begun")
+		t.Error("writer reports having accounted for something")
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
 	if string(got) != sentinel {
-		t.Fatalf("an unbegun writer replaced the file: %q", string(got))
+		t.Fatalf("the writer replaced the file: %q", string(got))
+	}
+}
+
+// TestFileWithNoColumnsStillWritesACatalog is the other half. A file every
+// column of which was excluded contributed nothing, but it was still looked
+// at, and that is not the same as a run that never got to it.
+func TestFileWithNoColumnsStillWritesACatalog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "catalog.parquet")
+	w, err := NewWriter(path, "test", false)
+	if err != nil {
+		t.Fatalf("new writer: %v", err)
+	}
+	w.Add(nil)
+	if !w.Started() {
+		t.Error("accounting for a file with no columns did not count")
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("no catalog written: %v", err)
 	}
 }
 

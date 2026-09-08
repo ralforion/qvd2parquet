@@ -813,8 +813,6 @@ func runCatalogScan(paths []string, catalogPath string, recursive, force bool, l
 		return exitCodeFor(err)
 	}
 
-	cat.Begin()
-
 	// A file that cannot be read is reported and the scan continues, so one
 	// bad file in a folder of hundreds does not cost the whole catalog.
 	failed := 0
