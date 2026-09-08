@@ -192,15 +192,29 @@ func (w *Writer) Close() error {
 	if err != nil {
 		return err
 	}
+	// The writer builds a temporary file and renames it into place, so every
+	// path out of here that is not a successful commit has to abort. The
+	// rename is one of them: it fails when the destination cannot be replaced,
+	// and returning that error alone left the temporary file sitting next to
+	// the path the run had just reported it could not write.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = pw.Abort()
+		}
+	}()
+
 	if err := pw.Write(rec); err != nil {
-		_ = pw.Abort()
 		return err
 	}
 	if err := pw.Close(); err != nil {
-		_ = pw.Abort()
 		return err
 	}
-	return pw.Commit()
+	if err := pw.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 // buildRecord turns the accumulated rows into a single Arrow record.

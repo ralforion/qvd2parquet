@@ -3,6 +3,7 @@ package catalog
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -186,6 +187,39 @@ func TestNewWriterRefusesAnExistingFile(t *testing.T) {
 	}
 	if _, err := NewWriter(path, "test", true); err != nil {
 		t.Fatalf("--force should allow it: %v", err)
+	}
+}
+
+// TestFailedCommitLeavesNoTemporaryFile checks the abort on the rename path.
+// The writer builds a temporary file and renames it into place; a commit that
+// could not replace the destination used to return the error and leave the
+// temporary alongside the path the run had just said it could not write.
+func TestFailedCommitLeavesNoTemporaryFile(t *testing.T) {
+	dir := t.TempDir()
+	// A directory cannot be replaced by the rename, so the commit fails after
+	// the file itself has been written successfully.
+	blocked := filepath.Join(dir, "catalog.parquet")
+	if err := os.Mkdir(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewWriter(blocked, "test", true)
+	if err != nil {
+		t.Fatalf("new writer: %v", err)
+	}
+	w.Add([]Row{{Source: SourceQVD, ColumnName: "a", Ordinal: 1}})
+	if err := w.Close(); err == nil {
+		t.Fatal("expected the commit to fail")
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Errorf("temporary file left behind: %s", e.Name())
+		}
 	}
 }
 
