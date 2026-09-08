@@ -620,6 +620,119 @@ func TestLogRecordsCarryTheTableName(t *testing.T) {
 	}
 }
 
+// A skipped file still has to say which table it is, or a folder of nightly
+// extracts becomes unqueryable by table on exactly the runs the feature is
+// for: the steady state where almost everything skips. The name comes from
+// the manifest, since the skip exists to avoid reading the input.
+func TestSkippedRecordsCarryTheTableName(t *testing.T) {
+	src := folderFixture(t, false, false)
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "out")
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+	opts.Force = true
+	many := &ManyOptions{OutDir: outDir, SkipUpToDate: true, ToolVersion: "2.2.0"}
+
+	if _, err := RunMany(context.Background(), inputs, &opts, many, nil); err != nil {
+		t.Fatal(err)
+	}
+	if e := LoadManifest(outDir).Entries["a.parquet"]; e.Table != "Sales" {
+		t.Fatalf("the manifest entry does not name the table: %+v", e)
+	}
+
+	logPath := filepath.Join(dir, "run.jsonl")
+	log, err := NewLogWriter(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	many.Log = log
+	second, err := RunMany(context.Background(), inputs, &opts, many, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if second.Skipped != 2 {
+		t.Fatalf("skipped=%d, want 2", second.Skipped)
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var skipped int
+	for _, l := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(l), &rec); err != nil {
+			t.Fatalf("line is not JSON: %v\n%s", err, l)
+		}
+		if rec["status"] != "skipped" {
+			continue
+		}
+		skipped++
+		if rec["table"] != "Sales" {
+			t.Errorf("skipped record has table %q, want \"Sales\": %v", rec["table"], rec)
+		}
+		// The counts measure work this run did, and it did none. Were a skip
+		// to report the rows the output holds, summing the column over a run
+		// would stop meaning "rows written".
+		if rec["rows"] != float64(0) {
+			t.Errorf("a skipped record should report no rows, got %v", rec["rows"])
+		}
+	}
+	if skipped != 2 {
+		t.Errorf("got %d skipped records, want 2", skipped)
+	}
+}
+
+// A manifest written before entries carried the table name would otherwise
+// leave the field empty forever, since the file it describes never converts
+// again. The first run after the upgrade reads the header once and keeps it.
+func TestSkipHealsAManifestWithNoTableName(t *testing.T) {
+	src := folderFixture(t, false, false)
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "out")
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+	opts.Force = true
+	many := &ManyOptions{OutDir: outDir, SkipUpToDate: true, ToolVersion: "2.2.0"}
+
+	if _, err := RunMany(context.Background(), inputs, &opts, many, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Age the manifest back to what the previous release wrote: every other
+	// field as it is, no table name.
+	old := LoadManifest(outDir)
+	for k, e := range old.Entries {
+		e.Table = ""
+		old.Entries[k] = e
+	}
+	if err := old.Save(outDir); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := RunMany(context.Background(), inputs, &opts, many, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Skipped != 2 {
+		t.Fatalf("skipped=%d, want 2: healing the name must not reconvert", second.Skipped)
+	}
+	for _, r := range second.Results {
+		if r.Table != "Sales" {
+			t.Errorf("%s: table %q, want \"Sales\"", r.Input, r.Table)
+		}
+	}
+	// Healed on disk too, so the next run does not read the header again.
+	for k, e := range LoadManifest(outDir).Entries {
+		if e.Table != "Sales" {
+			t.Errorf("manifest entry %s was not healed: %+v", k, e)
+		}
+	}
+}
+
 // A per-file report path must not have every file overwrite one document.
 func TestPerFileReportPaths(t *testing.T) {
 	got := PerFileReportPath(filepath.Join("reports", "schema.json"), filepath.Join("in", "sales.qvd"), "out")

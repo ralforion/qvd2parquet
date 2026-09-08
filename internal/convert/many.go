@@ -16,8 +16,12 @@ import (
 
 // FileResult is the outcome of converting one input file.
 type FileResult struct {
-	Input   string
-	Output  string
+	Input  string
+	Output string
+	// Table is the QVD's own table name: from the conversion when one ran,
+	// and from the manifest entry that recorded it when the file was skipped.
+	// A failed file has none, since nothing read the header.
+	Table   string
 	Stats   *Stats
 	Quality *QualityReport
 	Err     error
@@ -450,7 +454,18 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		}
 
 		if out := OutputPathFor(in, many.OutDir); manifest.UpToDate(in, out, fingerprint) {
-			results[i] = FileResult{Input: in, Output: out, Skipped: true, Started: time.Now()}
+			// A manifest written before entries carried the table name has
+			// none to give, and the file would skip forever without ever
+			// filling it in, so read the header this once and keep it. Skips
+			// are decided on this goroutine, and nothing else touches the
+			// manifest until every conversion has finished, so this needs no
+			// lock.
+			table := manifest.TableFor(out)
+			if table == "" {
+				table = tableNameOf(in)
+				manifest.NoteTable(out, table)
+			}
+			results[i] = FileResult{Input: in, Output: out, Table: table, Skipped: true, Started: time.Now()}
 			// Serialized like every other per-file line: a conversion already
 			// running can be writing progress at the same moment.
 			safeLogf("skip %s (up to date)", DisplayPath(in))
@@ -475,7 +490,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	if manifest != nil {
 		for _, r := range results {
 			if r.Err == nil && !r.Skipped && r.Stats != nil {
-				manifest.Record(r.Input, r.Output, fingerprint, r.Stats.Rows)
+				manifest.Record(r.Input, r.Output, fingerprint, r.Stats.Rows, r.Stats.TableName)
 			}
 		}
 		if err := manifest.Save(many.OutDir); err != nil {
@@ -581,6 +596,9 @@ func convertOne(ctx context.Context, in string, opts *Options, many *ManyOptions
 	stats, quality, err := Run(ctx, in, r.Output, &o, fileLogf)
 	r.Elapsed = time.Since(r.Started)
 	r.Stats, r.Quality, r.Err = stats, quality, err
+	if stats != nil {
+		r.Table = stats.TableName
+	}
 
 	switch {
 	case err == nil:

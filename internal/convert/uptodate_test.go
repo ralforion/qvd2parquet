@@ -248,7 +248,7 @@ func TestManifestChecksTheInputItRecorded(t *testing.T) {
 	}
 
 	m := LoadManifest(outDir)
-	m.Record(inputs[0], out, "fp", 10)
+	m.Record(inputs[0], out, "fp", 10, "Sales")
 	if !m.UpToDate(inputs[0], out, "fp") {
 		t.Fatal("the input that was recorded is not up to date")
 	}
@@ -404,7 +404,7 @@ func manifestFixture(t *testing.T) (dir, in, out string, m *Manifest) {
 		t.Fatal(err)
 	}
 	m = LoadManifest(dir)
-	m.Record(in, out, "fp", 10)
+	m.Record(in, out, "fp", 10, "Sales")
 	return dir, in, out, m
 }
 
@@ -430,7 +430,7 @@ func TestManifestUpToDate(t *testing.T) {
 	if m.UpToDate(in, out, "fp") {
 		t.Error("a re-extracted input was still up to date")
 	}
-	m.Record(in, out, "fp", 10)
+	m.Record(in, out, "fp", 10, "Sales")
 
 	// An output edited or replaced by something else since.
 	if err := os.WriteFile(out, []byte("tampered"), 0o644); err != nil {
@@ -439,7 +439,7 @@ func TestManifestUpToDate(t *testing.T) {
 	if m.UpToDate(in, out, "fp") {
 		t.Error("a replaced output was still up to date")
 	}
-	m.Record(in, out, "fp", 10)
+	m.Record(in, out, "fp", 10, "Sales")
 
 	// An output deleted since: the manifest remembers it, the disk does not.
 	if err := os.Remove(out); err != nil {

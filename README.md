@@ -462,7 +462,11 @@ Worth knowing:
   folder again rather than failing the run. The worst a lost manifest can do is
   repeat work.
 - A skipped file is still a record in `--log`, with `"status": "skipped"`, so a
-  run's log accounts for every input it was given.
+  run's log accounts for every input it was given. It carries `table` as well,
+  taken from the manifest entry rather than by re-reading the input the run
+  just decided not to touch, so a folder can be grouped by table on the runs
+  where almost everything skips. Its counts stay zero, because they measure
+  work this run did.
 
 ### Parallelism
 
@@ -536,8 +540,8 @@ pattern that dropped nothing from that file, `fieldsRenamed` and
 the quality gate's verdict with any errors, so a run can be audited without
 opening every per-file report. `table` is what a query groups by when a folder
 holds one table's daily extracts under names that carry a timestamp rather than
-the table; it is empty on a failed or skipped file, where no conversion ran to
-read it. `--schema-report` and
+the table. It is filled in on a skipped file too, from the manifest; only a
+failed file leaves it empty, since nothing there read the header. `--schema-report` and
 `--quality-report` also work in batch mode; each file gets its own document,
 named after the input.
 

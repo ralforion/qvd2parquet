@@ -20,9 +20,18 @@ restarts from it.
   assigned, so a folder of nightly extracts could only be grouped by table by
   parsing the input path, which does not carry the table name: an extract is
   named for the table and the timestamp it was taken at, or for neither. The
-  value is the QVD header's own table name. It stays empty on a failed or
-  skipped file, where no conversion ran to read it, exactly as the row and
-  column counts stay zero.
+  value is the QVD header's own table name. Only a failed file leaves it empty,
+  since nothing there read the header.
+- A file skipped by `--skip-up-to-date` reports its `table` too, which is the
+  case the field is most wanted for: in the steady state the flag is for,
+  almost every file skips, so a log without it could not be grouped by table
+  on the runs that matter. The name is kept in `.qvd2parquet-manifest.json` by
+  the run that converted the file, rather than read back from an input the run
+  has just decided not to touch. A manifest from an earlier version does not
+  carry it, and the file it describes may never convert again, so the first run
+  after upgrading reads that one header and keeps the answer. The manifest
+  format is unchanged, so upgrading does not reconvert a folder. A skipped
+  file's row and column counts stay zero: those measure work the run did.
 
 ## [2.3.1] - 2026-08-29
 
