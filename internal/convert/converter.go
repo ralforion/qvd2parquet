@@ -287,6 +287,12 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	}
 	committed = true
 
+	// Recorded after the commit, not alongside the schema report: the report
+	// describes the conversion this run intends, while the catalog describes
+	// the files that exist. A conversion that failed at the last step should
+	// not leave a row claiming a column nobody can query.
+	opts.Catalog.Add(CatalogRows(inputPath, outputPath, f, rs, opts))
+
 	st := &Stats{
 		TableName:         f.Header.TableName,
 		Rows:              metrics.Rows,
@@ -397,18 +403,7 @@ func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema, 
 		}
 	}
 	// Notes are produced per source column; map them onto output columns.
-	noteBySource := map[int]string{}
-	ni := 0
-	seen := map[int]bool{}
-	for _, c := range rs.Columns {
-		if !seen[c.SourceIndex] {
-			seen[c.SourceIndex] = true
-			if ni < len(rs.Notes) {
-				noteBySource[c.SourceIndex] = rs.Notes[ni]
-				ni++
-			}
-		}
-	}
+	noteBySource := notesBySourceColumn(rs)
 
 	for i := range rs.Columns {
 		c := &rs.Columns[i]

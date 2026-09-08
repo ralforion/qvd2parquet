@@ -266,6 +266,7 @@ var fingerprintIgnores = map[string]bool{
 	"Force":             true, // permission to overwrite, not what is written
 	"SchemaReportPath":  true, // a side document
 	"QualityReportPath": true, // a side document
+	"Catalog":           true, // a side document, and a live writer besides
 }
 
 // FingerprintOptions identifies a conversion by everything about it that can

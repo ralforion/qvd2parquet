@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ralforion/qvd2parquet/internal/catalog"
 	"github.com/ralforion/qvd2parquet/internal/convert"
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
@@ -95,7 +96,8 @@ func run() int {
 		fmt.Fprintf(out, "Convert Qlik QVD files to Parquet.\n\n")
 		fmt.Fprintf(out, "Usage:\n  qvd2parquet [options] input.qvd output.parquet\n")
 		fmt.Fprintf(out, "  qvd2parquet --out-dir DIR [options] <file-or-directory>...\n")
-		fmt.Fprintf(out, "  qvd2parquet --inspect [options] input.qvd\n\n")
+		fmt.Fprintf(out, "  qvd2parquet --inspect [options] input.qvd\n")
+		fmt.Fprintf(out, "  qvd2parquet --catalog-scan --catalog-out catalog.parquet <file-or-directory>...\n\n")
 		fmt.Fprintf(out, "Options:\n")
 		fs.PrintDefaults()
 		fmt.Fprintf(out, "\nExit codes:\n"+
@@ -147,6 +149,8 @@ func run() int {
 		skipUpToDate  = fs.Bool("skip-up-to-date", false, "With --out-dir, leave a file alone when this exact run already produced its output")
 		logPath       = fs.String("log", "", "Write one JSON Lines record per input, then a summary")
 		inspect       = fs.Bool("inspect", false, "Read only the header and symbol tables, print the schema, and exit")
+		catalogOut    = fs.String("catalog-out", "", "Write a column-grain catalog of the run to this Parquet path: one row per output column, with its comment")
+		catalogScan   = fs.Bool("catalog-scan", false, "With --catalog-out, read the columns out of existing .parquet inputs instead of converting")
 		showVersion   = fs.Bool("version", false, "Print the version and exit")
 	)
 
@@ -160,9 +164,25 @@ func run() int {
 		fmt.Println(banner())
 		return exitOK
 	}
-	// Three shapes: a 1:1 conversion, an inspect, and a batch into --out-dir.
+	// Four shapes: a 1:1 conversion, an inspect, a batch into --out-dir, and a
+	// catalog scan of Parquet files something else already wrote.
 	batch := *outDir != ""
+	scan := *catalogScan
 	switch {
+	case scan && *catalogOut == "":
+		fmt.Fprintf(os.Stderr, "%s: --catalog-scan needs --catalog-out to write to\n", programName)
+		return exitUsage
+	case scan && *logPath != "":
+		fmt.Fprintf(os.Stderr, "%s: --log records conversions and cannot be combined with --catalog-scan\n", programName)
+		return exitUsage
+	case scan && (batch || *inspect):
+		fmt.Fprintf(os.Stderr, "%s: --catalog-scan reads finished Parquet files and "+
+			"converts nothing, so it cannot be combined with --out-dir or --inspect\n", programName)
+		return exitUsage
+	case scan && fs.NArg() < 1:
+		fmt.Fprintf(os.Stderr, "%s: --catalog-scan needs at least one .parquet file or directory\n\n", programName)
+		fs.Usage()
+		return exitUsage
 	case batch && fs.NArg() < 1:
 		fmt.Fprintf(os.Stderr, "%s: --out-dir needs at least one input file or directory\n\n", programName)
 		fs.Usage()
@@ -174,19 +194,19 @@ func run() int {
 	case *inspect && *logPath != "":
 		fmt.Fprintf(os.Stderr, "%s: --log records conversions and cannot be combined with --inspect\n", programName)
 		return exitUsage
-	case !batch && *inspect && fs.NArg() != 1:
+	case !batch && !scan && *inspect && fs.NArg() != 1:
 		fmt.Fprintf(os.Stderr, "%s: --inspect expects an input path, got %d argument(s)\n\n",
 			programName, fs.NArg())
 		fs.Usage()
 		return exitUsage
-	case !batch && !*inspect && fs.NArg() != 2:
+	case !batch && !scan && !*inspect && fs.NArg() != 2:
 		fmt.Fprintf(os.Stderr, "%s: expected an input and an output path, got %d argument(s); "+
 			"use --out-dir to convert several files\n\n", programName, fs.NArg())
 		fs.Usage()
 		return exitUsage
 	}
 	var inputPath, outputPath string
-	if !batch {
+	if !batch && !scan {
 		inputPath = fs.Arg(0)
 		if !*inspect {
 			outputPath = fs.Arg(1)
@@ -293,8 +313,12 @@ func run() int {
 		fmt.Fprintf(os.Stderr, programName+": "+format+"\n", args...)
 	}
 
+	if scan {
+		return runCatalogScan(fs.Args(), *catalogOut, *recursive, opts.Force, logf)
+	}
+
 	if *inspect {
-		return runInspect(ctx, inputPath, &opts)
+		return runInspect(ctx, inputPath, &opts, *catalogOut, logf)
 	}
 	if batch {
 		sel := convert.InputSelection{
@@ -302,23 +326,89 @@ func run() int {
 			Include:   splitList(*includeFiles),
 			Exclude:   splitList(*excludeFiles),
 		}
-		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, sel, *skipUpToDate, *logPath, logf)
+		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, sel, *skipUpToDate, *logPath, *catalogOut, logf)
 	}
 
-	return runSingle(ctx, inputPath, outputPath, &opts, *logPath, logf)
+	return runSingle(ctx, inputPath, outputPath, &opts, *logPath, *catalogOut, logf)
+}
+
+// openCatalog creates the run's catalog writer and returns a function that
+// closes it, reporting the exit code the closing warrants.
+//
+// It is called only after the path guards have run, for the same reason
+// NewLogWriter is: the writer replaces whatever file it is pointed at, so
+// creating it before the guards would let a run that was correctly refused
+// destroy the input it was refused for.
+//
+// The close returns a code rather than only printing, because the catalog is
+// an output a scheduled job waits on. A run whose conversion succeeded and
+// whose catalog could not be written has not done what it was asked, and
+// exiting 0 would tell the job otherwise.
+func openCatalog(path string, opts *convert.Options, logf convert.Logf) (func() int, error) {
+	if path == "" {
+		return func() int { return exitOK }, nil
+	}
+	cat, err := catalog.NewWriter(path, version, opts.Force)
+	if err != nil {
+		return nil, err
+	}
+	opts.Catalog = cat
+	return func() int {
+		if err := cat.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+			return exitCodeFor(err)
+		}
+		// A run that never began writes no catalog, so there is nothing to
+		// announce and the existing file at that path is still whatever it was.
+		if !cat.Started() {
+			return exitOK
+		}
+		logf("wrote catalog to %s: %d column(s)", cat.Path(), cat.Len())
+		return exitOK
+	}, nil
+}
+
+// closeCatalogInto runs the close and upgrades an otherwise successful exit
+// code to the failure. A conversion that already failed keeps its own code:
+// that is the failure worth reporting, and the catalog's is a consequence.
+func closeCatalogInto(code *int, closeCatalog func() int) {
+	if c := closeCatalog(); c != exitOK && *code == exitOK {
+		*code = c
+	}
 }
 
 // runSingle converts one explicit input/output pair. Its log uses the same
 // file-plus-summary records as runBatch so automation can query either mode
 // without knowing how many files the command converted.
 func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.Options,
-	logPath string, logf convert.Logf) int {
+	logPath, catalogPath string, logf convert.Logf) (code int) {
 
-	var log *convert.LogWriter
+	// Every path guard runs before either writer is created. Both the log and
+	// the catalog are written by truncating, so a writer opened ahead of a
+	// guard that then refuses the run destroys a file on the way out -- and
+	// the refusal it prints makes that damage look impossible.
+	if err := validateCatalogPath(catalogPath, inputPath, outputPath, opts); err != nil {
+		return usageErr(err)
+	}
+	if err := checkCollisions(catalogPath, "--catalog-out",
+		[]logCollision{{"--log", logPath}}); err != nil {
+		return usageErr(err)
+	}
 	if logPath != "" {
 		if err := validateLogPath(logPath, inputPath, outputPath, opts); err != nil {
 			return usageErr(err)
 		}
+	}
+
+	closeCatalog, err := openCatalog(catalogPath, opts, logf)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		return exitCodeFor(err)
+	}
+	defer closeCatalogInto(&code, closeCatalog)
+
+	var log *convert.LogWriter
+	if logPath != "" {
 		var err error
 		if log, err = convert.NewLogWriter(logPath); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
@@ -376,9 +466,16 @@ type logCollision struct {
 // NewLogWriter creates its file with O_TRUNC, so a collision destroys whichever
 // of the two is written second while the run still reports writing both.
 func checkLogCollisions(logPath string, paths []logCollision) error {
+	return checkCollisions(logPath, "--log", paths)
+}
+
+// checkCollisions is the same check for any output that truncates what it
+// opens. The flag is named in the message because --log and --catalog-out
+// share the guard and only the caller knows which one is at fault.
+func checkCollisions(path, flag string, paths []logCollision) error {
 	for _, p := range paths {
-		if p.path != "" && samePath(logPath, p.path) {
-			return fmt.Errorf("--log path must differ from %s", p.name)
+		if p.path != "" && samePath(path, p.path) {
+			return fmt.Errorf("%s path must differ from %s", flag, p.name)
 		}
 	}
 	return nil
@@ -394,6 +491,62 @@ func validateLogPath(logPath, inputPath, outputPath string, opts *convert.Option
 		{"--schema-report", opts.SchemaReportPath},
 		{"--quality-report", opts.QualityReportPath},
 	})
+}
+
+// validateCatalogPath applies the same guard to --catalog-out. Its writer
+// truncates whatever it opens, exactly as the log's does, so pointing it at an
+// input would destroy the file the run was asked to read.
+func validateCatalogPath(catalogPath, inputPath, outputPath string, opts *convert.Options) error {
+	if catalogPath == "" {
+		return nil
+	}
+	return checkCollisions(catalogPath, "--catalog-out", []logCollision{
+		{"the input path", inputPath},
+		{"the output path", outputPath},
+		{"--schema", opts.SchemaOverridePath},
+		{"--schema-report", opts.SchemaReportPath},
+		{"--quality-report", opts.QualityReportPath},
+	})
+}
+
+// validateBatchCatalogPath is the batch equivalent, checking every derived
+// path the way validateBatchLogPath does.
+func validateBatchCatalogPath(catalogPath string, inputs []string,
+	problems []convert.InputProblem, outDir string, opts *convert.Options) error {
+
+	if catalogPath == "" {
+		return nil
+	}
+	if err := checkCollisions(catalogPath, "--catalog-out", []logCollision{
+		{"--schema", opts.SchemaOverridePath},
+	}); err != nil {
+		return err
+	}
+	// A path FindInputs could not examine never reaches the inputs list, so
+	// the loop below would not see it and the catalog would take the name of
+	// the file the run is about to report as missing, creating it in the same
+	// breath. The log guard covers this; so must this one.
+	for _, p := range problems {
+		if err := checkCollisions(catalogPath, "--catalog-out", []logCollision{
+			{"the input " + p.Path, p.Path},
+		}); err != nil {
+			return err
+		}
+	}
+	for _, in := range inputs {
+		out := convert.OutputPathFor(in, outDir)
+		if err := checkCollisions(catalogPath, "--catalog-out", []logCollision{
+			{"the input " + in, in},
+			{"the output " + out, out},
+			{"the --schema-report for " + in,
+				convert.PerFileReportPath(opts.SchemaReportPath, in, outDir)},
+			{"the --quality-report for " + in,
+				convert.PerFileReportPath(opts.QualityReportPath, in, outDir)},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // validateBatchLogPath is the same guard for a batch, where none of the paths
@@ -513,7 +666,7 @@ func canonicalPath(path string) string {
 // one bad file does not hide the state of the rest.
 func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	outDir string, fileWorkers int, sel convert.InputSelection, skipUpToDate bool,
-	logPath string, logf convert.Logf) int {
+	logPath, catalogPath string, logf convert.Logf) (code int) {
 
 	found := convert.FindInputs(paths, sel)
 	inputs, problems := found.Files, found.Problems
@@ -542,7 +695,30 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		return exitOutput
 	}
 
-	var log *convert.LogWriter
+	// Every guard that can refuse the run outright goes here, before either
+	// writer is created. Both the log and the catalog are written by
+	// truncating, so a writer opened ahead of a guard that then refuses the
+	// run destroys a file on the way out -- and the refusal it prints makes
+	// that damage look impossible.
+	//
+	// That includes the guards which have nothing to do with either path.
+	// RunMany rejects two inputs that would produce one output, but it does so
+	// after the CLI has opened both writers, so the check has to happen here
+	// as well. It is cheap and idempotent, and RunMany keeps its own copy for
+	// callers that are not this one.
+	if err := convert.CheckOutputCollisions(inputs, outDir); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		return exitCodeFor(err)
+	}
+	if err := validateBatchCatalogPath(catalogPath, inputs, problems, outDir, opts); err != nil {
+		return usageErr(err)
+	}
+	if err := checkCollisions(catalogPath, "--catalog-out", []logCollision{
+		{"--log", logPath},
+		{"the --skip-up-to-date manifest", manifestPathIf(skipUpToDate, outDir)},
+	}); err != nil {
+		return usageErr(err)
+	}
 	if logPath != "" {
 		if skipUpToDate {
 			// The manifest is the run's own record of what it produced;
@@ -557,6 +733,17 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		if err := validateBatchLogPath(logPath, inputs, problems, outDir, opts); err != nil {
 			return usageErr(err)
 		}
+	}
+
+	closeCatalog, err := openCatalog(catalogPath, opts, logf)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		return exitCodeFor(err)
+	}
+	defer closeCatalogInto(&code, closeCatalog)
+
+	var log *convert.LogWriter
+	if logPath != "" {
 		var err error
 		if log, err = convert.NewLogWriter(logPath); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
@@ -565,7 +752,7 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		defer log.Close()
 	}
 
-	result, err := convert.RunMany(ctx, inputs, opts, &convert.ManyOptions{
+	result, err2 := convert.RunMany(ctx, inputs, opts, &convert.ManyOptions{
 		OutDir:       outDir,
 		FileWorkers:  fileWorkers,
 		Recursive:    sel.Recursive,
@@ -574,9 +761,9 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		SkipUpToDate: skipUpToDate,
 		ToolVersion:  version,
 	}, logf)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
-		return exitCodeFor(err)
+	if err2 != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err2)
+		return exitCodeFor(err2)
 	}
 
 	fmt.Fprintln(os.Stderr, result.Summary())
@@ -586,10 +773,96 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	return result.ExitCode(exitCodeFor)
 }
 
+// manifestPathIf names the --skip-up-to-date manifest only when that flag is
+// on, so the collision check has nothing to compare against otherwise.
+func manifestPathIf(skipUpToDate bool, outDir string) string {
+	if !skipUpToDate {
+		return ""
+	}
+	return convert.ManifestPath(outDir)
+}
+
+// runCatalogScan builds a catalog from Parquet files that already exist,
+// reading each file's footer rather than converting anything.
+//
+// It is the after-the-fact route: a conversion run without --catalog-out is
+// not lost, because the comments it attached are in the files it wrote. What
+// a scan cannot recover is the QVD-side profile -- the Qlik type, the symbol
+// count, the resolver's note -- which never reached the Parquet. Every row it
+// writes says source='parquet' so a query can tell the two apart.
+func runCatalogScan(paths []string, catalogPath string, recursive, force bool, logf convert.Logf) int {
+	files, err := catalog.FindParquet(paths, recursive)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		return exitInput
+	}
+	if len(files) == 0 {
+		fmt.Fprintf(os.Stderr, "%s: no .parquet files found in %s\n",
+			programName, strings.Join(paths, ", "))
+		return exitUsage
+	}
+	for _, f := range files {
+		if samePath(f, catalogPath) {
+			return usageErr(fmt.Errorf("--catalog-out %s is one of the files being scanned", catalogPath))
+		}
+	}
+
+	cat, err := catalog.NewWriter(catalogPath, version, force)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		return exitCodeFor(err)
+	}
+
+	// A file that cannot be read is reported and the scan continues, so one
+	// bad file in a folder of hundreds does not cost the whole catalog.
+	failed := 0
+	for _, f := range files {
+		rows, err := catalog.ScanFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+			failed++
+			continue
+		}
+		cat.Add(rows)
+	}
+	if err := cat.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		return exitOutput
+	}
+	// A scan in which every file failed accounted for nothing, so Close wrote
+	// no catalog and the path holds whatever it held before. Announcing one
+	// anyway named a file that does not exist, which is the one thing a
+	// message about an output must not do.
+	if cat.Started() {
+		logf("wrote catalog to %s: %d column(s) from %d file(s)",
+			cat.Path(), cat.Len(), len(files)-failed)
+	}
+	if failed > 0 {
+		logf("note: %d of %d file(s) could not be read", failed, len(files))
+		if !cat.Started() {
+			logf("no catalog written: %s is unchanged", cat.Path())
+		}
+		return exitInput
+	}
+	return exitOK
+}
+
 // runInspect reads the header and symbol tables only, then prints the schema a
 // conversion would produce. The report is the command's result, so it goes to
 // stdout; diagnostics stay on stderr.
-func runInspect(ctx context.Context, inputPath string, opts *convert.Options) int {
+func runInspect(ctx context.Context, inputPath string, opts *convert.Options,
+	catalogPath string, logf convert.Logf) (code int) {
+
+	if err := validateCatalogPath(catalogPath, inputPath, "", opts); err != nil {
+		return usageErr(err)
+	}
+	closeCatalog, err := openCatalog(catalogPath, opts, logf)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		return exitCodeFor(err)
+	}
+	defer closeCatalogInto(&code, closeCatalog)
+
 	rep, err := convert.Inspect(ctx, inputPath, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
@@ -600,6 +873,11 @@ func runInspect(ctx context.Context, inputPath string, opts *convert.Options) in
 	if err := rep.Write(os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
 		return exitOutput
+	}
+	if opts.Catalog != nil && rep.Schema != nil {
+		// Inspect writes no Parquet, so the row names the file the conversion
+		// would produce as empty rather than inventing one.
+		opts.Catalog.Add(convert.CatalogRows(inputPath, "", rep.File, rep.Schema, opts))
 	}
 	if opts.SchemaReportPath != "" {
 		if rep.Schema == nil {

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ralforion/qvd2parquet/internal/catalog"
 	"github.com/ralforion/qvd2parquet/internal/convert"
 )
 
@@ -650,5 +651,609 @@ func TestInspectExitsZeroOnAnEncodingItAccepts(t *testing.T) {
 	cmd := exec.Command(bin, "--inspect", "--encoding", "Name=delta_byte_array", in)
 	if combined, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("inspect failed on a valid pin: %v\n%s", err, combined)
+	}
+}
+
+// TestCatalogOutDoesNotTruncateInput is the guard the log already has, applied
+// to --catalog-out. The catalog writer replaces whatever file it is pointed
+// at, so an early version that created it before validating the paths turned a
+// correctly refused run into a destroyed QVD: the run printed the refusal and
+// wrote an empty Parquet over the input on its way out.
+func TestCatalogOutDoesNotTruncateInput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	original, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	dir := t.TempDir()
+	inDir := filepath.Join(dir, "in")
+	if err := os.Mkdir(inDir, 0o755); err != nil {
+		t.Fatalf("create input directory: %v", err)
+	}
+	input := filepath.Join(inDir, "sample-small.qvd")
+	if err := os.WriteFile(input, original, 0o600); err != nil {
+		t.Fatalf("copy fixture: %v", err)
+	}
+
+	// --force is the case that matters: without it the existence check alone
+	// refuses, and the guard is never reached.
+	cmd := exec.Command(bin, "--progress", "0", "--force",
+		"--out-dir", filepath.Join(dir, "out"), "--catalog-out", input, inDir)
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--catalog-out path must differ from the input") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+	after, err := os.ReadFile(input)
+	if err != nil {
+		t.Fatalf("read input after rejection: %v", err)
+	}
+	if !bytes.Equal(after, original) {
+		t.Fatalf("input replaced: %d bytes before, %d after", len(original), len(after))
+	}
+}
+
+// TestCatalogOutDoesNotCollideWithLog covers the other direction: both write
+// with O_TRUNC, so whichever finishes second silently destroys the first.
+func TestCatalogOutDoesNotCollideWithLog(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "both.parquet")
+
+	cmd := exec.Command(bin, "--progress", "0",
+		"--out-dir", filepath.Join(dir, "out"),
+		"--catalog-out", shared, "--log", shared,
+		filepath.Join("..", "..", "testdata", "sample-small.qvd"))
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--catalog-out path must differ from --log") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+}
+
+// TestCatalogScanReadsCommentsBackOutOfParquet is the after-the-fact route: a
+// conversion that forgot --catalog-out can still be catalogued, because the
+// comment is in the file it wrote.
+func TestCatalogScanReadsCommentsBackOutOfParquet(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "out")
+
+	convert := exec.Command(bin, "--progress", "0", "--out-dir", outDir,
+		"--field-regex", `^(?P<name>Amount)$`, "--field-comment", "Betrag",
+		filepath.Join("..", "..", "testdata", "sample-small.qvd"))
+	if out, err := convert.CombinedOutput(); err != nil {
+		t.Fatalf("convert: %v\n%s", err, out)
+	}
+
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	scan := exec.Command(bin, "--progress", "0", "--catalog-scan",
+		"--catalog-out", catalogPath, outDir)
+	out, err := scan.CombinedOutput()
+	if err != nil {
+		t.Fatalf("scan: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "wrote catalog to") {
+		t.Errorf("scan did not report writing a catalog:\n%s", out)
+	}
+	if _, err := os.Stat(catalogPath); err != nil {
+		t.Fatalf("no catalog written: %v", err)
+	}
+
+	rows, err := catalog.ScanFile(catalogPath)
+	if err != nil {
+		t.Fatalf("read catalog: %v", err)
+	}
+	if len(rows) != len(catalog.Schema.Fields()) {
+		t.Errorf("catalog has %d columns, want %d", len(rows), len(catalog.Schema.Fields()))
+	}
+}
+
+// TestCatalogScanNeedsCatalogOut keeps the two flags from being usable apart,
+// since a scan with nowhere to write is a run that reads a folder and reports
+// nothing.
+func TestCatalogScanNeedsCatalogOut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	cmd := exec.Command(bin, "--catalog-scan", t.TempDir())
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--catalog-scan needs --catalog-out") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+}
+
+// TestCatalogWriteFailureFailsTheRun covers a catalog that cannot be committed
+// after an otherwise successful conversion. The close used to run from a defer
+// that only printed, so the process reported success while the catalog the
+// caller was waiting on did not exist.
+func TestCatalogWriteFailureFailsTheRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	// A directory cannot be replaced by the writer's rename, so the commit
+	// fails after the conversion has already succeeded.
+	blocked := filepath.Join(dir, "catalog.parquet")
+	if err := os.Mkdir(blocked, 0o755); err != nil {
+		t.Fatalf("create blocking directory: %v", err)
+	}
+
+	cmd := exec.Command(bin, "--progress", "0", "--force", "--catalog-out", blocked,
+		filepath.Join("..", "..", "testdata", "sample-small.qvd"),
+		filepath.Join(dir, "out.parquet"))
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitOutput {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitOutput, combined)
+	}
+	if !strings.Contains(string(combined), "output error") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+}
+
+// TestCatalogOutDoesNotTakeAFailedInputPath is the guard the log already has
+// for a path FindInputs could not examine. Such a path never reaches the
+// inputs list, so the loop over inputs does not see it, and the catalog took
+// the name of the very file the run was about to report as missing: exit 4,
+// "no such file", and an empty Parquet sitting at that path.
+func TestCatalogOutDoesNotTakeAFailedInputPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.qvd")
+
+	cmd := exec.Command(bin, "--progress", "0", "--out-dir", filepath.Join(dir, "out"),
+		"--catalog-out", missing, missing)
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--catalog-out path must differ from the input") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+	if _, err := os.Stat(missing); err == nil {
+		t.Fatal("the run created a file at the input path it reported as missing")
+	}
+}
+
+// TestCatalogScanRejectsLog keeps --log from being accepted and ignored. A
+// scan converts nothing, so it has no file records to write, and a run that
+// silently produced no log would look like one that had lost it.
+func TestCatalogScanRejectsLog(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+
+	cmd := exec.Command(bin, "--progress", "0", "--catalog-scan",
+		"--catalog-out", filepath.Join(dir, "catalog.parquet"),
+		"--log", filepath.Join(dir, "run.jsonl"), dir)
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--log records conversions and cannot be combined with --catalog-scan") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+}
+
+// TestRefusedRunLeavesTheCatalogAlone covers a run refused by a guard that has
+// nothing to do with the catalog.
+//
+// The catalog used to be opened before the log's own path validation, so a
+// command rejected for an unrelated collision still ran the deferred close on
+// its way out and replaced the catalog with an empty Parquet. The refusal
+// printed on the way past made the damage look impossible, which is what makes
+// this worth a test in both modes rather than a reordering and a shrug.
+func TestRefusedRunLeavesTheCatalogAlone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	const sentinel = "not a parquet file"
+
+	for _, tc := range []struct {
+		name string
+		args func(dir, catalog, schema string) []string
+	}{
+		{"single", func(dir, catalog, schema string) []string {
+			return []string{"--progress", "0", "--force",
+				"--catalog-out", catalog, "--schema", schema, "--log", schema,
+				fixture, filepath.Join(dir, "out.parquet")}
+		}},
+		{"batch", func(dir, catalog, schema string) []string {
+			return []string{"--progress", "0", "--force",
+				"--out-dir", filepath.Join(dir, "out"),
+				"--catalog-out", catalog, "--schema", schema, "--log", schema,
+				fixture}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			catalogPath := filepath.Join(dir, "catalog.parquet")
+			schemaPath := filepath.Join(dir, "schema.json")
+			if err := os.WriteFile(schemaPath, []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(catalogPath, []byte(sentinel), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command(bin, tc.args(dir, catalogPath, schemaPath)...)
+			combined, err := cmd.CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != exitUsage {
+				t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+			}
+			if !strings.Contains(string(combined), "--log path must differ from --schema") {
+				t.Errorf("missing diagnostic:\n%s", combined)
+			}
+			after, err := os.ReadFile(catalogPath)
+			if err != nil {
+				t.Fatalf("read catalog after rejection: %v", err)
+			}
+			if string(after) != sentinel {
+				t.Fatalf("refused run replaced the catalog: %q", string(after))
+			}
+		})
+	}
+}
+
+// TestOutputCollisionLeavesLogAndCatalogAlone covers a batch refused for a
+// reason neither writer knows about.
+//
+// RunMany rejects two inputs that would produce one output, but it did so
+// after the CLI had already opened the log and the catalog, both by
+// truncating. The run printed the collision and exited non-zero having
+// replaced an existing catalog with an empty Parquet and emptied the log.
+func TestOutputCollisionLeavesLogAndCatalogAlone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sample-small.qvd"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	dir := t.TempDir()
+	// Two directories holding the same base name map to one output.
+	var inDirs []string
+	for _, name := range []string{"a", "b"} {
+		sub := filepath.Join(dir, name)
+		if err := os.Mkdir(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sub, "same.qvd"), fixture, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		inDirs = append(inDirs, sub)
+	}
+
+	const catalogSentinel, logSentinel = "not a parquet file", "not a log\n"
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	logPath := filepath.Join(dir, "run.jsonl")
+	if err := os.WriteFile(catalogPath, []byte(catalogSentinel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte(logSentinel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	args := append([]string{"--progress", "0", "--force",
+		"--out-dir", filepath.Join(dir, "out"),
+		"--catalog-out", catalogPath, "--log", logPath}, inDirs...)
+	combined, err := exec.Command(bin, args...).CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitOutput {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitOutput, combined)
+	}
+	if !strings.Contains(string(combined), "output name collision") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+
+	for _, f := range []struct{ path, want string }{
+		{catalogPath, catalogSentinel},
+		{logPath, logSentinel},
+	} {
+		got, err := os.ReadFile(f.path)
+		if err != nil {
+			t.Fatalf("read %s after rejection: %v", f.path, err)
+		}
+		if string(got) != f.want {
+			t.Errorf("refused run rewrote %s: %q", filepath.Base(f.path), string(got))
+		}
+	}
+}
+
+// TestLogOpenFailureLeavesTheCatalogAlone covers a setup step that fails after
+// the catalog writer exists.
+//
+// Reordering guards ahead of the writers did not cover this: NewLogWriter runs
+// after both are open and can fail on its own, at which point the deferred
+// close wrote a catalog for a run that never converted anything, over whatever
+// catalog was already there. The writer is now armed by the run starting, so
+// the caller's setup ordering cannot reintroduce this.
+func TestLogOpenFailureLeavesTheCatalogAlone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	const sentinel = "not a parquet file"
+
+	for _, tc := range []struct {
+		name string
+		args func(dir, catalog, log string) []string
+	}{
+		{"single", func(dir, catalog, log string) []string {
+			return []string{"--progress", "0", "--force",
+				"--catalog-out", catalog, "--log", log,
+				fixture, filepath.Join(dir, "out.parquet")}
+		}},
+		{"batch", func(dir, catalog, log string) []string {
+			return []string{"--progress", "0", "--force",
+				"--out-dir", filepath.Join(dir, "out"),
+				"--catalog-out", catalog, "--log", log, fixture}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			// A regular file where the log needs a directory, so NewLogWriter
+			// fails after both writers have been created.
+			blocker := filepath.Join(dir, "blocker")
+			if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			catalogPath := filepath.Join(dir, "catalog.parquet")
+			if err := os.WriteFile(catalogPath, []byte(sentinel), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			args := tc.args(dir, catalogPath, filepath.Join(blocker, "run.jsonl"))
+			combined, err := exec.Command(bin, args...).CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != exitOutput {
+				t.Fatalf("exit = %v, want %d\n%s", err, exitOutput, combined)
+			}
+			got, err := os.ReadFile(catalogPath)
+			if err != nil {
+				t.Fatalf("read catalog after failure: %v", err)
+			}
+			if string(got) != sentinel {
+				t.Fatalf("a run that never started rewrote the catalog: %q", string(got))
+			}
+		})
+	}
+}
+
+// TestSkippedFileThatCannotBeCataloguedFailsTheRun covers the one path where a
+// catalog can come out incomplete rather than absent.
+//
+// A skipped file writes no rows of its own, so its existing output is scanned
+// instead. That scan used to fail with a note and the run carried on, so a
+// folder whose output could not be read produced exit 0 and a catalog silently
+// missing a table -- worse than no catalog, because a job downstream has no way
+// to tell. It is also a finding on its own terms: the manifest says the output
+// is current and it cannot be read.
+func TestSkippedFileThatCannotBeCataloguedFailsTheRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sample-small.qvd"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "A.qvd"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(dir, "out")
+
+	// A first run to write the manifest the second one will skip on.
+	if out, err := exec.Command(bin, "--progress", "0", "--out-dir", outDir,
+		"--skip-up-to-date", src).CombinedOutput(); err != nil {
+		t.Fatalf("first run: %v\n%s", err, out)
+	}
+
+	// Make the output unreadable as Parquet while leaving the size and
+	// modification time the manifest compares against untouched, so the run
+	// still decides the file is up to date. Overwriting in place rather than
+	// removing permissions keeps this meaningful on Windows, where chmod does
+	// not take away read access.
+	output := filepath.Join(outDir, "A.parquet")
+	info, err := os.Stat(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(output, bytes.Repeat([]byte("x"), int(info.Size())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(output, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	combined, err := exec.Command(bin, "--progress", "0", "--out-dir", outDir,
+		"--skip-up-to-date", "--catalog-out", catalogPath, src).CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitOutput {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitOutput, combined)
+	}
+	if !strings.Contains(string(combined), "could not be read") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+	// Without --catalog-out the same folder is skipped silently, since nothing
+	// asked for the output to be read.
+	if out, err := exec.Command(bin, "--progress", "0", "--out-dir", outDir,
+		"--skip-up-to-date", src).CombinedOutput(); err != nil {
+		t.Fatalf("a run not asking for a catalog should still skip: %v\n%s", err, out)
+	}
+}
+
+// TestRunThatConvertsNothingLeavesTheCatalogAlone covers every way a run can
+// end before a single input has been accounted for.
+//
+// Arming the catalog when the run "started" was still too early: Run begins
+// before it opens the input or checks the output, so a missing input exited 4
+// having replaced the catalog with an empty Parquet. The writer is now armed
+// by an input actually being converted, skipped or scanned, which is the only
+// point at which there is something to describe.
+func TestRunThatConvertsNothingLeavesTheCatalogAlone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	const sentinel = "not a parquet file"
+
+	for _, tc := range []struct {
+		name string
+		want int
+		args func(dir, catalog string) []string
+	}{
+		{"missing input", exitInput, func(dir, catalog string) []string {
+			return []string{"--progress", "0", "--force", "--catalog-out", catalog,
+				filepath.Join(dir, "missing.qvd"), filepath.Join(dir, "out.parquet")}
+		}},
+		{"batch missing input", exitInput, func(dir, catalog string) []string {
+			return []string{"--progress", "0", "--force",
+				"--out-dir", filepath.Join(dir, "out"), "--catalog-out", catalog,
+				filepath.Join(dir, "gone.qvd")}
+		}},
+		{"log cannot be opened", exitOutput, func(dir, catalog string) []string {
+			blocker := filepath.Join(dir, "blocker")
+			if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"--progress", "0", "--force", "--catalog-out", catalog,
+				"--log", filepath.Join(blocker, "run.jsonl"),
+				fixture, filepath.Join(dir, "out.parquet")}
+		}},
+		{"scan finds nothing readable", exitInput, func(dir, catalog string) []string {
+			junk := filepath.Join(dir, "junk")
+			if err := os.Mkdir(junk, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(junk, "a.parquet"), []byte("nope"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"--progress", "0", "--force", "--catalog-scan",
+				"--catalog-out", catalog, junk}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			catalogPath := filepath.Join(dir, "catalog.parquet")
+			if err := os.WriteFile(catalogPath, []byte(sentinel), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			combined, err := exec.Command(bin, tc.args(dir, catalogPath)...).CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != tc.want {
+				t.Fatalf("exit = %v, want %d\n%s", err, tc.want, combined)
+			}
+			got, err := os.ReadFile(catalogPath)
+			if err != nil {
+				t.Fatalf("read catalog after failure: %v", err)
+			}
+			if string(got) != sentinel {
+				t.Fatalf("a run that accounted for nothing rewrote the catalog: %q", string(got))
+			}
+		})
+	}
+}
+
+// TestScanThatReadsNothingSaysSo checks the reporting, not the writing.
+//
+// A scan in which every file failed accounts for nothing, so no catalog is
+// written and the path keeps whatever it held. The summary line was printed
+// unconditionally, so the run named a catalog that does not exist, which is
+// the one thing a message about an output must not do.
+func TestScanThatReadsNothingSaysSo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	junk := filepath.Join(dir, "junk")
+	if err := os.Mkdir(junk, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(junk, "a.parquet"), []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+
+	combined, err := exec.Command(bin, "--progress", "0", "--catalog-scan",
+		"--catalog-out", catalogPath, junk).CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitInput {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitInput, combined)
+	}
+	if strings.Contains(string(combined), "wrote catalog to") {
+		t.Errorf("announced a catalog it did not write:\n%s", combined)
+	}
+	if !strings.Contains(string(combined), "no catalog written") {
+		t.Errorf("did not say the catalog was skipped:\n%s", combined)
+	}
+	if _, err := os.Stat(catalogPath); !os.IsNotExist(err) {
+		t.Errorf("catalog exists after a scan that read nothing (err = %v)", err)
+	}
+
+	// A scan that read something still announces it, counting only the files
+	// it managed to read.
+	good := filepath.Join(junk, "good.parquet")
+	if out, err := exec.Command(bin, "--progress", "0",
+		filepath.Join("..", "..", "testdata", "sample-small.qvd"), good).CombinedOutput(); err != nil {
+		t.Fatalf("convert: %v\n%s", err, out)
+	}
+	combined, err = exec.Command(bin, "--progress", "0", "--catalog-scan",
+		"--catalog-out", catalogPath, junk).CombinedOutput()
+	exitErr, ok = err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitInput {
+		t.Fatalf("partial scan exit = %v, want %d\n%s", err, exitInput, combined)
+	}
+	if !strings.Contains(string(combined), "from 1 file(s)") {
+		t.Errorf("partial scan should count only what it read:\n%s", combined)
+	}
+	if _, err := os.Stat(catalogPath); err != nil {
+		t.Errorf("partial scan wrote no catalog: %v", err)
 	}
 }

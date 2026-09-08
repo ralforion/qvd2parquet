@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ralforion/qvd2parquet/internal/catalog"
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
@@ -404,7 +405,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	// per-file --force guard would report that as a pre-existing file, and
 	// with --force it would silently overwrite, so catch it before converting
 	// anything.
-	if err := checkOutputCollisions(inputs, many.OutDir); err != nil {
+	if err := CheckOutputCollisions(inputs, many.OutDir); err != nil {
 		return nil, err
 	}
 
@@ -482,6 +483,32 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 				manifest.NoteTable(out, table)
 			}
 			results[i] = FileResult{Input: in, Output: out, Table: table, Skipped: true, Started: time.Now()}
+			// A skipped file writes no catalog rows of its own, which would
+			// leave the catalog describing the subset of the folder that
+			// happened to be stale rather than the folder. Its output exists,
+			// so read the columns back out of it. They carry the comment but
+			// not the QVD-side profile, which is what the source column on
+			// each row is there to say.
+			if opts.Catalog != nil {
+				rows, err := catalog.ScanFile(out)
+				if err != nil {
+					// Reported as a failure of this file rather than a note.
+					// The run was asked for a catalog of the folder and cannot
+					// produce one, and a note beside exit 0 would hand a
+					// scheduled job a catalog silently missing a table. It is
+					// also a finding in its own right: the manifest says this
+					// output is current and it cannot be read.
+					results[i].Err = fmt.Errorf("%w: catalog: %v; rerun with "+
+						"--force to reconvert it", parquetwrite.ErrOutput, err)
+					safeLogf("catalog: %s is up to date but could not be read: %v", DisplayPath(out), err)
+					continue
+				}
+				for j := range rows {
+					rows[j].SourceFile = in
+					rows[j].SourceTable = table
+				}
+				opts.Catalog.Add(rows)
+			}
 			// Serialized like every other per-file line: a conversion already
 			// running can be writing progress at the same moment.
 			safeLogf("skip %s (up to date)", DisplayPath(in))
@@ -545,9 +572,14 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	return b, nil
 }
 
-// checkOutputCollisions rejects a run in which two inputs would produce the
+// CheckOutputCollisions rejects a run in which two inputs would produce the
 // same output file.
-func checkOutputCollisions(inputs []string, outDir string) error {
+//
+// RunMany calls this itself, but the CLI has to call it earlier: it opens the
+// log and the catalog before converting, both by truncating, and a run refused
+// here would otherwise have destroyed them on the way out. A guard that runs
+// after a writer is open protects nothing.
+func CheckOutputCollisions(inputs []string, outDir string) error {
 	byOutput := make(map[string][]string, len(inputs))
 	for _, in := range inputs {
 		out := OutputPathFor(in, outDir)
