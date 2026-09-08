@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ralforion/qvd2parquet/internal/catalog"
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
@@ -482,6 +483,25 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 				manifest.NoteTable(out, table)
 			}
 			results[i] = FileResult{Input: in, Output: out, Table: table, Skipped: true, Started: time.Now()}
+			// A skipped file writes no catalog rows of its own, which would
+			// leave the catalog describing the subset of the folder that
+			// happened to be stale rather than the folder. Its output exists,
+			// so read the columns back out of it. They carry the comment but
+			// not the QVD-side profile, which is what the source column on
+			// each row is there to say.
+			if opts.Catalog != nil {
+				rows, err := catalog.ScanFile(out)
+				if err != nil {
+					safeLogf("note: catalog: %v; %s will be missing from %s",
+						err, DisplayPath(out), opts.Catalog.Path())
+				} else {
+					for j := range rows {
+						rows[j].SourceFile = in
+						rows[j].SourceTable = table
+					}
+					opts.Catalog.Add(rows)
+				}
+			}
 			// Serialized like every other per-file line: a conversion already
 			// running can be writing progress at the same moment.
 			safeLogf("skip %s (up to date)", DisplayPath(in))

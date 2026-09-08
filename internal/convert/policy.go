@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ralforion/qvd2parquet/internal/catalog"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
 
@@ -226,9 +227,13 @@ type Options struct {
 	TimezoneName string
 	// NaiveTimestamps writes timestamps with no timezone (Parquet
 	// isAdjustedToUTC=false), preserving the QVD's wall clock verbatim.
-	NaiveTimestamps     bool
-	SchemaOverridePath  string
-	SchemaReportPath    string
+	NaiveTimestamps    bool
+	SchemaOverridePath string
+	SchemaReportPath   string
+	// Catalog collects one row per output column across the whole run. It is
+	// shared by every file of a batch and is safe for concurrent use. Nil
+	// unless --catalog-out was given.
+	Catalog             *catalog.Writer
 	Quality             QualityMode
 	QualityReportPath   string
 	QualityRelTolerance float64

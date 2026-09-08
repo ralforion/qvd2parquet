@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ralforion/qvd2parquet/internal/catalog"
 	"github.com/ralforion/qvd2parquet/internal/convert"
 )
 
@@ -650,5 +651,136 @@ func TestInspectExitsZeroOnAnEncodingItAccepts(t *testing.T) {
 	cmd := exec.Command(bin, "--inspect", "--encoding", "Name=delta_byte_array", in)
 	if combined, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("inspect failed on a valid pin: %v\n%s", err, combined)
+	}
+}
+
+// TestCatalogOutDoesNotTruncateInput is the guard the log already has, applied
+// to --catalog-out. The catalog writer replaces whatever file it is pointed
+// at, so an early version that created it before validating the paths turned a
+// correctly refused run into a destroyed QVD: the run printed the refusal and
+// wrote an empty Parquet over the input on its way out.
+func TestCatalogOutDoesNotTruncateInput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	original, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	dir := t.TempDir()
+	inDir := filepath.Join(dir, "in")
+	if err := os.Mkdir(inDir, 0o755); err != nil {
+		t.Fatalf("create input directory: %v", err)
+	}
+	input := filepath.Join(inDir, "sample-small.qvd")
+	if err := os.WriteFile(input, original, 0o600); err != nil {
+		t.Fatalf("copy fixture: %v", err)
+	}
+
+	// --force is the case that matters: without it the existence check alone
+	// refuses, and the guard is never reached.
+	cmd := exec.Command(bin, "--progress", "0", "--force",
+		"--out-dir", filepath.Join(dir, "out"), "--catalog-out", input, inDir)
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--catalog-out path must differ from the input") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+	after, err := os.ReadFile(input)
+	if err != nil {
+		t.Fatalf("read input after rejection: %v", err)
+	}
+	if !bytes.Equal(after, original) {
+		t.Fatalf("input replaced: %d bytes before, %d after", len(original), len(after))
+	}
+}
+
+// TestCatalogOutDoesNotCollideWithLog covers the other direction: both write
+// with O_TRUNC, so whichever finishes second silently destroys the first.
+func TestCatalogOutDoesNotCollideWithLog(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "both.parquet")
+
+	cmd := exec.Command(bin, "--progress", "0",
+		"--out-dir", filepath.Join(dir, "out"),
+		"--catalog-out", shared, "--log", shared,
+		filepath.Join("..", "..", "testdata", "sample-small.qvd"))
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--catalog-out path must differ from --log") {
+		t.Errorf("missing diagnostic:\n%s", combined)
+	}
+}
+
+// TestCatalogScanReadsCommentsBackOutOfParquet is the after-the-fact route: a
+// conversion that forgot --catalog-out can still be catalogued, because the
+// comment is in the file it wrote.
+func TestCatalogScanReadsCommentsBackOutOfParquet(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "out")
+
+	convert := exec.Command(bin, "--progress", "0", "--out-dir", outDir,
+		"--field-regex", `^(?P<name>Amount)$`, "--field-comment", "Betrag",
+		filepath.Join("..", "..", "testdata", "sample-small.qvd"))
+	if out, err := convert.CombinedOutput(); err != nil {
+		t.Fatalf("convert: %v\n%s", err, out)
+	}
+
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	scan := exec.Command(bin, "--progress", "0", "--catalog-scan",
+		"--catalog-out", catalogPath, outDir)
+	out, err := scan.CombinedOutput()
+	if err != nil {
+		t.Fatalf("scan: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "wrote catalog to") {
+		t.Errorf("scan did not report writing a catalog:\n%s", out)
+	}
+	if _, err := os.Stat(catalogPath); err != nil {
+		t.Fatalf("no catalog written: %v", err)
+	}
+
+	rows, err := catalog.ScanFile(catalogPath)
+	if err != nil {
+		t.Fatalf("read catalog: %v", err)
+	}
+	if len(rows) != len(catalog.Schema.Fields()) {
+		t.Errorf("catalog has %d columns, want %d", len(rows), len(catalog.Schema.Fields()))
+	}
+}
+
+// TestCatalogScanNeedsCatalogOut keeps the two flags from being usable apart,
+// since a scan with nowhere to write is a run that reads a folder and reports
+// nothing.
+func TestCatalogScanNeedsCatalogOut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	cmd := exec.Command(bin, "--catalog-scan", t.TempDir())
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--catalog-scan needs --catalog-out") {
+		t.Errorf("missing diagnostic:\n%s", combined)
 	}
 }

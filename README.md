@@ -106,6 +106,7 @@ sitting in the argument list as if it were a file name.
 ```text
 qvd2parquet [options] input.qvd output.parquet
 qvd2parquet --inspect [options] input.qvd
+qvd2parquet --catalog-scan --catalog-out catalog.parquet <file-or-directory>...
 
   -out-dir DIR               Convert every input into this directory
   -file-workers 1            Files to convert at once; decode workers are divided
@@ -114,6 +115,10 @@ qvd2parquet --inspect [options] input.qvd
   -exclude-files '*_TMP'     With --out-dir, skip files matching these patterns
   -skip-up-to-date           With --out-dir, leave a file this run already produced
   -log path.jsonl            Write one JSON Lines record per input, then a summary
+  -catalog-out cat.parquet   Write a column-grain catalog of the run: one row per
+                             output column, with its comment
+  -catalog-scan              With --catalog-out, read the columns out of existing
+                             .parquet inputs instead of converting
   -columns name1,name2       Convert only these columns
   -exclude '%*,*_TMP'        Skip fields matching these wildcard patterns
   -field-regex <re>          Rewrite field names with this regexp
@@ -547,6 +552,77 @@ nothing could read the header at all, which is the case where there is no name
 to give. `--schema-report` and
 `--quality-report` also work in batch mode; each file gets its own document,
 named after the input.
+
+## The column catalog
+
+A field comment reaches the Parquet file as Arrow field metadata, which lives
+in the file-level `ARROW:schema` entry. pyarrow, polars and Arrow-Go decode it.
+Query engines mostly do not, and Dremio in particular has no column description
+field at all: `DESCRIBE TABLE` returns nine columns and none of them is a
+comment, and the dataset wiki is the only place text can be attached, keyed by
+a catalog object id that a re-promoted dataset does not keep.
+
+So the comment reaches a reader there only as data. `--catalog-out` writes that
+data: one Parquet row per output column, for the whole run.
+
+```sh
+qvd2parquet --out-dir out --catalog-out catalog.parquet \
+  --field-regex '^[^-]*-\|\|-(?P<name>[^-]*)-\|\|-(?P<comment>.*)$' \
+  extracts/
+```
+
+```text
+source  source_table  ordinal  column_name  comment          parquet_type
+qvd     A057          1        DATBI        Ende Gültigkeit  int64
+qvd     A057          2        KSCHL        Konditionsart    utf8
+qvd     A057          3        KBETR        Betrag           decimal(4, 2)
+```
+
+Every row carries `run_at`, `tool_version`, `source_file`, `source_table`,
+`source_rows`, `output_file`, `ordinal`, `column_name`, `source_column`,
+`comment`, `qlik_type`, `parquet_type`, `nullable`, `symbols`, `value_range`,
+`strategy` and `note`. The schema is fixed and every field is written on every
+row, for the same reason the log writes its empty fields: a column that vanishes
+whenever no row happened to carry it turns `where comment <> ''` into a binding
+error on exactly the run where nothing was commented. `symbols` is the one
+nullable column, because zero symbols is a real value and a scan that cannot
+know the count should not claim it.
+
+The catalog is a table, so it can be promoted as a dataset and joined. Against
+`INFORMATION_SCHEMA.COLUMNS` it answers which columns are undocumented, and
+which exist in the engine but not in the last conversion, which is schema drift
+arriving as a row rather than as a surprise. Point `--catalog-out` at a dated
+path under one directory and the runs accumulate into a history you can diff.
+
+The catalog does not replace the wiki so much as feed it: render the rows as
+markdown and push them to `/api/v3/catalog/{id}/collaboration/wiki`, and the
+Dremio-visible copy is derived from the durable one rather than typed twice.
+
+### Cataloguing files you already converted
+
+A run that forgot `--catalog-out` is not lost, because the comments are in the
+files it wrote. `--catalog-scan` reads them back:
+
+```sh
+qvd2parquet --catalog-scan --catalog-out catalog.parquet out/
+```
+
+It reads each file's footer and never a data page, so it costs a seek per file
+however many rows they hold, and it converts nothing. What it cannot recover is
+the QVD side -- `qlik_type`, `symbols`, `value_range`, `strategy`, `note` --
+which never reached the Parquet. Those rows say `source='parquet'` rather than
+`source='qvd'` so a query can tell the difference instead of inferring it from
+which fields happen to be empty. A file written by something else scans fine
+and simply has no comment.
+
+`--skip-up-to-date` uses the same path: a skipped file writes no rows of its
+own, so its output is scanned instead. A run that skipped the whole folder
+still writes a catalog describing the whole folder.
+
+The catalog path has to differ from every file the run reads or writes, on the
+same terms as `--log`, and for the same reason: it is written by truncating.
+A run correctly refused for that collision must not destroy the file on its way
+out, so the writer is not created until the paths have been checked.
 
 ## Inspecting a file
 

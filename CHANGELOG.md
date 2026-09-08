@@ -13,6 +13,37 @@ restarts from it.
 
 ## [Unreleased]
 
+### Added
+
+- `--catalog-out` writes a column-grain catalog of a run: one Parquet row per
+  output column, carrying its comment, the names on both sides of the
+  conversion, the Qlik and Parquet types, the symbol count, the observed range
+  and the resolver's note. It works for a single conversion, a `--out-dir`
+  batch and an `--inspect`, and the whole run lands in one table.
+
+  The comment a conversion attaches survives only in Arrow's `ARROW:schema`
+  entry, which the Arrow readers decode and the query engines do not. Dremio
+  has no column description field at all, and its dataset wiki is keyed by a
+  catalog object id that a re-promoted dataset does not keep. A catalog table
+  is the durable form: queryable, joinable against `INFORMATION_SCHEMA`, and
+  portable to any engine.
+
+  The schema is fixed and every field is written on every row, so a query does
+  not stop binding on the run where nothing happened to be commented. `symbols`
+  is the one nullable column.
+
+- `--catalog-scan` builds the same catalog from Parquet files that already
+  exist, reading each footer rather than converting anything. A run that forgot
+  `--catalog-out` is not lost, because the comments are in the files it wrote.
+  What a scan cannot recover is the QVD-side profile, so its rows say
+  `source='parquet'` rather than `source='qvd'`.
+
+  `--skip-up-to-date` uses the same path for a file it skips, so a run that
+  skipped an entire folder still writes a catalog describing all of it.
+
+Nothing about the conversion changed. Both flags are new, no default moved, and
+the Parquet written is unaffected.
+
 ## [2.3.2] - 2026-09-08
 
 The `--log` records carried a `table` field that was never filled in, so every
