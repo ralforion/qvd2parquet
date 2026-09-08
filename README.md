@@ -553,9 +553,12 @@ qvd2parquet --out-dir ./parquet --log run.jsonl --console-log run.txt ./qvds
 ```
 
 It is a copy, not a redirect: the same lines still reach the screen. The file
-opens with the banner, so it says which build wrote it, and nothing buffers, so
-a run that is stopped or killed keeps every line it had printed, down to the
-progress of the file that was still converting. It works in every mode,
+opens with the banner, so it says which build wrote it, and nothing buffers
+once it is open, so a run that is stopped or killed keeps every line it had
+printed, down to the progress of the file that was still converting. The file
+itself cannot be created until the path guards below have run, so the lines
+printed before that -- the banner, and any note about which inputs were
+selected -- are held and written into it when it opens. It works in every mode,
 including `--inspect` and `--catalog-scan`, and it takes the same path guards
 as `--log`: it must not name an input, an output, a report, the manifest, or
 either of the other two logs, since it is created by truncating.

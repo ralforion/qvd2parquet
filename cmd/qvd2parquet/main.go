@@ -592,12 +592,15 @@ func validateBatchLogPath(logPath string, inputs []string, problems []convert.In
 // full of the run's own files.
 func startConsoleLog(path string, paths []logCollision) int {
 	if path == "" {
+		stderr.discard()
 		return exitOK
 	}
 	if err := checkCollisions(path, "--console-log", paths); err != nil {
+		stderr.discard()
 		return usageErr(err)
 	}
 	if err := stderr.attach(path); err != nil {
+		stderr.discard()
 		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 		return exitOutput
 	}
