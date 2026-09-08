@@ -13,6 +13,22 @@ restarts from it.
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-09-08
+
+The `--log` records carried a `table` field that was never filled in, so every
+line of every run named an empty table. A folder of nightly extracts is exactly
+where that field is wanted: the files are named for the table and the timestamp
+they were taken at, or for neither, so a log that does not name the table can
+only be grouped by guessing at a naming convention from the input path.
+
+Nothing about the conversion changed. No flag changed meaning, no default moved,
+and the Parquet a 2.3.2 binary writes is byte for byte the Parquet 2.3.1 wrote,
+which is what makes this a patch.
+
+The manifest gains a `table` key and keeps its format, so it stays readable both
+ways: 2.3.1 ignores the new key, and 2.3.2 fills it in for an entry that predates
+it. Upgrading does not reconvert a folder.
+
 ### Fixed
 
 - The `table` field in the `--log` JSON Lines records is populated instead of
@@ -812,7 +828,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.3.1...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.3.2...HEAD
+[2.3.2]: https://github.com/ralforion/qvd2parquet/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/ralforion/qvd2parquet/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/ralforion/qvd2parquet/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/ralforion/qvd2parquet/compare/v2.1.0...v2.2.0
