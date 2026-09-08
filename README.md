@@ -577,6 +577,28 @@ failed and the record says why but not what led up to it. A failure that cannot
 be written is dropped with one note rather than failing the run, since the
 conversion is what the run is for and the screen still has the output.
 
+### A run that looks stuck on Windows
+
+A conversion that stops printing, its last progress line frozen on screen, is
+usually not stuck: the console is paused. Windows consoles have QuickEdit on by
+default, and one click in the window enters selection mode, which blocks every
+write to the console. The next progress line blocks with it, and because
+progress is printed from the goroutine that writes rows, the conversion stops
+with it. The title bar says `Select` or `Mark` while it lasts. Press `Esc` or
+`Enter` in the window and the run carries on from where it was, with nothing
+lost.
+
+On a long run, turn QuickEdit off in the console properties (right-click the
+title bar, Properties, uncheck QuickEdit Mode), or use Windows Terminal, where
+selecting text does not stall the writer, or keep the prose off the console
+altogether with one of the forms above.
+
+If it really is stuck, the three signs come together: the process using no CPU,
+the output's `.parquet.tmp-*` file not growing, and the console not in
+selection mode. Start it with `GOTRACEBACK=all` set and press `Ctrl-Break`; the
+Go runtime dumps every goroutine's stack, which says where it is parked, and
+the run ends with the dump. On Linux and macOS that dump comes from `Ctrl-\`.
+
 The log path has to differ from every file the run writes or reads: the inputs,
 the outputs, `--schema`, and the schema and quality reports. In batch mode that
 covers the whole expanded input list, including any input the run could not
