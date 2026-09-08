@@ -559,8 +559,7 @@ A field comment reaches the Parquet file as Arrow field metadata, which lives
 in the file-level `ARROW:schema` entry. pyarrow, polars and Arrow-Go decode it.
 Query engines mostly do not, and Dremio in particular has no column description
 field at all: `DESCRIBE TABLE` returns nine columns and none of them is a
-comment, and the dataset wiki is the only place text can be attached, keyed by
-a catalog object id that a re-promoted dataset does not keep.
+comment.
 
 So the comment reaches a reader there only as data. `--catalog-out` writes that
 data: one Parquet row per output column, for the whole run.
@@ -593,10 +592,6 @@ The catalog is a table, so it can be promoted as a dataset and joined. Against
 which exist in the engine but not in the last conversion, which is schema drift
 arriving as a row rather than as a surprise. Point `--catalog-out` at a dated
 path under one directory and the runs accumulate into a history you can diff.
-
-The catalog does not replace the wiki so much as feed it: render the rows as
-markdown and push them to `/api/v3/catalog/{id}/collaboration/wiki`, and the
-Dremio-visible copy is derived from the durable one rather than typed twice.
 
 ### Cataloguing files you already converted
 

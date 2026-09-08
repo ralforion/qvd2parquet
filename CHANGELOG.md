@@ -23,10 +23,8 @@ restarts from it.
 
   The comment a conversion attaches survives only in Arrow's `ARROW:schema`
   entry, which the Arrow readers decode and the query engines do not. Dremio
-  has no column description field at all, and its dataset wiki is keyed by a
-  catalog object id that a re-promoted dataset does not keep. A catalog table
-  is the durable form: queryable, joinable against `INFORMATION_SCHEMA`, and
-  portable to any engine.
+  has no column description field at all. A catalog table is the durable form:
+  queryable, joinable against `INFORMATION_SCHEMA`, and portable to any engine.
 
   The schema is fixed and every field is written on every row, so a query does
   not stop binding on the run where nothing happened to be commented. `symbols`
