@@ -865,3 +865,66 @@ func TestCatalogScanRejectsLog(t *testing.T) {
 		t.Errorf("missing diagnostic:\n%s", combined)
 	}
 }
+
+// TestRefusedRunLeavesTheCatalogAlone covers a run refused by a guard that has
+// nothing to do with the catalog.
+//
+// The catalog used to be opened before the log's own path validation, so a
+// command rejected for an unrelated collision still ran the deferred close on
+// its way out and replaced the catalog with an empty Parquet. The refusal
+// printed on the way past made the damage look impossible, which is what makes
+// this worth a test in both modes rather than a reordering and a shrug.
+func TestRefusedRunLeavesTheCatalogAlone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	const sentinel = "not a parquet file"
+
+	for _, tc := range []struct {
+		name string
+		args func(dir, catalog, schema string) []string
+	}{
+		{"single", func(dir, catalog, schema string) []string {
+			return []string{"--progress", "0", "--force",
+				"--catalog-out", catalog, "--schema", schema, "--log", schema,
+				fixture, filepath.Join(dir, "out.parquet")}
+		}},
+		{"batch", func(dir, catalog, schema string) []string {
+			return []string{"--progress", "0", "--force",
+				"--out-dir", filepath.Join(dir, "out"),
+				"--catalog-out", catalog, "--schema", schema, "--log", schema,
+				fixture}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			catalogPath := filepath.Join(dir, "catalog.parquet")
+			schemaPath := filepath.Join(dir, "schema.json")
+			if err := os.WriteFile(schemaPath, []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(catalogPath, []byte(sentinel), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command(bin, tc.args(dir, catalogPath, schemaPath)...)
+			combined, err := cmd.CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != exitUsage {
+				t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+			}
+			if !strings.Contains(string(combined), "--log path must differ from --schema") {
+				t.Errorf("missing diagnostic:\n%s", combined)
+			}
+			after, err := os.ReadFile(catalogPath)
+			if err != nil {
+				t.Fatalf("read catalog after rejection: %v", err)
+			}
+			if string(after) != sentinel {
+				t.Fatalf("refused run replaced the catalog: %q", string(after))
+			}
+		})
+	}
+}

@@ -378,6 +378,10 @@ func closeCatalogInto(code *int, closeCatalog func() int) {
 func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.Options,
 	logPath, catalogPath string, logf convert.Logf) (code int) {
 
+	// Every path guard runs before either writer is created. Both the log and
+	// the catalog are written by truncating, so a writer opened ahead of a
+	// guard that then refuses the run destroys a file on the way out -- and
+	// the refusal it prints makes that damage look impossible.
 	if err := validateCatalogPath(catalogPath, inputPath, outputPath, opts); err != nil {
 		return usageErr(err)
 	}
@@ -385,6 +389,12 @@ func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.
 		[]logCollision{{"--log", logPath}}); err != nil {
 		return usageErr(err)
 	}
+	if logPath != "" {
+		if err := validateLogPath(logPath, inputPath, outputPath, opts); err != nil {
+			return usageErr(err)
+		}
+	}
+
 	closeCatalog, err := openCatalog(catalogPath, opts, logf)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
@@ -394,9 +404,6 @@ func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.
 
 	var log *convert.LogWriter
 	if logPath != "" {
-		if err := validateLogPath(logPath, inputPath, outputPath, opts); err != nil {
-			return usageErr(err)
-		}
 		var err error
 		if log, err = convert.NewLogWriter(logPath); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
@@ -478,7 +485,6 @@ func validateLogPath(logPath, inputPath, outputPath string, opts *convert.Option
 		{"--schema", opts.SchemaOverridePath},
 		{"--schema-report", opts.SchemaReportPath},
 		{"--quality-report", opts.QualityReportPath},
-		{"--catalog-out", opts.Catalog.Path()},
 	})
 }
 
@@ -684,6 +690,10 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		return exitOutput
 	}
 
+	// Every path guard runs before either writer is created. Both the log and
+	// the catalog are written by truncating, so a writer opened ahead of a
+	// guard that then refuses the run destroys a file on the way out -- and
+	// the refusal it prints makes that damage look impossible.
 	if err := validateBatchCatalogPath(catalogPath, inputs, problems, outDir, opts); err != nil {
 		return usageErr(err)
 	}
@@ -693,14 +703,6 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	}); err != nil {
 		return usageErr(err)
 	}
-	closeCatalog, err := openCatalog(catalogPath, opts, logf)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
-		return exitCodeFor(err)
-	}
-	defer closeCatalogInto(&code, closeCatalog)
-
-	var log *convert.LogWriter
 	if logPath != "" {
 		if skipUpToDate {
 			// The manifest is the run's own record of what it produced;
@@ -715,6 +717,17 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		if err := validateBatchLogPath(logPath, inputs, problems, outDir, opts); err != nil {
 			return usageErr(err)
 		}
+	}
+
+	closeCatalog, err := openCatalog(catalogPath, opts, logf)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
+		return exitCodeFor(err)
+	}
+	defer closeCatalogInto(&code, closeCatalog)
+
+	var log *convert.LogWriter
+	if logPath != "" {
 		var err error
 		if log, err = convert.NewLogWriter(logPath); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", programName, err)
