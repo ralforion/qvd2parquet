@@ -3,6 +3,7 @@ package qvd
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -276,7 +277,9 @@ func headerDiagnostics(raw []byte, line int) string {
 	return out + ")"
 }
 
-// headerLine returns the 1-based source line, trimmed and bounded.
+// headerLine returns the 1-based source line, quoted so that a control byte or
+// a stray piece of invalid UTF-8 is visible rather than invisible, which is
+// the whole point of printing it.
 func headerLine(raw []byte, line int) string {
 	if line <= 0 {
 		return ""
@@ -300,5 +303,5 @@ func headerLine(raw []byte, line int) string {
 	if len(text) > max {
 		text = text[:max] + "..."
 	}
-	return text
+	return strconv.Quote(text)
 }

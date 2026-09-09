@@ -79,13 +79,13 @@ func TestParseHeaderXMLReportsTheOffendingLine(t *testing.T) {
 
 func TestHeaderLine(t *testing.T) {
 	raw := []byte("a\nb\n  <FieldName>Ist <Soll</FieldName>\r\nd\n")
-	if got, want := headerLine(raw, 3), "<FieldName>Ist <Soll</FieldName>"; got != want {
+	if got, want := headerLine(raw, 3), `"<FieldName>Ist <Soll</FieldName>"`; got != want {
 		t.Errorf("headerLine = %q, want %q", got, want)
 	}
 	if got := headerLine(raw, 99); got != "" {
 		t.Errorf("out-of-range line = %q, want empty", got)
 	}
-	if got := headerLine([]byte(strings.Repeat("x", 400)), 1); !strings.HasSuffix(got, "...") {
+	if got := headerLine([]byte(strings.Repeat("x", 400)), 1); !strings.Contains(got, "...") {
 		t.Errorf("long line not truncated: %q", got)
 	}
 }
@@ -93,7 +93,7 @@ func TestHeaderLine(t *testing.T) {
 func TestHeaderDiagnostics(t *testing.T) {
 	full := []byte("<QvdTableHeader>\n<x>\n</QvdTableHeader>")
 	if got := headerDiagnostics(full, 2); !strings.Contains(got, "ends on line 3") ||
-		!strings.Contains(got, "38 bytes, 3 lines") || !strings.Contains(got, "line 2: <x>") {
+		!strings.Contains(got, "38 bytes, 3 lines") || !strings.Contains(got, `line 2: "<x>"`) {
 		t.Errorf("headerDiagnostics = %q", got)
 	}
 	// The shape seen in the wild: the end tag never closes, and whitespace
