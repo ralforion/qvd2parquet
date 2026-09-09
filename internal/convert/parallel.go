@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -127,6 +128,10 @@ func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressF
 	f := c.File
 	chunks := Chunks(f.NoOfRecords, c.BatchRows, f.RecordByteSize, f.RecordStart)
 	total := NewMetrics(c.Schema)
+	if c.Options.Quality >= QualityReread {
+		c.chunks = chunks
+		c.chunkDigests = make([][32]byte, len(chunks))
+	}
 
 	if len(chunks) == 0 {
 		return total, nil
@@ -379,6 +384,11 @@ func (w *worker) decodeChunk(ch DecodeChunk) (DecodeResult, error) {
 		return DecodeResult{}, fmt.Errorf("%w: read rows %d..%d at offset %d: got %d of %d bytes; "+
 			"the input was truncated or modified during conversion",
 			ErrInput, ch.StartRow, ch.StartRow+int64(ch.RowCount), ch.ByteOffset, n, size)
+	}
+	// Record what this pass read, before anything is decoded from it. Each
+	// worker writes its own chunk's slot, so no lock is needed.
+	if w.c.chunkDigests != nil {
+		w.c.chunkDigests[ch.Index] = sha256.Sum256(buf)
 	}
 
 	metrics := NewMetrics(w.c.Schema)

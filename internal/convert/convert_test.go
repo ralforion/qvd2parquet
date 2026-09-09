@@ -673,6 +673,10 @@ func reconvert(t *testing.T, in string, opts *Options) (*qvd.File, *ResolvedSche
 	return qf, rs, metrics
 }
 
+type discardSink struct{}
+
+func (discardSink) Write(arrow.Record) error { return nil }
+
 func columnMetrics(m *Metrics, name string) *ColumnMetrics {
 	for _, c := range m.Columns {
 		if c.Name == name {

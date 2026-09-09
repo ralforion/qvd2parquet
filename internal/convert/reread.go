@@ -2,93 +2,141 @@ package convert
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
-
-	"github.com/apache/arrow-go/v18/arrow"
+	"io"
+	"os"
 
 	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
 
-// discardSink decodes without keeping anything. The second pass exists to
-// produce metrics, not a file.
-type discardSink struct{}
+// maxReadDiffsReported bounds the list of differing ranges. A read that went
+// wrong once is the thing to act on; a thousand of them say nothing more than
+// the first three do.
+const maxReadDiffsReported = 3
 
-func (discardSink) Write(arrow.Record) error { return nil }
-
-// RereadSourceMetrics decodes the QVD a second time, from scratch, and returns
-// the metrics of that read.
+// VerifySourceReads reads every byte the conversion read a second time and
+// compares it against a digest taken as the conversion read it.
 //
-// Every other check in this package validates the written Parquet against what
-// the conversion believed it read. None of them can question that belief: a
-// record byte that was read wrong yields a different symbol index, and a
-// different symbol index yields a value that is entirely well formed. There is
-// no syntax to violate, nothing downstream to notice, and the Parquet will
-// faithfully contain it. Only reading the source again can tell.
+// Nothing else in this package covers the read itself. The quality gate
+// validates the written Parquet against metrics collected from the values the
+// converter produced, so it cannot question those values: a record byte read
+// wrong points at a different symbol, the symbol yields a value that is
+// entirely well formed, and the Parquet then faithfully contains it. There is
+// no syntax to violate and nothing downstream to notice.
 //
-// So this opens the file again, re-reads the symbol tables, and decodes every
-// record a second time with the schema the first pass resolved. Holding the
-// schema fixed is deliberate: the question is whether the same bytes read the
-// same way twice, not whether the schema would be resolved the same, and a
-// difference in the answer is a difference in what was read.
-func RereadSourceMetrics(ctx context.Context, inputPath string, rs *ResolvedSchema,
-	opts *Options, progress ProgressFunc) (*Metrics, error) {
+// Comparing bytes rather than decoded values is both cheaper and more useful.
+// The second pass is a sequential read with no decoding behind it, and what it
+// reports is a byte range rather than a column: an offset is what anyone
+// chasing this below our level can act on.
+//
+// What it cannot see is a read that is wrong the same way twice. If the bad
+// bytes are cached, both passes agree and nothing here fires. That is a limit
+// of any check inside one process, and no arrangement of them removes it.
+func VerifySourceReads(ctx context.Context, path string, f *qvd.File,
+	chunks []DecodeChunk, chunkDigests [][32]byte, progress ProgressFunc) ([]string, error) {
 
-	f, err := qvd.Open(inputPath)
+	again, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("reread %s: %w", inputPath, err)
+		return nil, fmt.Errorf("verify %s: %w", path, err)
 	}
-	defer f.Close()
+	defer again.Close()
 
-	if err := f.SelectColumns(opts.Columns); err != nil {
-		return nil, fmt.Errorf("reread %s: %w", inputPath, err)
-	}
-	if _, _, err := f.ExcludeColumns(opts.Exclude); err != nil {
-		return nil, fmt.Errorf("reread %s: %w", inputPath, err)
-	}
-	if err := f.ReadSymbols(qvd.UnknownSymbolError); err != nil {
-		return nil, fmt.Errorf("reread %s: %w", inputPath, err)
-	}
-
-	conv, err := NewConverter(f, rs, opts)
+	same, err := sameContent(f.FileHandle(), again)
 	if err != nil {
-		return nil, fmt.Errorf("reread %s: %w", inputPath, err)
+		return nil, fmt.Errorf("verify %s: %w", path, err)
 	}
-	return conv.Run(ctx, discardSink{}, progress)
-}
+	if !same {
+		return nil, fmt.Errorf("verify %s: the file was replaced while it was being converted", path)
+	}
 
-// CompareSourceReads reports every way two passes over the same QVD disagree.
-//
-// The comparison is exact, with none of the tolerance the Parquet comparison
-// needs. Both passes decoded the same bytes with the same schema through the
-// same code, so every figure has to match to the digit; anything else means
-// the file did not read the same way twice, and neither read can be trusted.
-func CompareSourceReads(first, second *Metrics) []string {
-	var errs []string
-	if first.Rows != second.Rows {
-		errs = append(errs, fmt.Sprintf("row count differs between two reads of the source: %d then %d",
-			first.Rows, second.Rows))
-	}
-	if len(first.Columns) != len(second.Columns) {
-		return append(errs, fmt.Sprintf("column count differs between two reads of the source: %d then %d",
-			len(first.Columns), len(second.Columns)))
-	}
-	for i := range first.Columns {
-		a, b := first.Columns[i].Stats(), second.Columns[i].Stats()
-		name := first.Columns[i].Name
-		for _, d := range []struct{ what, x, y string }{
-			{"nulls", fmt.Sprint(a.Nulls), fmt.Sprint(b.Nulls)},
-			{"non-nulls", fmt.Sprint(a.NonNulls), fmt.Sprint(b.NonNulls)},
-			{"value fingerprint", a.Hash, b.Hash},
-			{"sum", a.Sum, b.Sum},
-			{"min", a.Min, b.Min},
-			{"max", a.Max, b.Max},
-		} {
-			if d.x != d.y {
-				errs = append(errs, fmt.Sprintf(
-					"column %q: %s differs between two reads of the source: %s then %s",
-					name, d.what, shortHash(d.x), shortHash(d.y)))
-			}
+	var diffs []string
+	buf := make([]byte, 1<<20)
+
+	// Symbol tables first: a wrong byte there is worth more than a wrong
+	// record byte, since every row referring to that symbol carries it.
+	for i, r := range f.SymbolRanges() {
+		if !f.Columns[i].Selected || len(f.SymbolDigests) == 0 {
+			continue
+		}
+		sum, err := digestRange(ctx, again, r.Offset, r.Length, buf)
+		if err != nil {
+			return nil, fmt.Errorf("verify %s: %w", path, err)
+		}
+		if sum != f.SymbolDigests[i] {
+			diffs = appendDiff(diffs, fmt.Sprintf(
+				"the symbol table of column %q, %d bytes at offset %d, read differently the second time",
+				f.Columns[i].Name, r.Length, r.Offset))
 		}
 	}
-	return errs
+
+	for _, ch := range chunks {
+		if err := ctx.Err(); err != nil {
+			return nil, ErrCanceled
+		}
+		size := int64(ch.RowCount) * int64(f.RecordByteSize)
+		sum, err := digestRange(ctx, again, ch.ByteOffset, size, buf)
+		if err != nil {
+			return nil, fmt.Errorf("verify %s: %w", path, err)
+		}
+		if sum != chunkDigests[ch.Index] {
+			diffs = appendDiff(diffs, fmt.Sprintf(
+				"records for rows %d..%d, %d bytes at offset %d, read differently the second time",
+				ch.StartRow, ch.StartRow+int64(ch.RowCount), size, ch.ByteOffset))
+		}
+		if progress != nil {
+			progress(ch.StartRow + int64(ch.RowCount))
+		}
+	}
+	return diffs, nil
+}
+
+// appendDiff keeps the first few differences and counts the rest.
+func appendDiff(diffs []string, d string) []string {
+	if len(diffs) < maxReadDiffsReported {
+		return append(diffs, d)
+	}
+	if len(diffs) == maxReadDiffsReported {
+		return append(diffs, "and more ranges after these")
+	}
+	return diffs
+}
+
+// digestRange hashes length bytes at off.
+func digestRange(ctx context.Context, f *os.File, off, length int64, buf []byte) ([32]byte, error) {
+	sum := sha256.New()
+	for read := int64(0); read < length; {
+		if err := ctx.Err(); err != nil {
+			return [32]byte{}, ErrCanceled
+		}
+		n := int64(len(buf))
+		if rest := length - read; rest < n {
+			n = rest
+		}
+		got, err := f.ReadAt(buf[:n], off+read)
+		if err != nil && !(err == io.EOF && int64(got) == n) {
+			return [32]byte{}, fmt.Errorf("read %d bytes at offset %d: %w", n, off+read, err)
+		}
+		if int64(got) != n {
+			return [32]byte{}, fmt.Errorf("read %d of %d bytes at offset %d", got, n, off+read)
+		}
+		sum.Write(buf[:n])
+		read += n
+	}
+	var out [32]byte
+	copy(out[:], sum.Sum(nil))
+	return out, nil
+}
+
+// sameContent reports whether two handles refer to the same file.
+func sameContent(a, b *os.File) (bool, error) {
+	ai, err := a.Stat()
+	if err != nil {
+		return false, err
+	}
+	bi, err := b.Stat()
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(ai, bi), nil
 }

@@ -1515,18 +1515,29 @@ symbol index yields a value that is entirely well formed, and the Parquet then
 faithfully contains it: there is no syntax to violate and nothing downstream to
 notice. Only reading the source a second time can tell.
 
-`reread` opens the QVD again, re-reads the symbol tables, and decodes every
-record a second time with the schema the first pass resolved, then compares the
-two exactly -- null counts, non-null counts, fingerprints, sums and extrema, to
-the digit. The schema is held fixed on purpose: the question is whether the same
-bytes read the same way twice.
+`reread` takes a `sha256` of every byte as the conversion reads it, symbol
+tables and record chunks alike, then reads those same ranges again and compares
+the digests. What it reports is a byte range, not a column:
+
+```text
+FAIL X.qvd: quality gate failure: X.qvd did not read the same way twice, so
+nothing read from it can be trusted and no output was kept: records for rows
+1966080..2031616, 3670016 bytes at offset 154201653, read differently the
+second time
+```
+
+An offset is what anyone chasing the layer below can act on, and comparing
+bytes rather than decoded values means the second pass is a plain sequential
+read with nothing decoded behind it.
 
 Any difference fails the conversion outright rather than reporting a gate
 result, and no output is kept. There is no way to tell which of two disagreeing
-passes was right, so there is no version of the file worth writing.
+reads was right, so there is no version of the file worth writing.
 
-It costs a second full pass over the source, so a conversion takes roughly twice
-as long. That is the price of the only check that covers the read itself.
+It costs one extra sequential read of the source; hashing during the first read
+is close to free. What it cannot see is a read that is wrong the same way
+twice: if the bad bytes are cached, both reads agree and nothing fires. That is
+a limit of any check inside one process.
 
 
 Integer, decimal and date/time aggregates are compared exactly — decimal sums

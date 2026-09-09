@@ -2,8 +2,10 @@ package qvd
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"sort"
@@ -25,6 +27,13 @@ type File struct {
 	RecordByteSize int
 	// NoOfRecords is the declared row count.
 	NoOfRecords int64
+
+	// VerifyReads makes ReadSymbols record a digest of each selected column's
+	// symbol table as it reads it, so the bytes this pass saw can be checked
+	// against a later read of the same range.
+	VerifyReads bool
+	// SymbolDigests is indexed by column index and set only under VerifyReads.
+	SymbolDigests [][32]byte
 
 	// Symbols is indexed by column index; nil for skipped columns.
 	Symbols [][]Symbol
@@ -145,6 +154,25 @@ func firstDiffOffset(a, b []byte) int {
 		off++
 	}
 	return off
+}
+
+// ByteRange is a span of the file.
+type ByteRange struct {
+	Offset, Length int64
+}
+
+// SymbolRanges is the byte range of every column's symbol table, in header
+// order, so a later pass can read exactly what ReadSymbols read. Ranges for
+// unselected columns are returned too, with the same offsets, since skipping a
+// column does not move the ones after it.
+func (qf *File) SymbolRanges() []ByteRange {
+	out := make([]ByteRange, len(qf.Columns))
+	pos := qf.HeaderEnd
+	for i := range qf.Columns {
+		out[i] = ByteRange{Offset: pos, Length: qf.Columns[i].Length}
+		pos += qf.Columns[i].Length
+	}
+	return out
 }
 
 // Close releases the underlying file handle.
@@ -272,6 +300,9 @@ func (qf *File) SelectedColumns() []int {
 // ReadSymbols decodes the symbol table of every selected column and skips over
 // the tables of the rest. It also computes RecordStart.
 func (qf *File) ReadSymbols(policy UnknownSymbolPolicy) error {
+	if qf.VerifyReads {
+		qf.SymbolDigests = make([][32]byte, len(qf.Columns))
+	}
 	if _, err := qf.f.Seek(qf.HeaderEnd, io.SeekStart); err != nil {
 		return fmt.Errorf("seek to symbol area: %w", err)
 	}
@@ -288,9 +319,24 @@ func (qf *File) ReadSymbols(policy UnknownSymbolPolicy) error {
 		// Read exactly the declared table length so a decoding bug in one
 		// column cannot desynchronize the following ones.
 		sec := io.NewSectionReader(qf.f, pos, c.Length)
-		syms, prof, err := ReadSymbolTable(sec, c.SymbolCount, policy)
+		var r io.Reader = sec
+		var sum hash.Hash
+		if qf.VerifyReads {
+			sum = sha256.New()
+			r = io.TeeReader(sec, sum)
+		}
+		syms, prof, err := ReadSymbolTable(r, c.SymbolCount, policy)
 		if err != nil {
 			return fmt.Errorf("read symbols for column %q: %w", c.Name, err)
+		}
+		if sum != nil {
+			// The declared length can exceed what the symbols occupy, and the
+			// check covers the range this pass claimed to read, not the part
+			// of it that happened to be used.
+			if _, err := io.Copy(io.Discard, r); err != nil {
+				return fmt.Errorf("read symbols for column %q: %w", c.Name, err)
+			}
+			copy(qf.SymbolDigests[i][:], sum.Sum(nil))
 		}
 		qf.Symbols[i] = syms
 		qf.Profiles[i] = prof

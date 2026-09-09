@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,73 +11,121 @@ import (
 	"github.com/ralforion/qvd2parquet/internal/qvdtest"
 )
 
-func rereadFixture(t *testing.T, symbols []qvd.Symbol, rows []int) string {
+func verifyFixture(t *testing.T, rows []int) string {
 	t.Helper()
 	return buildFixture(t, qvdtest.Table{Name: "T", Fields: []qvdtest.Field{
-		{Name: "Name", Type: "ASCII", Rows: rows, Symbols: symbols},
+		{Name: "Name", Type: "ASCII", Rows: rows,
+			Symbols: []qvd.Symbol{qvdtest.Str("alpha"), qvdtest.Str("beta"), qvdtest.Str("gamma")}},
 		{Name: "N", Type: "INTEGER", Rows: rows,
 			Symbols: []qvd.Symbol{qvdtest.Int(10), qvdtest.Int(20), qvdtest.Int(30)}},
 	}})
 }
 
-// The whole point: a second pass over the same bytes must agree with the first.
-func TestRereadAgreesWithItself(t *testing.T) {
-	in := rereadFixture(t,
-		[]qvd.Symbol{qvdtest.Str("a"), qvdtest.Str("b"), qvdtest.Str("c")},
-		[]int{0, 1, 2, 1})
-	_, rs, first := reconvert(t, in, ptr(testOptions()))
-
+// converts and returns the digests the run recorded.
+func convertVerifying(t *testing.T, in, out string) (*qvd.File, []DecodeChunk, [][32]byte) {
+	t.Helper()
 	opts := testOptions()
-	opts.Quality = QualityFull
-	again, err := RereadSourceMetrics(context.Background(), in, rs, &opts, nil)
+	opts.Quality = QualityReread
+	f, err := qvd.Open(in)
 	if err != nil {
-		t.Fatalf("RereadSourceMetrics: %v", err)
+		t.Fatal(err)
 	}
-	if diffs := CompareSourceReads(first, again); len(diffs) > 0 {
-		t.Errorf("two reads of the same file disagree: %v", diffs)
+	f.VerifyReads = true
+	if err := f.ReadSymbols(qvd.UnknownSymbolError); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := ResolveSchema(f, &opts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := NewConverter(f, rs, &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conv.Run(context.Background(), discardSink{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	chunks, digests := conv.ReadDigests()
+	if len(digests) == 0 {
+		t.Fatal("no chunk digests were recorded")
+	}
+	return f, chunks, digests
+}
+
+// The ordinary case: what was read is what the file holds.
+func TestVerifySourceReadsAgrees(t *testing.T) {
+	in := verifyFixture(t, []int{0, 1, 2, 1})
+	f, chunks, digests := convertVerifying(t, in, "")
+	defer f.Close()
+
+	diffs, err := VerifySourceReads(context.Background(), in, f, chunks, digests, nil)
+	if err != nil {
+		t.Fatalf("VerifySourceReads: %v", err)
+	}
+	if len(diffs) > 0 {
+		t.Errorf("a file that did not change reported differences: %v", diffs)
 	}
 }
 
-// A record byte read wrong points at a different symbol, and the value that
-// comes back is entirely well formed. Nothing but a second read can see it,
-// which is what this checks: same schema, same row count, different values.
-func TestCompareSourceReadsCatchesADifferentValue(t *testing.T) {
-	syms := []qvd.Symbol{qvdtest.Str("a"), qvdtest.Str("b"), qvdtest.Str("c")}
-	a := rereadFixture(t, syms, []int{0, 1, 2, 1})
-	b := rereadFixture(t, syms, []int{0, 1, 2, 2}) // one row points elsewhere
+// A record byte that reads differently the second time is caught, and reported
+// as a byte range rather than as a column: an offset is what anyone chasing
+// this below our level can act on.
+func TestVerifySourceReadsCatchesChangedRecords(t *testing.T) {
+	in := verifyFixture(t, []int{0, 1, 2, 1})
+	f, chunks, digests := convertVerifying(t, in, "")
+	defer f.Close()
 
-	_, _, first := reconvert(t, a, ptr(testOptions()))
-	_, _, second := reconvert(t, b, ptr(testOptions()))
+	flipByte(t, in, f.RecordStart)
 
-	diffs := CompareSourceReads(first, second)
+	diffs, err := VerifySourceReads(context.Background(), in, f, chunks, digests, nil)
+	if err != nil {
+		t.Fatalf("VerifySourceReads: %v", err)
+	}
 	if len(diffs) == 0 {
-		t.Fatal("a changed symbol index went undetected")
+		t.Fatal("a changed record byte went undetected")
 	}
-	joined := strings.Join(diffs, "\n")
-	if !strings.Contains(joined, `column "Name"`) || !strings.Contains(joined, "fingerprint") {
-		t.Errorf("diffs do not name the column and what differs: %v", diffs)
-	}
-	if first.Rows != second.Rows {
-		t.Fatal("this test is meaningless unless the row counts match")
+	if !strings.Contains(diffs[0], "records for rows") || !strings.Contains(diffs[0], "offset") {
+		t.Errorf("diff does not name the range: %v", diffs)
 	}
 }
 
-func TestCompareSourceReadsCatchesARowCount(t *testing.T) {
-	syms := []qvd.Symbol{qvdtest.Str("a"), qvdtest.Str("b"), qvdtest.Str("c")}
-	_, _, first := reconvert(t, rereadFixture(t, syms, []int{0, 1, 2}), ptr(testOptions()))
-	_, _, second := reconvert(t, rereadFixture(t, syms, []int{0, 1}), ptr(testOptions()))
+// A symbol byte matters more than a record byte: every row referring to it
+// carries the wrong value.
+func TestVerifySourceReadsCatchesChangedSymbols(t *testing.T) {
+	in := verifyFixture(t, []int{0, 1, 2, 1})
+	f, chunks, digests := convertVerifying(t, in, "")
+	defer f.Close()
 
-	diffs := CompareSourceReads(first, second)
-	if len(diffs) == 0 || !strings.Contains(diffs[0], "row count differs") {
-		t.Errorf("diffs = %v, want a row count difference", diffs)
+	// Somewhere inside the first column's symbol table.
+	flipByte(t, in, f.SymbolRanges()[0].Offset+2)
+
+	diffs, err := VerifySourceReads(context.Background(), in, f, chunks, digests, nil)
+	if err != nil {
+		t.Fatalf("VerifySourceReads: %v", err)
+	}
+	if len(diffs) == 0 {
+		t.Fatal("a changed symbol byte went undetected")
+	}
+	if !strings.Contains(diffs[0], `symbol table of column "Name"`) {
+		t.Errorf("diff does not name the column: %v", diffs)
 	}
 }
 
-// --quality reread converts a healthy file and says the passes agree.
+func TestVerifySourceReadsRefusesAReplacedFile(t *testing.T) {
+	in := verifyFixture(t, []int{0, 1})
+	f, chunks, digests := convertVerifying(t, in, "")
+	defer f.Close()
+
+	other := verifyFixture(t, []int{0, 1, 2})
+	if _, err := VerifySourceReads(context.Background(), other, f, chunks, digests, nil); err == nil ||
+		!strings.Contains(err.Error(), "replaced") {
+		t.Errorf("error = %v, want it to say the file was replaced", err)
+	}
+}
+
+// End to end: a healthy file converts under the mode and says so.
 func TestQualityRereadConverts(t *testing.T) {
-	in := rereadFixture(t,
-		[]qvd.Symbol{qvdtest.Str("a"), qvdtest.Str("b"), qvdtest.Str("c")},
-		[]int{0, 1, 2, 1})
+	in := verifyFixture(t, []int{0, 1, 2, 1})
 	out := filepath.Join(t.TempDir(), "out.parquet")
 
 	var lines []string
@@ -93,8 +142,8 @@ func TestQualityRereadConverts(t *testing.T) {
 	if report == nil || !report.Passed {
 		t.Errorf("quality gate did not pass: %+v", report)
 	}
-	if !strings.Contains(strings.Join(lines, "\n"), "reread source") {
-		t.Errorf("the second pass was not reported: %v", lines)
+	if !strings.Contains(strings.Join(lines, "\n"), "verified source read") {
+		t.Errorf("the verification was not reported: %v", lines)
 	}
 }
 
@@ -111,4 +160,21 @@ func TestParseQualityModeReread(t *testing.T) {
 	}
 }
 
-func ptr(o Options) *Options { return &o }
+// flipByte changes one byte of a file in place, standing in for a read that
+// came back different.
+func flipByte(t *testing.T, path string, off int64) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var b [1]byte
+	if _, err := f.ReadAt(b[:], off); err != nil {
+		t.Fatal(err)
+	}
+	b[0] ^= 0x01
+	if _, err := f.WriteAt(b[:], off); err != nil {
+		t.Fatal(err)
+	}
+}

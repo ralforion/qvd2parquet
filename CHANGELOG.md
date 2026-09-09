@@ -15,28 +15,30 @@ restarts from it.
 
 ### Added
 
-- `--quality-gate reread` decodes the QVD a second time, from scratch, and
-  compares the two passes. Every other mode validates the written Parquet
-  against metrics collected from the values the converter produced, and none of
-  them can question those values: a record byte read wrong yields a different
-  symbol index, a different symbol index yields a value that is entirely well
-  formed, and the Parquet faithfully contains it. There is no syntax to violate
-  and nothing downstream to notice. This closes the gap left by 2.6.1, which
-  verified only the header.
+- `--quality-gate reread` checks that the QVD reads the same way twice. Every
+  other mode validates the written Parquet against metrics collected from the
+  values the converter produced, and none of them can question those values: a
+  record byte read wrong points at a different symbol, the symbol yields a
+  value that is entirely well formed, and the Parquet faithfully contains it.
+  There is no syntax to violate and nothing downstream to notice. This closes
+  the gap left by 2.6.1, which verified only the header.
 
-  The second pass reopens the file, re-reads the symbol tables and decodes
-  every record again with the schema the first pass resolved, then compares
-  exactly: null counts, non-null counts, value fingerprints, sums and extrema,
-  to the digit. Holding the schema fixed is deliberate, since the question is
-  whether the same bytes read the same way twice.
+  A `sha256` is taken of every byte as the conversion reads it, symbol tables
+  and record chunks alike, and those ranges are then read again and compared.
+  What it reports is a byte range rather than a column, since an offset is what
+  anyone chasing the layer below can act on:
+
+      records for rows 1966080..2031616, 3670016 bytes at offset 154201653,
+      read differently the second time
 
   A difference fails the conversion outright rather than reporting a gate
-  result, and no output is kept. There is no way to tell which of two
-  disagreeing passes was right, so there is no version of the file worth
-  writing.
+  result, and no output is kept: there is no way to tell which of two
+  disagreeing reads was right.
 
-  It costs a second full pass over the source, so a conversion takes roughly
-  twice as long. The default is unchanged at `full`.
+  It costs one extra sequential read of the source, with nothing decoded behind
+  it; hashing during the first read is close to free. The default is unchanged
+  at `full`. What it cannot see is a read that is wrong the same way twice, and
+  no check inside one process can.
 
 
 ## [2.6.1] - 2026-09-09

@@ -111,6 +111,10 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 		len(f.SelectedColumns()), len(f.Columns))
 
 	symStart := time.Now()
+	// Digests are taken as the symbol tables and records are read, so the
+	// check afterwards compares against what this pass actually saw rather
+	// than against a later reading of the file.
+	f.VerifyReads = opts.Quality >= QualityReread
 	if err := f.ReadSymbols(qvd.UnknownSymbolError); err != nil {
 		return nil, nil, err
 	}
@@ -281,21 +285,22 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	// file worth writing, so the conversion fails rather than reporting a gate
 	// result computed from bytes nobody can vouch for.
 	if opts.Quality >= QualityReread {
-		rereadStart := time.Now()
-		prog := newProgressETA(f.NoOfRecords, rereadStart)
-		again, err := RereadSourceMetrics(ctx, inputPath, rs, opts, func(rows int64) {
-			logf("rereading source %s", prog.Report(rows, time.Now()))
+		verifyStart := time.Now()
+		prog := newProgressETA(f.NoOfRecords, verifyStart)
+		chunks, digests := conv.ReadDigests()
+		diffs, err := VerifySourceReads(ctx, inputPath, f, chunks, digests, func(rows int64) {
+			logf("verifying source read %s", prog.Report(rows, time.Now()))
 		})
 		if err != nil {
 			return nil, nil, err
 		}
-		if diffs := CompareSourceReads(metrics, again); len(diffs) > 0 {
-			return nil, nil, fmt.Errorf("%w: %s read differently on two passes, so neither read "+
-				"can be trusted and no output was kept: %s",
+		if len(diffs) > 0 {
+			return nil, nil, fmt.Errorf("%w: %s did not read the same way twice, so nothing read "+
+				"from it can be trusted and no output was kept: %s",
 				ErrQualityGate, inputPath, strings.Join(diffs, "; "))
 		}
-		logf("reread source in %s: two passes agree",
-			time.Since(rereadStart).Round(time.Millisecond))
+		logf("verified source read in %s: both reads agree",
+			time.Since(verifyStart).Round(time.Millisecond))
 	}
 
 	var report *QualityReport
