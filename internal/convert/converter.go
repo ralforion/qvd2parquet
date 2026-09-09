@@ -98,6 +98,13 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	if err != nil {
 		return nil, nil, err
 	}
+	// The line naming the file comes first. Both notes below are about this
+	// input, and printing them ahead of it attached them to whatever the batch
+	// last said -- reading, after a failed file, as though the failure had
+	// excluded a column.
+	logf("%s: table %q, %d rows, %d bytes/record, %d of %d columns selected",
+		inputPath, f.Header.TableName, f.NoOfRecords, f.RecordByteSize,
+		len(f.SelectedColumns()), len(f.Columns))
 	if len(dropped) > 0 {
 		logf("excluded %d column(s) by pattern: %s", len(dropped), strings.Join(dropped, ", "))
 	}
@@ -106,9 +113,6 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 			"original QVD names, before --field-regex renames anything",
 			quotedList(unmatchedExcludes))
 	}
-	logf("%s: table %q, %d rows, %d bytes/record, %d of %d columns selected",
-		inputPath, f.Header.TableName, f.NoOfRecords, f.RecordByteSize,
-		len(f.SelectedColumns()), len(f.Columns))
 
 	symStart := time.Now()
 	// Digests are taken as the symbol tables and records are read, so the

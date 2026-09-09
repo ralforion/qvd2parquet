@@ -79,6 +79,20 @@ restarts from it.
   corruption after the read more readily than a bad read from storage. No check
   inside one process can do better.
 
+### Fixed
+
+- The per-file notes about excluded columns now print after the line naming the
+  file rather than before it. In a batch they landed under whatever was said
+  last, so an exclusion belonging to the next file appeared directly beneath
+  the previous file's result:
+
+      FAIL ..\SAP\AFRU.qvd: parse QVD XML header: XML syntax error on line 2147
+      excluded 1 column(s) by pattern: Counter
+      ..\SAP\AUFK.qvd: table "AUFK", 917132 rows, ...
+
+  which reads as though the failed file had excluded a column. Only the order
+  of the lines changes.
+
 ## [2.6.1] - 2026-09-09
 
 ### Fixed
