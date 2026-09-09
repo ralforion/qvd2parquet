@@ -461,6 +461,11 @@ func (w *worker) decodeChunk(ch DecodeChunk) (DecodeResult, error) {
 	buf := w.raw[:size]
 	// ReadAt reports a short read as io.EOF, so check the byte count too: the
 	// file can be truncated or replaced after the up-front size check.
+	// os.File.ReadAt slices the caller's buffer by the count the read reports
+	// (b = b[m:]), so a count larger than the buffer panics there rather than
+	// being believed. That is loud and safe, which is why this path is not
+	// wrapped the way the sequential header and symbol reads are: a wrapper
+	// here would never regain control to refuse it.
 	n, err := w.file.ReadAt(buf, ch.ByteOffset)
 	if err != nil && !(errors.Is(err, io.EOF) && n == size) {
 		return DecodeResult{}, fmt.Errorf("%w: read rows %d..%d at offset %d: read %d of %d bytes: %v",

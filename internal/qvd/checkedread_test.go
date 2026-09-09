@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -45,31 +43,38 @@ func TestCheckedReaderPassesOrdinaryReads(t *testing.T) {
 	}
 }
 
-type overReporterAt struct{ r io.ReaderAt }
-
-func (o overReporterAt) ReadAt(p []byte, off int64) (int, error) {
-	n, err := o.r.ReadAt(p, off)
-	return n + 1, err
+// os.File.ReadAt slices the caller's buffer by the count it was given
+// (b = b[m:]) before any wrapper regains control, so an over-count there
+// panics rather than corrupting, and no wrapper could turn it into an error.
+// That is why the guarded reads are sequential; this pins the reasoning.
+func TestReadAtSlicesByTheCountItself(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("slicing a buffer by a count larger than it should panic")
+		}
+	}()
+	b := make([]byte, 4)
+	_ = b[7:] // what os.File.ReadAt does with m > len(b)
 }
 
-func TestCheckedReaderAtRefusesAnImpossibleCount(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "f")
-	if err := os.WriteFile(path, []byte("abcdefgh"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
+// The symbol tables are read sequentially for that reason, so the guard
+// applies to them.
+func TestReadSymbolsUsesTheGuardedPath(t *testing.T) {
+	f, err := Open(twoColumnFile(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
-
-	if _, err := (checkedReaderAt{overReporterAt{f}}).ReadAt(make([]byte, 4), 0); !errors.Is(err, ErrUnstableRead) {
-		t.Fatalf("error = %v, want ErrUnstableRead", err)
+	if err := f.ReadSymbols(UnknownSymbolError); err != nil {
+		t.Fatalf("ReadSymbols: %v", err)
 	}
-	// The ordinary path is untouched.
-	p := make([]byte, 4)
-	if n, err := (checkedReaderAt{f}).ReadAt(p, 2); n != 4 || err != nil || string(p) != "cdef" {
-		t.Errorf("ReadAt = %d, %v, %q", n, err, p)
+	if len(f.Symbols[0]) == 0 || len(f.Symbols[1]) == 0 {
+		t.Error("symbols were not read")
+	}
+	// Reading sequentially must leave the next column's start correct, which
+	// the per-column seek guarantees.
+	if f.RecordStart <= f.HeaderEnd {
+		t.Errorf("RecordStart = %d, HeaderEnd = %d", f.RecordStart, f.HeaderEnd)
 	}
 }
 

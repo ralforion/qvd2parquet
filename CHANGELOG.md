@@ -30,8 +30,16 @@ restarts from it.
   from nowhere, in a file that reads correctly the next time.
 
   Whether that has ever happened here is unknown, and this is not a claim that
-  it has. It costs one comparison per read to refuse it rather than decode it,
-  on both the header read and the symbol-table reads.
+  it has. It costs one comparison per read to refuse it rather than decode it.
+
+  This applies to sequential reads, and only can: on the `ReadAt` path the
+  count is consumed inside `os.File.ReadAt`, which slices the caller's buffer
+  by it (`b = b[m:]`) before any wrapper regains control, so an over-count
+  there panics on the slice bounds rather than corrupting anything. That path
+  fails loudly on its own. The symbol tables are now read sequentially rather
+  than through an `io.SectionReader` so that the guard applies to them, with
+  each column seeking to its own start so a short read in one cannot shift the
+  ones after it.
 
 - `--quality-gate reread` checks that the QVD reads the same way twice. Every
   other mode validates the written Parquet against metrics collected from the

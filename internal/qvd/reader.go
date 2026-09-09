@@ -371,16 +371,22 @@ func (qf *File) ReadSymbols(policy UnknownSymbolPolicy) error {
 	pos := qf.HeaderEnd
 	for i := range qf.Columns {
 		c := &qf.Columns[i]
+		// Every column seeks to its own start, so a short or over-long read in
+		// one cannot shift the ones after it. This is also why the table is
+		// read sequentially rather than through a SectionReader: a count
+		// larger than the buffer is consumed inside os.File.ReadAt, which
+		// slices by it before any wrapper regains control, and only the
+		// sequential path can refuse one.
+		if _, err := qf.f.Seek(pos, io.SeekStart); err != nil {
+			return fmt.Errorf("seek to symbol table of column %q: %w", c.Name, err)
+		}
 		if !c.Selected {
 			pos += c.Length
-			if _, err := qf.f.Seek(pos, io.SeekStart); err != nil {
-				return fmt.Errorf("skip symbol table of column %q: %w", c.Name, err)
-			}
 			continue
 		}
 		// Read exactly the declared table length so a decoding bug in one
 		// column cannot desynchronize the following ones.
-		sec := io.NewSectionReader(checkedReaderAt{qf.f}, pos, c.Length)
+		sec := io.LimitReader(checkedReader{qf.f}, c.Length)
 		var r io.Reader = sec
 		var sum hash.Hash
 		if qf.VerifyReads {

@@ -20,21 +20,17 @@ import (
 //
 // Whether that has ever happened here is unknown. It costs one comparison per
 // read to refuse it rather than decode it.
+//
+// This guards sequential reads only, and it has to: on the ReadAt path the
+// count is consumed inside os.File.ReadAt, which slices the caller's buffer by
+// it (b = b[m:]) before any wrapper of ours regains control. An over-count
+// there panics on the slice bounds rather than corrupting anything, so that
+// path fails loudly on its own and a wrapper around it could not do better.
+// Reads that must be guarded are therefore made sequentially.
 type checkedReader struct{ r io.Reader }
 
 func (c checkedReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
-	if n < 0 || n > len(p) {
-		return 0, impossibleCount(n, len(p))
-	}
-	return n, err
-}
-
-// checkedReaderAt is checkedReader for the ReadAt path.
-type checkedReaderAt struct{ r io.ReaderAt }
-
-func (c checkedReaderAt) ReadAt(p []byte, off int64) (int, error) {
-	n, err := c.r.ReadAt(p, off)
 	if n < 0 || n > len(p) {
 		return 0, impossibleCount(n, len(p))
 	}
