@@ -7,16 +7,16 @@ import (
 	"strings"
 )
 
-// stripIllegalControls removes the control bytes XML 1.0 does not allow
-// anywhere in a document, not even escaped: 0x00-0x08, 0x0B, 0x0C and
-// 0x0E-0x1F, everything below a space except tab, newline and carriage return.
+// stripIllegalControls removes the invisible bytes that cannot occur in a tag:
+// the C0 controls XML 1.0 forbids anywhere in a document, not even escaped
+// (0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F), and 0x7F, which XML allows in text but
+// not in a name.
 //
-// A vertical tab or a form feed inside a tag is invisible in an editor and does
-// not survive a copy and paste, so a header holding one looks perfectly correct
-// to anyone reading it while the parser stops on a line that reads
-// `<NoOfSymbols>1</NoOfSymbols>` and reports "expected attribute name in
-// element". Dropping them is the only repair available, since XML 1.0 has no
-// escape for them either.
+// Every one of them renders as nothing in an editor and none survive a copy
+// and paste, so a header holding one looks perfectly correct to anyone reading
+// it while the parser stops on a line that says `<NoOfSymbols>1</NoOfSymbols>`
+// and reports "expected attribute name in element". Dropping them is the only
+// repair available, since XML 1.0 has no escape for the C0 set either.
 func stripIllegalControls(raw []byte) []byte {
 	if bytes.IndexFunc(raw, isIllegalControl) < 0 {
 		return raw
@@ -31,7 +31,7 @@ func stripIllegalControls(raw []byte) []byte {
 }
 
 func isIllegalControl(r rune) bool {
-	return r < 0x20 && r != '\t' && r != '\n' && r != '\r'
+	return r == 0x7F || (r < 0x20 && r != '\t' && r != '\n' && r != '\r')
 }
 
 // escapeStrayMarkup escapes the '<' and '&' bytes in a QVD header that cannot

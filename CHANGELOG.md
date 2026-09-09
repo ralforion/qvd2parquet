@@ -25,13 +25,14 @@ restarts from it.
     `Ist <Soll (Abw.)`, or a comment holding a bare `&`, is markup where it
     should be text. Those bytes are now escaped, which recovers the name
     exactly as it stands in the file.
-  - Control bytes that XML 1.0 does not allow anywhere in a document, not even
-    escaped, turn up inside tags: a vertical tab in `<NoOfSymbols\v>` is
-    invisible in an editor and does not survive a copy and paste, so the header
-    reads as perfectly correct while the parser stops on a line that says
-    `<NoOfSymbols>1</NoOfSymbols>` and reports "expected attribute name in
-    element". They are now dropped, which is the only repair available, and the
-    field keeps its values.
+  - Invisible bytes turn up inside tags: the C0 controls XML 1.0 forbids
+    anywhere in a document, not even escaped (0x00-0x08, 0x0B, 0x0C,
+    0x0E-0x1F), and 0x7F, which XML allows in text but not in a name. Any of
+    them in `<NoOfSymbols>` renders as nothing in an editor and survives no
+    copy and paste, so the header reads as perfectly correct while the parser
+    stops on a line that says `<NoOfSymbols>1</NoOfSymbols>` and reports
+    "expected attribute name in element". They are now dropped, which is the
+    only repair available, and the field keeps its values.
   - The header is terminated by a 0x00 byte rather than by its own last
     character, and the gap between the two is the writer's business: some files
     pad it with whitespace, and at least one leaves the root end tag a byte

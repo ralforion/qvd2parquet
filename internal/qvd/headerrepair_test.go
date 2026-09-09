@@ -189,7 +189,7 @@ func TestParseHeaderXMLDropsIllegalControlBytes(t *testing.T) {
 	// survive a copy and paste, so the line looks correct while the parser
 	// reports "expected attribute name in element" on it. The field's values
 	// have to come through intact once the byte is dropped.
-	for _, bad := range []string{"\v", "\f", "\x01", "\x1f"} {
+	for _, bad := range []string{"\v", "\f", "\x01", "\x1f", "\x7f"} {
 		raw := strings.Replace(sampleHeader, "<NoOfSymbols>5</NoOfSymbols>",
 			"<NoOfSymbols"+bad+">5</NoOfSymbols>", 1)
 		h, err := ParseHeaderXML([]byte(raw))
@@ -226,7 +226,7 @@ func TestStripIllegalControls(t *testing.T) {
 	if got := string(stripIllegalControls([]byte("a\tb\nc\rd"))); got != "a\tb\nc\rd" {
 		t.Errorf("tab, newline and carriage return must survive: %q", got)
 	}
-	if got := string(stripIllegalControls([]byte("a\x00\x08b\v\fc\x0e\x1fd"))); got != "abcd" {
+	if got := string(stripIllegalControls([]byte("a\x00\x08b\v\fc\x0e\x1fd\x7f"))); got != "abcd" {
 		t.Errorf("stripIllegalControls = %q, want %q", got, "abcd")
 	}
 	in := []byte("nothing to do")
