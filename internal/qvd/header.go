@@ -108,15 +108,21 @@ func ParseHeaderXML(raw []byte) (*TableHeader, error) {
 	if !errors.As(err, &se) {
 		return nil, fmt.Errorf("parse QVD XML header: %w", err)
 	}
+	// Each repair is applied on top of the last, least invasive first, and the
+	// order matters: dropping the illegal control bytes before escaping stray
+	// markup lets `<NoOfSymbols\v>` parse as the tag it is, rather than being
+	// escaped into text and losing the field's symbol count.
+	fixed := raw
 	for _, repair := range []func([]byte) []byte{
 		completeRootElement,
+		stripIllegalControls,
 		escapeStrayMarkup,
-		func(b []byte) []byte { return escapeStrayMarkup(completeRootElement(b)) },
 	} {
-		fixed := repair(raw)
-		if bytes.Equal(fixed, raw) {
+		next := repair(fixed)
+		if bytes.Equal(next, fixed) {
 			continue
 		}
+		fixed = next
 		if h, err2 := decodeHeader(fixed); err2 == nil {
 			h.Repaired = true
 			return h, nil

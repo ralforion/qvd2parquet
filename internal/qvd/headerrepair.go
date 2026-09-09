@@ -7,6 +7,33 @@ import (
 	"strings"
 )
 
+// stripIllegalControls removes the control bytes XML 1.0 does not allow
+// anywhere in a document, not even escaped: 0x00-0x08, 0x0B, 0x0C and
+// 0x0E-0x1F, everything below a space except tab, newline and carriage return.
+//
+// A vertical tab or a form feed inside a tag is invisible in an editor and does
+// not survive a copy and paste, so a header holding one looks perfectly correct
+// to anyone reading it while the parser stops on a line that reads
+// `<NoOfSymbols>1</NoOfSymbols>` and reports "expected attribute name in
+// element". Dropping them is the only repair available, since XML 1.0 has no
+// escape for them either.
+func stripIllegalControls(raw []byte) []byte {
+	if bytes.IndexFunc(raw, isIllegalControl) < 0 {
+		return raw
+	}
+	out := make([]byte, 0, len(raw))
+	for _, c := range raw {
+		if !isIllegalControl(rune(c)) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func isIllegalControl(r rune) bool {
+	return r < 0x20 && r != '\t' && r != '\n' && r != '\r'
+}
+
 // escapeStrayMarkup escapes the '<' and '&' bytes in a QVD header that cannot
 // be starting markup, so that a header Qlik wrote without escaping its own
 // string values parses as XML.

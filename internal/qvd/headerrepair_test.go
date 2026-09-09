@@ -183,3 +183,54 @@ func TestEscapeStrayMarkupHandlesUTF8Names(t *testing.T) {
 		t.Errorf("escapeStrayMarkup = %q, want %q", got, want)
 	}
 }
+
+func TestParseHeaderXMLDropsIllegalControlBytes(t *testing.T) {
+	// A vertical tab inside a tag renders as nothing in an editor and does not
+	// survive a copy and paste, so the line looks correct while the parser
+	// reports "expected attribute name in element" on it. The field's values
+	// have to come through intact once the byte is dropped.
+	for _, bad := range []string{"\v", "\f", "\x01", "\x1f"} {
+		raw := strings.Replace(sampleHeader, "<NoOfSymbols>5</NoOfSymbols>",
+			"<NoOfSymbols"+bad+">5</NoOfSymbols>", 1)
+		h, err := ParseHeaderXML([]byte(raw))
+		if err != nil {
+			t.Errorf("%q: ParseHeaderXML: %v", bad, err)
+			continue
+		}
+		if !h.Repaired {
+			t.Errorf("%q: not marked as repaired", bad)
+		}
+		if got := h.Fields[1].NoOfSymbols; got != 5 {
+			t.Errorf("%q: NoOfSymbols = %d, want 5", bad, got)
+		}
+		if got := h.Fields[1].FieldName; got != "Amount" {
+			t.Errorf("%q: FieldName = %q", bad, got)
+		}
+	}
+}
+
+func TestParseHeaderXMLDropsControlBytesInValues(t *testing.T) {
+	raw := strings.Replace(sampleHeader, "<FieldName>Amount</FieldName>",
+		"<FieldName>Amount\vNetto</FieldName>", 1)
+	h, err := ParseHeaderXML([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseHeaderXML: %v", err)
+	}
+	// XML 1.0 has no escape for these bytes, so dropping is the only repair.
+	if got := h.Fields[1].FieldName; got != "AmountNetto" {
+		t.Errorf("FieldName = %q, want %q", got, "AmountNetto")
+	}
+}
+
+func TestStripIllegalControls(t *testing.T) {
+	if got := string(stripIllegalControls([]byte("a\tb\nc\rd"))); got != "a\tb\nc\rd" {
+		t.Errorf("tab, newline and carriage return must survive: %q", got)
+	}
+	if got := string(stripIllegalControls([]byte("a\x00\x08b\v\fc\x0e\x1fd"))); got != "abcd" {
+		t.Errorf("stripIllegalControls = %q, want %q", got, "abcd")
+	}
+	in := []byte("nothing to do")
+	if got := stripIllegalControls(in); &got[0] != &in[0] {
+		t.Error("a clean header should not be copied")
+	}
+}
