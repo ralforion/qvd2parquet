@@ -62,7 +62,10 @@ restarts from it.
       difference at offset 61034, line 2147) and parsed
 
   A file read differently on two consecutive attempts deserves more attention
-  than the conversion the retry rescued, so the offset is named.
+  than the conversion the retry rescued, so the offset is named. The retry runs
+  before XML repairs are accepted: a repair is used only when two reads return
+  the same header bytes, so a transient bad read is not mistaken for a malformed
+  QVD on disk.
 
 - A header that cannot be repaired is now read a second time, from a new
   handle, and the error says whether the two reads agree. A header that will

@@ -39,11 +39,12 @@ func Open(path string) (*File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	h, end, readNote, err := readHeaderRetrying(path, f)
+	h, end, trusted, readNote, err := readHeaderRetrying(path, f)
 	if err != nil {
 		f.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	f = trusted
 	if err := h.Validate(); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -76,35 +77,72 @@ func Open(path string) (*File, error) {
 // disagrees with the first is reported, with the offset it disagrees at,
 // because a file being read differently on two consecutive attempts is worth
 // more attention than the conversion it rescued.
-func readHeaderRetrying(path string, f *os.File) (*TableHeader, int64, string, error) {
-	raw, end, err := ReadHeaderBytes(f)
+func readHeaderRetrying(path string, f *os.File) (*TableHeader, int64, *os.File, string, error) {
+	return readHeaderRetryingWithOpen(path, f, os.Open)
+}
+
+func readHeaderRetryingWithOpen(path string, f *os.File, open func(string) (*os.File, error)) (*TableHeader, int64, *os.File, string, error) {
+	raw, end, readErr := ReadHeaderBytes(f)
+	err := readErr
 	var h *TableHeader
 	if err == nil {
-		h, err = ParseHeaderXML(raw)
+		h, err = parseHeaderXMLStrict(raw)
 	}
 	if err == nil {
-		return h, end, "", nil
+		return h, end, f, "", nil
 	}
 
-	f2, oerr := os.Open(path)
+	f2, oerr := open(path)
 	if oerr != nil {
-		return nil, 0, "", err
+		return nil, 0, f, "", err
+	}
+	same, serr := sameOpenFile(f, f2)
+	if serr != nil {
+		f2.Close()
+		return nil, 0, f, "", fmt.Errorf("%w [could not verify the retry read came from the same file: %v]", err, serr)
+	}
+	if !same {
+		f2.Close()
+		return nil, 0, f, "", fmt.Errorf("%w [the retry opened a different file; the input changed while its header was being read]", err)
+	}
+	raw2, end2, readErr2 := ReadHeaderBytes(f2)
+	err2 := readErr2
+	if err2 == nil {
+		h, err2 = parseHeaderXMLStrict(raw2)
+	}
+	diff := describeDiff(raw, raw2)
+	if err2 == nil {
+		f.Close()
+		return h, end2, f2, fmt.Sprintf(
+			"the first read of the header failed (%v); a second read %s and parsed",
+			err, diff), nil
 	}
 	defer f2.Close()
-	raw2, end2, err2 := ReadHeaderBytes(f2)
-	if err2 == nil {
-		h, err2 = ParseHeaderXML(raw2)
+
+	if readErr == nil && readErr2 == nil && bytes.Equal(raw, raw2) {
+		h, err = ParseHeaderXML(raw)
+		if err == nil {
+			return h, end, f, "", nil
+		}
+		return nil, 0, f, "", fmt.Errorf("%w [a second read returned the same %d bytes, so the file holds what was parsed]", err, len(raw))
 	}
-	if err2 != nil {
-		// Both attempts failed. Report the first failure, since that is the
-		// one whose bytes were examined, and say whether the second read saw
-		// the same file: written wrong and read wrong call for opposite
-		// responses and look identical afterwards.
-		return nil, 0, "", fmt.Errorf("%w%s", err, SecondReadNote(path, raw))
+	// Both attempts failed. Report the first failure, since that is the
+	// one whose bytes were examined, and say whether the second read saw
+	// the same file: written wrong and read wrong call for opposite
+	// responses and look identical afterwards.
+	return nil, 0, f, "", fmt.Errorf("%w [a second read %s and also failed: %v]", err, diff, err2)
+}
+
+func sameOpenFile(a, b *os.File) (bool, error) {
+	ai, err := a.Stat()
+	if err != nil {
+		return false, err
 	}
-	return h, end2, fmt.Sprintf(
-		"the first read of the header did not parse (%v); a second read %s and parsed",
-		err, describeDiff(raw, raw2)), nil
+	bi, err := b.Stat()
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(ai, bi), nil
 }
 
 // describeDiff says how two reads of the same header differ.

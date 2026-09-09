@@ -153,7 +153,7 @@ func ParseHeaderXML(raw []byte) (*TableHeader, error) {
 	}
 	var se *xml.SyntaxError
 	if !errors.As(err, &se) {
-		return nil, fmt.Errorf("parse QVD XML header: %w", err)
+		return nil, parseHeaderXMLError(raw, err)
 	}
 	// Each repair is applied on top of the last, least invasive first, and the
 	// order matters: dropping the illegal control bytes before escaping stray
@@ -177,7 +177,28 @@ func ParseHeaderXML(raw []byte) (*TableHeader, error) {
 			return h, nil
 		}
 	}
-	return nil, fmt.Errorf("parse QVD XML header: %w%s", err, headerDiagnostics(raw, se.Line))
+	return nil, parseHeaderXMLError(raw, err)
+}
+
+// parseHeaderXMLStrict unmarshals the raw header without repairing malformed
+// XML. Open uses this before it accepts a repair, so a transient bad read is
+// retried from disk rather than silently mended as if the file itself held
+// those bytes.
+func parseHeaderXMLStrict(raw []byte) (*TableHeader, error) {
+	raw = trimBOM(raw)
+	h, err := decodeHeader(raw)
+	if err != nil {
+		return nil, parseHeaderXMLError(raw, err)
+	}
+	return h, nil
+}
+
+func parseHeaderXMLError(raw []byte, err error) error {
+	var se *xml.SyntaxError
+	if errors.As(err, &se) {
+		return fmt.Errorf("parse QVD XML header: %w%s", err, headerDiagnostics(raw, se.Line))
+	}
+	return fmt.Errorf("parse QVD XML header: %w", err)
 }
 
 // decodeHeader unmarshals one candidate header body.
