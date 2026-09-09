@@ -28,12 +28,10 @@ type File struct {
 	// NoOfRecords is the declared row count.
 	NoOfRecords int64
 
-	// VerifyReads makes ReadSymbols record a digest of each selected column's
-	// symbol table as it reads it, so the bytes this pass saw can be checked
-	// against a later read of the same range.
+	// VerifyReads makes ReadSymbols check each column's symbol table against a
+	// second read of the same range, and fail on the first that does not
+	// match. Records are checked the same way, per chunk, by the caller.
 	VerifyReads bool
-	// SymbolDigests is indexed by column index and set only under VerifyReads.
-	SymbolDigests [][32]byte
 
 	// Symbols is indexed by column index; nil for skipped columns.
 	Symbols [][]Symbol
@@ -154,6 +152,62 @@ func firstDiffOffset(a, b []byte) int {
 		off++
 	}
 	return off
+}
+
+// ErrUnstableRead marks a range of the file that did not read the same way
+// twice. It is not a statement about the file: the bytes on disk are whatever
+// they are, and two reads of them disagreeing says the reading went wrong.
+var ErrUnstableRead = errors.New("the file did not read the same way twice")
+
+// openVerifyReader opens the reader used to read a range a second time. It is
+// a variable so a test can supply a reader that returns something else, which
+// is the situation the check exists for and the one thing a real file cannot
+// be made to do on demand.
+var openVerifyReader = (*File).openVerifyHandle
+
+// openVerifyHandle opens a private handle on the same file, for reading a
+// range a second time. Reopening by path can land on a different file if the
+// input is replaced mid-run, which would make every comparison fail for a
+// reason that has nothing to do with how the bytes were read.
+func (qf *File) openVerifyHandle() (io.ReaderAt, func() error, error) {
+	v, err := os.Open(qf.Path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open %s to verify reads: %w", qf.Path, err)
+	}
+	same, err := sameOpenFile(qf.f, v)
+	if err != nil || !same {
+		v.Close()
+		if err != nil {
+			return nil, nil, fmt.Errorf("verify reads of %s: %w", qf.Path, err)
+		}
+		return nil, nil, fmt.Errorf("verify reads of %s: the file was replaced while it was being read", qf.Path)
+	}
+	return v, v.Close, nil
+}
+
+// digestMatches reads length bytes at off and reports whether they hash to
+// want. It streams, so a symbol table of any size costs one buffer.
+func digestMatches(f io.ReaderAt, off, length int64, want [32]byte) (bool, error) {
+	sum := sha256.New()
+	buf := make([]byte, 1<<20)
+	for read := int64(0); read < length; {
+		n := int64(len(buf))
+		if rest := length - read; rest < n {
+			n = rest
+		}
+		got, err := f.ReadAt(buf[:n], off+read)
+		if int64(got) != n {
+			if err == nil {
+				err = io.ErrUnexpectedEOF
+			}
+			return false, fmt.Errorf("read %d of %d bytes at offset %d: %w", got, n, off+read, err)
+		}
+		sum.Write(buf[:n])
+		read += n
+	}
+	var have [32]byte
+	copy(have[:], sum.Sum(nil))
+	return have == want, nil
 }
 
 // ByteRange is a span of the file.
@@ -300,8 +354,16 @@ func (qf *File) SelectedColumns() []int {
 // ReadSymbols decodes the symbol table of every selected column and skips over
 // the tables of the rest. It also computes RecordStart.
 func (qf *File) ReadSymbols(policy UnknownSymbolPolicy) error {
+	// A private handle for the check, so the verifying read cannot disturb the
+	// position of the one doing the reading.
+	var verify io.ReaderAt
 	if qf.VerifyReads {
-		qf.SymbolDigests = make([][32]byte, len(qf.Columns))
+		v, closeFn, err := openVerifyReader(qf)
+		if err != nil {
+			return err
+		}
+		defer closeFn()
+		verify = v
 	}
 	if _, err := qf.f.Seek(qf.HeaderEnd, io.SeekStart); err != nil {
 		return fmt.Errorf("seek to symbol area: %w", err)
@@ -336,7 +398,20 @@ func (qf *File) ReadSymbols(policy UnknownSymbolPolicy) error {
 			if _, err := io.Copy(io.Discard, r); err != nil {
 				return fmt.Errorf("read symbols for column %q: %w", c.Name, err)
 			}
-			copy(qf.SymbolDigests[i][:], sum.Sum(nil))
+			// Checked here rather than at the end of the conversion: this
+			// column's symbols are about to be decoded into every row that
+			// refers to them, and there is nothing to gain from doing that
+			// work first.
+			var want [32]byte
+			copy(want[:], sum.Sum(nil))
+			same, err := digestMatches(verify, pos, c.Length, want)
+			if err != nil {
+				return fmt.Errorf("verify symbols for column %q: %w", c.Name, err)
+			}
+			if !same {
+				return fmt.Errorf("%w: the symbol table of column %q, %d bytes at offset %d, "+
+					"did not read the same way twice", ErrUnstableRead, c.Name, c.Length, pos)
+			}
 		}
 		qf.Symbols[i] = syms
 		qf.Profiles[i] = prof

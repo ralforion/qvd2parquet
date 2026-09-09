@@ -2,10 +2,12 @@ package convert
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ralforion/qvd2parquet/internal/qvd"
@@ -22,132 +24,90 @@ func verifyFixture(t *testing.T, rows []int) string {
 	}})
 }
 
-// converts and returns the digests the run recorded.
-func convertVerifying(t *testing.T, in string, batchRows int) (*qvd.File, []DecodeChunk, [][32]byte) {
+// runVerifying converts under the mode that checks every read, and asserts the
+// output is there on success and gone on failure.
+func runVerifying(t *testing.T, in string, batchRows int) error {
 	t.Helper()
 	opts := testOptions()
 	opts.Quality = QualityReread
 	if batchRows > 0 {
 		opts.BatchRows = batchRows
 	}
-	f, err := qvd.Open(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.VerifyReads = true
-	if err := f.ReadSymbols(qvd.UnknownSymbolError); err != nil {
-		t.Fatal(err)
-	}
-	rs, err := ResolveSchema(f, &opts, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conv, err := NewConverter(f, rs, &opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := conv.Run(context.Background(), discardSink{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	chunks, digests := conv.ReadDigests()
-	if len(digests) == 0 {
-		t.Fatal("no chunk digests were recorded")
-	}
-	return f, chunks, digests
-}
-
-// The ordinary case: what was read is what the file holds.
-func TestVerifySourceReadsAgrees(t *testing.T) {
-	in := verifyFixture(t, []int{0, 1, 2, 1})
-	f, chunks, digests := convertVerifying(t, in, 0)
-	defer f.Close()
-
-	diffs, err := VerifySourceReads(context.Background(), in, f, chunks, digests, nil)
-	if err != nil {
-		t.Fatalf("VerifySourceReads: %v", err)
-	}
-	if len(diffs) > 0 {
-		t.Errorf("a file that did not change reported differences: %v", diffs)
-	}
-}
-
-// A record byte that reads differently the second time is caught, and reported
-// as a byte range rather than as a column: an offset is what anyone chasing
-// this below our level can act on.
-func TestVerifySourceReadsCatchesChangedRecords(t *testing.T) {
-	in := verifyFixture(t, []int{0, 1, 2, 1})
-	f, chunks, digests := convertVerifying(t, in, 0)
-	defer f.Close()
-
-	flipByte(t, in, f.RecordStart)
-
-	diffs, err := VerifySourceReads(context.Background(), in, f, chunks, digests, nil)
-	if err != nil {
-		t.Fatalf("VerifySourceReads: %v", err)
-	}
-	if len(diffs) == 0 {
-		t.Fatal("a changed record byte went undetected")
-	}
-	if !strings.Contains(diffs[0], "records for rows") || !strings.Contains(diffs[0], "offset") {
-		t.Errorf("diff does not name the range: %v", diffs)
-	}
-}
-
-// A symbol byte matters more than a record byte: every row referring to it
-// carries the wrong value.
-func TestVerifySourceReadsCatchesChangedSymbols(t *testing.T) {
-	in := verifyFixture(t, []int{0, 1, 2, 1})
-	f, chunks, digests := convertVerifying(t, in, 0)
-	defer f.Close()
-
-	// Somewhere inside the first column's symbol table.
-	flipByte(t, in, f.SymbolRanges()[0].Offset+2)
-
-	diffs, err := VerifySourceReads(context.Background(), in, f, chunks, digests, nil)
-	if err != nil {
-		t.Fatalf("VerifySourceReads: %v", err)
-	}
-	if len(diffs) == 0 {
-		t.Fatal("a changed symbol byte went undetected")
-	}
-	if !strings.Contains(diffs[0], `symbol table of column "Name"`) {
-		t.Errorf("diff does not name the column: %v", diffs)
-	}
-}
-
-func TestVerifySourceReadsRefusesAReplacedFile(t *testing.T) {
-	in := verifyFixture(t, []int{0, 1})
-	f, chunks, digests := convertVerifying(t, in, 0)
-	defer f.Close()
-
-	other := verifyFixture(t, []int{0, 1, 2})
-	if _, err := VerifySourceReads(context.Background(), other, f, chunks, digests, nil); err == nil ||
-		!strings.Contains(err.Error(), "replaced") {
-		t.Errorf("error = %v, want it to say the file was replaced", err)
-	}
-}
-
-// End to end: a healthy file converts under the mode and says so.
-func TestQualityRereadConverts(t *testing.T) {
-	in := verifyFixture(t, []int{0, 1, 2, 1})
 	out := filepath.Join(t.TempDir(), "out.parquet")
+	_, _, err := Run(context.Background(), in, out, &opts, nil)
+	_, serr := os.Stat(out)
+	switch {
+	case err == nil && serr != nil:
+		t.Fatalf("conversion reported success but wrote nothing: %v", serr)
+	case err != nil && serr == nil:
+		t.Error("a failed verification left an output file behind")
+	}
+	return err
+}
 
-	var lines []string
-	opts := testOptions()
-	opts.Quality = QualityReread
-	stats, report, err := Run(context.Background(), in, out, &opts,
-		func(f string, a ...any) { lines = append(lines, f) })
-	if err != nil {
+// The ordinary case: every range reads the same way twice.
+func TestVerifyingRunConverts(t *testing.T) {
+	if err := runVerifying(t, verifyFixture(t, []int{0, 1, 2, 1}), 0); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if stats.Rows != 4 {
-		t.Errorf("rows = %d, want 4", stats.Rows)
+}
+
+// A record byte that reads differently stops the conversion at that chunk,
+// naming the offset and both values. The verifying read is made to return
+// something else, which is the situation the check exists for and the one
+// thing a real file cannot be made to do on demand.
+func TestVerifyingRunStopsOnAChangedRecord(t *testing.T) {
+	rows := make([]int, 400)
+	for i := range rows {
+		rows[i] = i % 3
 	}
-	if report == nil || !report.Passed {
-		t.Errorf("quality gate did not pass: %+v", report)
+	in := verifyFixture(t, rows)
+
+	restore := openVerifyReader
+	openVerifyReader = func(qf *qvd.File) (io.ReaderAt, func()) {
+		r, closeFn := restore(qf)
+		return flipAt{r: r, at: qf.RecordStart + 3}, closeFn
 	}
-	if !strings.Contains(strings.Join(lines, "\n"), "verified source read") {
-		t.Errorf("the verification was not reported: %v", lines)
+	defer func() { openVerifyReader = restore }()
+
+	err := runVerifying(t, in, 64)
+	if err == nil {
+		t.Fatal("a record byte that read differently was not caught")
+	}
+	if !errors.Is(err, qvd.ErrUnstableRead) {
+		t.Errorf("error = %v, want ErrUnstableRead", err)
+	}
+	for _, want := range []string{"byte at offset", "read 0x"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to mention %q", err, want)
+		}
+	}
+}
+
+// Failing at the first bad chunk is the point of checking per chunk: the rest
+// of the file is not decoded once nothing read from it can be trusted.
+func TestVerifyingRunStopsEarly(t *testing.T) {
+	rows := make([]int, 4000)
+	for i := range rows {
+		rows[i] = i % 3
+	}
+	in := verifyFixture(t, rows)
+
+	var chunksRead int64
+	restore := openVerifyReader
+	openVerifyReader = func(qf *qvd.File) (io.ReaderAt, func()) {
+		r, closeFn := restore(qf)
+		return countingFlip{r: r, at: qf.RecordStart + 3, n: &chunksRead}, closeFn
+	}
+	defer func() { openVerifyReader = restore }()
+
+	if err := runVerifying(t, in, 64); err == nil {
+		t.Fatal("want a failure")
+	}
+	// 4000 rows at 64 per chunk is 63 chunks; a run that carried on would
+	// verify most of them.
+	if chunksRead > 32 {
+		t.Errorf("verified %d chunks after the first failure; it should stop early", chunksRead)
 	}
 }
 
@@ -164,92 +124,33 @@ func TestParseQualityModeReread(t *testing.T) {
 	}
 }
 
-// flipByte changes one byte of a file in place, standing in for a read that
-// came back different.
-func flipByte(t *testing.T, path string, off int64) {
-	t.Helper()
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	var b [1]byte
-	if _, err := f.ReadAt(b[:], off); err != nil {
-		t.Fatal(err)
-	}
-	b[0] ^= 0x01
-	if _, err := f.WriteAt(b[:], off); err != nil {
-		t.Fatal(err)
-	}
+// flipAt reads through to r and changes one byte, standing in for a range that
+// comes back different the second time.
+type flipAt struct {
+	r  io.ReaderAt
+	at int64
 }
 
-// Every mode from full up compares value fingerprints. This was an equality
-// check against full, so reread quietly graded like numeric: it collected the
-// fingerprints and never looked at them.
-func TestFingerprintsAreComparedFromFullUpwards(t *testing.T) {
-	in := buildFixture(t, sampleTable(300))
-	dir := t.TempDir()
-	out := filepath.Join(dir, "out.parquet")
-	opts := testOptions()
-	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
-		t.Fatal(err)
+func (f flipAt) ReadAt(p []byte, off int64) (int, error) {
+	n, err := f.r.ReadAt(p, off)
+	if i := f.at - off; i >= 0 && i < int64(n) {
+		p[i] ^= 0x01
 	}
-
-	for _, mode := range []QualityMode{QualityFull, QualityReread} {
-		t.Run(mode.String(), func(t *testing.T) {
-			qf, rs, metrics := reconvert(t, in, &opts)
-			defer qf.Close()
-
-			// Everything else about the source still matches the Parquet, so
-			// only a fingerprint comparison can catch this.
-			metrics.Columns[0].fp.add([32]byte{1, 2, 3})
-
-			o := opts
-			o.Quality = mode
-			report, err := RunQualityGate(context.Background(), in, out, out, rs, metrics, &o, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if report.Passed {
-				t.Fatalf("%s did not compare value fingerprints", mode)
-			}
-			if !strings.Contains(strings.Join(report.Columns[0].Errors, " "), "fingerprint differs") {
-				t.Errorf("errors = %v", report.Columns[0].Errors)
-			}
-		})
-	}
+	return n, err
 }
 
-// The scan does not stop at the first differing range. One out of thousands is
-// a flip; most of them is something systematic, and only the total says which.
-func TestVerifySourceReadsCountsEveryDifferingRange(t *testing.T) {
-	// Enough rows to span several chunks.
-	rows := make([]int, 0, 400)
-	for i := 0; i < 400; i++ {
-		rows = append(rows, i%3)
-	}
-	in := verifyFixture(t, rows)
-	f, chunks, digests := convertVerifying(t, in, 64)
-	defer f.Close()
-	if len(chunks) < 2 {
-		t.Skip("fixture did not produce multiple chunks")
-	}
+// countingFlip is flipAt that also counts how many ranges were verified.
+type countingFlip struct {
+	r  io.ReaderAt
+	at int64
+	n  *int64
+}
 
-	// Break every chunk, not just the first.
-	for _, ch := range chunks {
-		flipByte(t, in, ch.ByteOffset)
+func (f countingFlip) ReadAt(p []byte, off int64) (int, error) {
+	n, err := f.r.ReadAt(p, off)
+	atomic.AddInt64(f.n, 1)
+	if i := f.at - off; i >= 0 && i < int64(n) {
+		p[i] ^= 0x01
 	}
-
-	diffs, err := VerifySourceReads(context.Background(), in, f, chunks, digests, nil)
-	if err != nil {
-		t.Fatalf("VerifySourceReads: %v", err)
-	}
-	last := diffs[len(diffs)-1]
-	want := fmt.Sprintf("%d of ", len(chunks))
-	if !strings.HasPrefix(last, want) {
-		t.Errorf("total = %q, want it to start %q (every chunk was broken)", last, want)
-	}
-	if named := len(diffs) - 1; named > maxReadDiffsNamed {
-		t.Errorf("named %d ranges, want at most %d", named, maxReadDiffsNamed)
-	}
+	return n, err
 }

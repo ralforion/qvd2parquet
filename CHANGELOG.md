@@ -23,31 +23,28 @@ restarts from it.
   There is no syntax to violate and nothing downstream to notice. This closes
   the gap left by 2.6.1, which verified only the header.
 
-  A `sha256` is taken of every byte as the conversion reads it, symbol tables
-  and record chunks alike, and those ranges are then read again and compared.
-  What it reports is a byte range rather than a column, since an offset is what
-  anyone chasing the layer below can act on:
+  Every range is read twice as the conversion goes and compared straight away:
+  each column's symbol table before a record is decoded from it, then each
+  record chunk before it is converted. The first range that does not match ends
+  the conversion, naming the exact byte:
 
-      records for rows 1966080..2031616, 3670016 bytes at offset 154201653,
-      read differently the second time; 1 of 39147 byte range(s) read
-      differently in total
+      the file did not read the same way twice: rows 1966080..2031616: the byte
+      at offset 154201656 read 0x41 then 0x61. Nothing read from this file can
+      be trusted and no output was kept
 
-  The scan does not stop at the first difference. The bytes have already been
-  read once by the conversion, so finishing costs a fraction of what has been
-  spent, and the total is the most useful thing it can report: one differing
-  range out of thousands is a flip, most of them differing is something
-  systematic, and those call for different questions. The first three ranges
-  are named; the count is not capped.
+  Checking as it goes rather than at the end means a file whose reads do not
+  agree costs the chunks up to the first bad one, not the whole conversion. No
+  output is kept either way.
 
-  A difference fails the conversion outright rather than reporting a gate
-  result, and no output is kept: there is no way to tell which of two
-  disagreeing reads was right.
+  Symbol tables are checked by streaming digest, so a table of any size costs
+  one buffer. Record chunks are compared byte for byte, which is what names the
+  offset; that costs one extra chunk-sized buffer and one extra file handle per
+  decode worker. The default is unchanged at `full`.
 
-  It costs one extra sequential read of the source, with nothing decoded behind
-  it; hashing during the first read is close to free. The default is unchanged
-  at `full`. What it cannot see is a read that is wrong the same way twice, and
-  no check inside one process can.
-
+  What it cannot see is a read that is wrong the same way twice: a second read
+  this soon after the first is likely served from the page cache, so it catches
+  corruption after the read more readily than a bad read from storage. No check
+  inside one process can do better.
 
 ## [2.6.1] - 2026-09-09
 

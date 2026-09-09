@@ -40,14 +40,9 @@ type Batch struct {
 	builders   []array.Builder
 	converters []columnConverter
 
-	// chunks and chunkDigests record what a verifying run read: the byte
-	// ranges, and a digest of each range as the worker saw it. Set by Run
-	// only when the quality mode asks for the source read to be checked.
-	chunks       []DecodeChunk
-	chunkDigests [][32]byte
-	rec          *array.RecordBuilder
-	rows         int
-	capacity     int
+	rec      *array.RecordBuilder
+	rows     int
+	capacity int
 }
 
 // Converter precomputes everything the decode workers need.
@@ -61,13 +56,6 @@ type Converter struct {
 	BatchRows int
 
 	converters []columnConverter
-
-	// chunks and chunkDigests record what a verifying run read: the byte
-	// ranges of the record area, and a digest of each range as the worker
-	// saw it. Set by Run only when the quality mode asks for the source
-	// read to be checked.
-	chunks       []DecodeChunk
-	chunkDigests [][32]byte
 
 	// onDecoded, when set, is called by a worker after it decodes a chunk and
 	// before the result is handed to the writer. Tests use it to control the
@@ -92,12 +80,6 @@ func NewConverter(f *qvd.File, rs *ResolvedSchema, opts *Options) (*Converter, e
 		c.converters[i] = cc
 	}
 	return c, nil
-}
-
-// ReadDigests returns the byte ranges this run read from the record area and a
-// digest of each, or nil when the run was not asked to record them.
-func (c *Converter) ReadDigests() ([]DecodeChunk, [][32]byte) {
-	return c.chunks, c.chunkDigests
 }
 
 // NewBatch creates a fresh set of builders sized for capacity rows.

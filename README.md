@@ -1515,47 +1515,30 @@ symbol index yields a value that is entirely well formed, and the Parquet then
 faithfully contains it: there is no syntax to violate and nothing downstream to
 notice. Only reading the source a second time can tell.
 
-`reread` takes a `sha256` of every byte as the conversion reads it, symbol
-tables and record chunks alike, then reads those same ranges again and compares
-the digests. What it reports is a byte range, not a column:
+`reread` reads every range twice as the conversion goes and compares the two
+straight away: each column's symbol table before a record is decoded from it,
+then each record chunk before it is converted. The first range that does not
+match ends the conversion, naming the exact byte:
 
 ```text
-FAIL X.qvd: quality gate failure: X.qvd did not read the same way twice, so
-nothing read from it can be trusted and no output was kept: records for rows
-1966080..2031616, 3670016 bytes at offset 154201653, read differently the
-second time; 1 of 39147 byte range(s) read differently in total
+FAIL X.qvd: the file did not read the same way twice: rows 1966080..2031616:
+the byte at offset 154201656 read 0x41 then 0x61. Nothing read from this file
+can be trusted and no output was kept
 ```
 
-The scan does not stop at the first difference. One differing range out of
-thousands is a flip; most of them differing is something systematic. The first
-three ranges are named, and the count is not capped.
+An offset and two byte values are what anyone chasing the layer below can act
+on. Checking as it goes means a file whose reads do not agree costs the chunks
+up to the first bad one, not the whole conversion, and no output is kept.
 
-An offset is what anyone chasing the layer below can act on, and comparing
-bytes rather than decoded values means the second pass is a plain sequential
-read with nothing decoded behind it.
+Symbol tables are checked by streaming digest, so a table of any size costs one
+buffer. Record chunks are compared byte for byte, which is what names the
+offset; that costs one extra chunk-sized buffer and one extra file handle per
+decode worker.
 
-Any difference fails the conversion outright rather than reporting a gate
-result, and no output is kept. There is no way to tell which of two disagreeing
-reads was right, so there is no version of the file worth writing.
-
-It costs one extra sequential read of the source; hashing during the first read
-is close to free. What it cannot see is a read that is wrong the same way
-twice: if the bad bytes are cached, both reads agree and nothing fires. That is
-a limit of any check inside one process.
-
-
-Integer, decimal and date/time aggregates are compared exactly — decimal sums
-use scaled-integer arithmetic, with no floating-point tolerance. Floating-point
-sums use both tolerances:
-
-```text
-abs(a-b) <= absTolerance || abs(a-b) <= relTolerance * max(abs(a), abs(b), 1)
-```
-
-`full` mode builds a multiset fingerprint (row count, XOR of digests, and a
-modular sum of digests) rather than an ordered stream hash, so it is valid
-despite unordered chunk delivery. Nulls are marked explicitly in the digest, so
-a null never collides with a zero or an empty string.
+What it cannot see is a read that is wrong the same way twice. A second read
+this soon after the first is likely served from the page cache, so it catches
+corruption after the read more readily than a bad read from storage. That is a
+limit of any check inside one process.
 
 `--decimal-strict` fails instead of rounding, and reports up to three offending
 values per column with the total:
