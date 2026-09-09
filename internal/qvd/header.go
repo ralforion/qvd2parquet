@@ -32,6 +32,14 @@ type TableHeader struct {
 	Offset         int64         `xml:"Offset"`
 	Length         int64         `xml:"Length"`
 	Fields         []FieldHeader `xml:"Fields>QvdFieldHeader"`
+
+	// Repaired records that the header was not well-formed XML and had to be
+	// mended before it would parse, and RepairNote says what was wrong and
+	// where. A QVD cannot be opened as text to go and look, and the bytes at
+	// fault are usually invisible ones, so the note is the only account of it
+	// anyone gets. See ParseHeaderXML.
+	Repaired   bool   `xml:"-"`
+	RepairNote string `xml:"-"`
 }
 
 // FieldHeader mirrors one QvdFieldHeader element.
@@ -66,6 +74,21 @@ type NumberFormat struct {
 // 0x00 byte and returns the parsed header plus the byte offset at which the
 // first symbol table begins.
 func ReadHeader(r io.Reader) (*TableHeader, int64, error) {
+	raw, end, err := ReadHeaderBytes(r)
+	if err != nil {
+		return nil, 0, err
+	}
+	h, err := ParseHeaderXML(raw)
+	if err != nil {
+		return nil, 0, err
+	}
+	return h, end, nil
+}
+
+// ReadHeaderBytes returns the raw header, without its 0x00 terminator, and the
+// offset just past that terminator. Callers that want to say something about a
+// header they could not parse need the bytes they actually read.
+func ReadHeaderBytes(r io.Reader) ([]byte, int64, error) {
 	br := bufio.NewReader(io.LimitReader(r, maxHeaderBytes))
 	raw, err := br.ReadBytes(0x00)
 	if err != nil {
@@ -74,25 +97,80 @@ func ReadHeader(r io.Reader) (*TableHeader, int64, error) {
 		}
 		return nil, 0, fmt.Errorf("read XML header: %w", err)
 	}
-	end := int64(len(raw))
-	raw = raw[:len(raw)-1] // drop the terminator
-
-	h, err := ParseHeaderXML(raw)
-	if err != nil {
-		return nil, 0, err
-	}
-	return h, end, nil
+	return raw[:len(raw)-1], int64(len(raw)), nil
 }
 
 // ParseHeaderXML unmarshals the raw header bytes (without the 0x00 terminator).
+//
+// A header that is not well-formed XML is mended and reparsed rather than
+// rejected. Each repair addresses a fault that has exactly one sensible
+// reading, and none is a guess about intent: a byte XML does not permit is
+// dropped, a `<` that cannot be starting a tag is escaped, and content after
+// the root element is cut. What put those bytes there is not established.
+//
+// Headers that parse are never rewritten, so the repair cannot change what a
+// readable QVD decodes to, and a header that needed one says so.
 func ParseHeaderXML(raw []byte) (*TableHeader, error) {
 	// Some writers emit a UTF-8 BOM before the declaration.
 	raw = trimBOM(raw)
+	h, err := decodeHeader(raw)
+	if err == nil {
+		return h, nil
+	}
+	var se *xml.SyntaxError
+	if !errors.As(err, &se) {
+		return nil, parseHeaderXMLError(raw, err)
+	}
+	// Each repair is applied on top of the last, least invasive first, and the
+	// order matters: dropping the illegal control bytes before escaping stray
+	// markup lets `<NoOfSymbols\v>` parse as the tag it is, rather than being
+	// escaped into text and losing the field's symbol count.
+	fixed := raw
+	var notes []string
+	for _, repair := range []func([]byte) ([]byte, string){
+		completeRootElement,
+		stripIllegalControls,
+		escapeStrayMarkup,
+	} {
+		next, note := repair(fixed)
+		if note == "" {
+			continue
+		}
+		fixed, notes = next, append(notes, note)
+		if h, err2 := decodeHeader(fixed); err2 == nil {
+			h.Repaired = true
+			h.RepairNote = strings.Join(notes, "; ")
+			return h, nil
+		}
+	}
+	return nil, parseHeaderXMLError(raw, err)
+}
+
+func parseHeaderXMLError(raw []byte, err error) error {
+	var se *xml.SyntaxError
+	if errors.As(err, &se) {
+		return fmt.Errorf("parse QVD XML header: %w%s", err, headerDiagnostics(raw, se.Line))
+	}
+	return fmt.Errorf("parse QVD XML header: %w", err)
+}
+
+// decodeHeader unmarshals one candidate header body, tolerating the mistakes
+// encoding/xml can recover from on its own.
+func decodeHeader(raw []byte) (*TableHeader, error) { return decodeHeaderMode(raw, false) }
+
+// decodeHeaderStrict unmarshals a header the way the XML specification
+// requires. It is what decides whether a header needs a second look: a
+// tolerant parse can accept an unknown entity or an unclosed element and hand
+// back a header nobody checked, which is exactly the case the second read
+// exists to catch.
+func decodeHeaderStrict(raw []byte) (*TableHeader, error) { return decodeHeaderMode(raw, true) }
+
+func decodeHeaderMode(raw []byte, strict bool) (*TableHeader, error) {
 	var h TableHeader
-	dec := xml.NewDecoder(bytes.NewReader(raw))
-	dec.Strict = false
+	dec := xml.NewDecoder(bytes.NewReader(trimBOM(raw)))
+	dec.Strict = strict
 	if err := dec.Decode(&h); err != nil {
-		return nil, fmt.Errorf("parse QVD XML header: %w", err)
+		return nil, err
 	}
 	if h.XMLName.Local != "QvdTableHeader" {
 		return nil, fmt.Errorf("unexpected QVD header root element %q", h.XMLName.Local)

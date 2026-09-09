@@ -13,6 +13,70 @@ restarts from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- A QVD whose XML header does not parse is no longer given up on at the first
+  attempt. Three files in one long batch failed this way and converted cleanly
+  when rerun on their own, against bytes with the same SHA-256:
+
+      parse QVD XML header: XML syntax error on line 2147: expected attribute name in element
+      parse QVD XML header: XML syntax error on line 279: invalid characters between </B and >
+      parse QVD XML header: XML syntax error on line 3203: unexpected EOF
+
+  What produced those bytes is not established, so nothing here assumes a
+  cause. The header is now read twice, from two handles, and the two reads must
+  agree before anything is built on them.
+
+  The comparison runs on every file, not only after a failure, because a read
+  that differs but still parses would otherwise go unremarked: a wrong digit in
+  `NoOfRecords` or `BitWidth` is valid XML, and a conversion built on it would
+  be wrong in a way nothing downstream checks. It costs a few hundred kilobytes
+  against files of gigabytes.
+
+  **Two reads that disagree end the file.** There is no way to tell which read
+  was right, so converting on either is a guess. The error says the file was
+  read wrong rather than written wrong, and names the offset and line where the
+  reads part company. The second handle is checked with `os.SameFile` first, so
+  an input replaced mid-run is reported as replaced rather than as misread.
+
+- Only once two reads agree, and the header is not valid XML, is it mended.
+  Three faults have exactly one sensible reading; none is a guess about intent:
+
+  - Bytes that cannot occur in a tag are dropped: the C0 controls XML 1.0
+    forbids anywhere in a document, not even escaped (0x00-0x08, 0x0B, 0x0C,
+    0x0E-0x1F), and 0x7F, which XML allows in text but not in a name. Each
+    renders as nothing in an editor, so a header holding one can read as
+    correct while the parser refuses the line it sits on.
+  - A `<` or `&` that cannot be opening markup or an entity is escaped, which
+    recovers the surrounding value exactly as it stands in the file.
+  - Content after the root element is cut, and the closing `>` supplied if the
+    bytes stop one short of it. The header is terminated by a 0x00 byte rather
+    than by its own last character, so what sits between the two is not part of
+    the document.
+
+  A header that already parses is never rewritten, so no readable QVD changes
+  what it converts to, and every repair is reported with what it did and where:
+
+      warning: X.qvd has a malformed XML header:
+      dropped 1 byte(s) XML does not allow in a tag: 0x7F on line 2147
+
+- A header that cannot be mended now describes itself in the error instead of
+  naming a line number in a file that cannot be opened as text: its size in
+  bytes and lines, whether it ends with a `</QvdTableHeader>` and where, and
+  the line the parser stopped on, quoted so an invisible byte shows as an
+  escape.
+
+### Known limitation
+
+- Only the header is read twice. Symbol tables and record chunks are still read
+  once, and a wrong byte there becomes a different valid string, number or
+  symbol index with no syntax to violate. The quality gate does not cover this
+  either: it re-reads the written Parquet and compares it against metrics
+  gathered during the conversion's single pass over the QVD, so a source read
+  that was wrong but internally consistent passes. Verifying the data the way
+  the header is now verified needs a second pass over the source, which is not
+  in this release.
+
 ## [2.6.0] - 2026-09-09
 
 ### Added
