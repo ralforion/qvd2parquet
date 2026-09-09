@@ -13,6 +13,8 @@ restarts from it.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-09-09
+
 ### Added
 
 - `--duplicate-names=suffix` keeps both columns when two of them resolve to the
@@ -902,7 +904,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.6.0...HEAD
+[2.6.0]: https://github.com/ralforion/qvd2parquet/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/ralforion/qvd2parquet/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/ralforion/qvd2parquet/compare/v2.3.2...v2.4.0
 [2.3.2]: https://github.com/ralforion/qvd2parquet/compare/v2.3.1...v2.3.2
