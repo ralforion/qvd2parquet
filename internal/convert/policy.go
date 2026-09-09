@@ -79,6 +79,35 @@ func (d DualStrategy) String() string {
 	return [...]string{"auto", "numeric", "text", "columns"}[d]
 }
 
+// DuplicateNamePolicy selects what happens when two output columns resolve to
+// the same name.
+type DuplicateNamePolicy int
+
+const (
+	// DuplicateError rejects the schema. Default: two columns under one name
+	// is usually a mistake in --field-regex or --columns, and a silent
+	// rename would hide it.
+	DuplicateError DuplicateNamePolicy = iota
+	// DuplicateSuffix keeps both columns, giving the later one "${name}_2",
+	// "${name}_3" and so on. Nothing is dropped.
+	DuplicateSuffix
+)
+
+// ParseDuplicateNamePolicy maps the --duplicate-names flag value.
+func ParseDuplicateNamePolicy(s string) (DuplicateNamePolicy, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "error":
+		return DuplicateError, nil
+	case "suffix":
+		return DuplicateSuffix, nil
+	}
+	return 0, fmt.Errorf("invalid --duplicate-names %q: want error|suffix", s)
+}
+
+func (d DuplicateNamePolicy) String() string {
+	return [...]string{"error", "suffix"}[d]
+}
+
 // DecimalSource selects where exact decimal digits are taken from.
 type DecimalSource int
 
@@ -188,9 +217,12 @@ type Options struct {
 	// name matches one of them is not converted.
 	Exclude []string
 	// Renamer rewrites output column names and comments. Nil disables it.
-	Renamer        *FieldRenamer
-	Mixed          MixedStrategy
-	Dual           DualStrategy
+	Renamer *FieldRenamer
+	Mixed   MixedStrategy
+	Dual    DualStrategy
+	// DuplicateNames decides what to do when two output columns end up with
+	// the same name.
+	DuplicateNames DuplicateNamePolicy
 	NumericPromote NumericPromote
 	// NumericPromoteExplicit records that the user asked for this promotion
 	// mode rather than inheriting the default. An explicit request is a
@@ -248,6 +280,7 @@ func DefaultOptions() Options {
 	return Options{
 		Mixed:               MixedError,
 		Dual:                DualAuto,
+		DuplicateNames:      DuplicateError,
 		NumericPromote:      PromoteDecimal,
 		InferDates:          true,
 		EmptyStringAsNull:   true,

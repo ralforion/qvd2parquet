@@ -102,6 +102,10 @@ type ResolvedSchema struct {
 	// can say which ones it left alone. The zero value means no renaming was
 	// configured.
 	Renames RenameSummary
+	// Duplicates records the columns --duplicate-names=suffix renamed to keep
+	// an earlier column of the same name. Empty under the default policy,
+	// which rejects the schema instead.
+	Duplicates []DuplicateRename
 }
 
 // SchemaOverride is the --schema JSON document.
@@ -286,6 +290,12 @@ func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*Resol
 
 	rs.Renames = SummarizeRenames(opts.Renamer, selectedNames(f))
 
+	// One note per selected source column, in header order, and the position
+	// of that column's first output column, so a later pass can find both
+	// from a column it has just renamed.
+	noteOf := make(map[int]int, len(f.Columns))
+	firstOf := make(map[int]int, len(f.Columns))
+
 	for _, idx := range f.SelectedColumns() {
 		col := f.Columns[idx]
 		prof := f.Profiles[idx]
@@ -300,18 +310,42 @@ func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*Resol
 		if err != nil {
 			return nil, err
 		}
-		if len(cols) > 0 && cols[0].Name != col.Name {
-			note += fmt.Sprintf("; written as %q", cols[0].Name)
-			if cols[0].Comment != "" {
-				note += fmt.Sprintf(" with comment %q", cols[0].Comment)
-			}
-		}
+		firstOf[col.Index] = len(rs.Columns)
 		rs.Columns = append(rs.Columns, cols...)
+		noteOf[col.Index] = len(rs.Notes)
 		rs.Notes = append(rs.Notes, note)
 	}
 
-	if err := checkNameCollisions(rs.Columns); err != nil {
+	dups, err := resolveNameCollisions(rs.Columns, opts.DuplicateNames)
+	if err != nil {
 		return nil, err
+	}
+	rs.Duplicates = dups
+
+	// The output name is stated only now, so a column a collision renamed is
+	// named once, as what it is actually written as.
+	for _, idx := range f.SelectedColumns() {
+		c := rs.Columns[firstOf[idx]]
+		if c.Name == f.Columns[idx].Name {
+			continue
+		}
+		n := fmt.Sprintf("; written as %q", c.Name)
+		if c.Comment != "" {
+			n += fmt.Sprintf(" with comment %q", c.Comment)
+		}
+		rs.Notes[noteOf[idx]] += n
+	}
+	for _, d := range dups {
+		n, ok := noteOf[d.SourceIndex]
+		if !ok {
+			continue
+		}
+		if firstOf[d.SourceIndex] == d.col {
+			rs.Notes[n] += fmt.Sprintf("; the name %q was already taken by an earlier column", d.From)
+			continue
+		}
+		rs.Notes[n] += fmt.Sprintf("; %q was already taken by an earlier column, so the display side is written to %q",
+			d.From, d.To)
 	}
 
 	fields := make([]arrow.Field, len(rs.Columns))
@@ -333,28 +367,92 @@ func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*Resol
 	return rs, nil
 }
 
-// checkNameCollisions rejects duplicate output column names. A generated
-// "${name}__text" companion column can collide with a real source column of
-// that name, which would produce an ambiguous Parquet schema.
-func checkNameCollisions(cols []ResolvedColumn) error {
-	seen := make(map[string]int, len(cols))
-	for i, c := range cols {
-		if prev, ok := seen[c.Name]; ok {
-			hint := ""
-			if c.Strategy == StrategyDualText || cols[prev].Strategy == StrategyDualText {
-				hint = "; the name is generated for a dual column's display side, so drop it with " +
-					"--dual=numeric, rename the source column, or select a different set with --columns"
-			}
-			if cols[prev].OriginalName != c.Name || c.OriginalName != c.Name {
-				hint += fmt.Sprintf("; source fields %q and %q",
-					cols[prev].OriginalName, c.OriginalName)
-			}
-			return fmt.Errorf("%w: duplicate output column name %q (from source columns %d and %d)%s",
-				ErrSchemaPolicy, c.Name, cols[prev].SourceIndex, c.SourceIndex, hint)
-		}
-		seen[c.Name] = i
+// DuplicateRename records one output column that was renamed to keep an
+// earlier column of the same name.
+type DuplicateRename struct {
+	// SourceIndex is the QVD field the renamed column reads from.
+	SourceIndex int    `json:"sourceIndex"`
+	From        string `json:"from"`
+	To          string `json:"to"`
+	// col is the renamed column's position in the resolved schema, which the
+	// schema notes need to tell a source column's own name from a generated
+	// companion's.
+	col int
+}
+
+// resolveNameCollisions makes the output column names unique. Two columns can
+// arrive under one name from a --field-regex that collapses them, from a
+// generated "${name}__text" companion landing on a real source field, or from
+// a QVD that simply carries the field twice.
+//
+// Under DuplicateError that is a policy error: an ambiguous Parquet schema is
+// not worth writing, and the collision is usually a mistake worth seeing.
+// Under DuplicateSuffix the later column keeps its data under "${name}_2",
+// and its original QVD name still goes into the field's "qvd.field" metadata,
+// so nothing is lost.
+func resolveNameCollisions(cols []ResolvedColumn, policy DuplicateNamePolicy) ([]DuplicateRename, error) {
+	// Every name the schema already asks for is reserved up front, so a
+	// generated "${name}_2" cannot land on a real column that appears further
+	// along in the file.
+	taken := make(map[string]bool, len(cols))
+	for _, c := range cols {
+		taken[c.Name] = true
 	}
-	return nil
+	// A generated dual-text companion yields to a real field of the same
+	// name, whatever their header order: a reader asking for "Qty__text"
+	// should get the QVD field of that name, not the display side of Qty.
+	order := make([]int, 0, len(cols))
+	for i, c := range cols {
+		if c.Strategy != StrategyDualText {
+			order = append(order, i)
+		}
+	}
+	for i, c := range cols {
+		if c.Strategy == StrategyDualText {
+			order = append(order, i)
+		}
+	}
+
+	seen := make(map[string]int, len(cols))
+	var renames []DuplicateRename
+	for _, i := range order {
+		c := &cols[i]
+		prev, dup := seen[c.Name]
+		if !dup {
+			seen[c.Name] = i
+			continue
+		}
+		if policy == DuplicateError {
+			return nil, duplicateNameError(cols[prev], *c)
+		}
+		from, name := c.Name, ""
+		for n := 2; name == ""; n++ {
+			if cand := fmt.Sprintf("%s_%d", from, n); !taken[cand] {
+				name = cand
+			}
+		}
+		taken[name] = true
+		seen[name] = i
+		c.Name = name
+		renames = append(renames, DuplicateRename{SourceIndex: c.SourceIndex, From: from, To: name, col: i})
+	}
+	return renames, nil
+}
+
+// duplicateNameError explains a collision in terms of the source fields that
+// caused it, and of the flags that resolve it.
+func duplicateNameError(prev, c ResolvedColumn) error {
+	hint := ""
+	if c.Strategy == StrategyDualText || prev.Strategy == StrategyDualText {
+		hint = "; the name is generated for a dual column's display side, so drop it with " +
+			"--dual=numeric, rename the source column, or select a different set with --columns"
+	}
+	if prev.OriginalName != c.Name || c.OriginalName != c.Name {
+		hint += fmt.Sprintf("; source fields %q and %q", prev.OriginalName, c.OriginalName)
+	}
+	hint += fmt.Sprintf("; or pass --duplicate-names=suffix to keep both, writing the second as %q", c.Name+"_2")
+	return fmt.Errorf("%w: duplicate output column name %q (from source columns %d and %d)%s",
+		ErrSchemaPolicy, c.Name, prev.SourceIndex, c.SourceIndex, hint)
 }
 
 // arrowTimeZoneName is the timezone stamped into the Arrow timestamp type.

@@ -127,6 +127,7 @@ qvd2parquet --catalog-scan --catalog-out catalog.parquet <file-or-directory>...
   -field-comment '${comment}'  Template for the column comment
   -mixed error               Mixed-type strategy: error|string|promote|dual-columns
   -dual auto                 Dual strategy: auto|numeric|text|columns
+  -duplicate-names error     Two columns resolving to one name: error|suffix
   -infer-dates               Read an untyped column as a date/timestamp when its text says so
   -empty-as-null             Write an empty string symbol as null, as Qlik treats it
   -numeric-promote decimal   Numeric widening: decimal | true (float64) | false
@@ -999,9 +1000,55 @@ Rules worth knowing:
 - `--field-name` and `--field-comment` accept Go regexp templates (`$1`,
   `${name}`) when named groups are not enough, e.g. `--field-name '${1}_${2}'`.
 - Two fields that collapse to the same output name are rejected as a schema
-  policy error rather than producing a duplicate Parquet column.
+  policy error rather than producing a duplicate Parquet column, unless
+  `--duplicate-names=suffix` is given: see [Two fields under one
+  name](#two-fields-under-one-name).
 - A regex with no `name` group and no explicit `--field-name` is rejected up
   front, since it would blank every column name.
+
+### Two fields under one name
+
+A rule that keeps only the technical part of a composite name is exactly the
+kind that collapses two fields onto one: `A057-||-DATBI-||-Ende Gültigkeit`
+and `B057-||-DATBI-||-Beginn Gültigkeit` both become `DATBI`. A generated
+`${name}__text` companion can land on a real field of that name too, and a
+`--columns` selection can bring together fields that never met.
+
+By default that is a schema policy error (exit code 3), because two columns
+under one name is usually a rule that is coarser than intended and a silent
+rename would hide it. The message names both source fields and the ways out:
+
+```text
+qvd2parquet: schema/type policy error: duplicate output column name "DATBI"
+(from source columns 0 and 1); source fields "A057-||-DATBI-||-Ende Gültigkeit"
+and "B057-||-DATBI-||-Beginn Gültigkeit"; or pass --duplicate-names=suffix to
+keep both, writing the second as "DATBI_2"
+```
+
+`--duplicate-names=suffix` keeps every column instead. The first field to
+claim a name keeps it, and each later one is written as `${name}_2`,
+`${name}_3` and so on:
+
+```text
+qvd2parquet: schema: A057-||-DATBI-||-Ende Gültigkeit: 1 text symbols, written as utf8; written as "DATBI" with comment "Ende Gültigkeit"
+qvd2parquet: schema: B057-||-DATBI-||-Beginn Gültigkeit: 1 text symbols, written as utf8; written as "DATBI_2" with comment "Beginn Gültigkeit"; the name "DATBI" was already taken by an earlier column
+qvd2parquet: duplicate-names: 1 duplicate output column name(s) kept under a suffix: "DATBI" -> "DATBI_2"
+```
+
+No data is dropped and no provenance is lost: each column keeps its own
+comment and its `qvd.field` metadata, so `DATBI_2` still says which QVD field
+it came from. `--schema-report` lists every rename under `duplicateNames`, a
+`--log` record carries the count as `duplicateNames`, and `--inspect` prints
+the renames it would make.
+
+Two details are worth knowing:
+
+- A suffix never takes a name the file already uses. With fields `A`, `A` and
+  `A_2`, the second `A` becomes `A_3` and the real `A_2` keeps its own name.
+- A generated dual companion yields to a real field. If the file has both
+  `Qty` (a dual) and `Qty__text`, the column named `Qty__text` is the QVD
+  field of that name, and the display side of `Qty` is written as
+  `Qty__text_2`, whatever order the two appear in.
 
 ## Exit codes
 
