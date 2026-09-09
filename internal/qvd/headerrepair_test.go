@@ -118,7 +118,8 @@ func TestCompleteRootElement(t *testing.T) {
 		"<QvdTableHeader>":          "<QvdTableHeader>", // no end tag to work with
 	}
 	for in, want := range cases {
-		if got := string(completeRootElement([]byte(in))); got != want {
+		got, _ := completeRootElement([]byte(in))
+		if string(got) != want {
 			t.Errorf("completeRootElement(%q) = %q, want %q", in, got, want)
 		}
 	}
@@ -152,7 +153,8 @@ func TestEscapeStrayMarkupKeepsRealMarkup(t *testing.T) {
 ></a>`,
 	}
 	for _, s := range valid {
-		if got := string(escapeStrayMarkup([]byte(s))); got != s {
+		got, _ := escapeStrayMarkup([]byte(s))
+		if string(got) != s {
 			t.Errorf("escapeStrayMarkup(%q) = %q, want it unchanged", s, got)
 		}
 	}
@@ -168,7 +170,8 @@ func TestEscapeStrayMarkupEscapesStrayBytes(t *testing.T) {
 		`<a>1 <2</a>`:       `<a>1 &lt;2</a>`,
 	}
 	for in, want := range cases {
-		if got := string(escapeStrayMarkup([]byte(in))); got != want {
+		got, _ := escapeStrayMarkup([]byte(in))
+		if string(got) != want {
 			t.Errorf("escapeStrayMarkup(%q) = %q, want %q", in, got, want)
 		}
 	}
@@ -179,7 +182,8 @@ func TestEscapeStrayMarkupHandlesUTF8Names(t *testing.T) {
 	// multi-byte character as a stray byte or split one.
 	in := `<a>Zähler <Soll (Abw.) & Rückmeldung</a>`
 	want := `<a>Zähler &lt;Soll (Abw.) &amp; Rückmeldung</a>`
-	if got := string(escapeStrayMarkup([]byte(in))); got != want {
+	got, _ := escapeStrayMarkup([]byte(in))
+	if string(got) != want {
 		t.Errorf("escapeStrayMarkup = %q, want %q", got, want)
 	}
 }
@@ -223,14 +227,40 @@ func TestParseHeaderXMLDropsControlBytesInValues(t *testing.T) {
 }
 
 func TestStripIllegalControls(t *testing.T) {
-	if got := string(stripIllegalControls([]byte("a\tb\nc\rd"))); got != "a\tb\nc\rd" {
+	if got, _ := stripIllegalControls([]byte("a\tb\nc\rd")); string(got) != "a\tb\nc\rd" {
 		t.Errorf("tab, newline and carriage return must survive: %q", got)
 	}
-	if got := string(stripIllegalControls([]byte("a\x00\x08b\v\fc\x0e\x1fd\x7f"))); got != "abcd" {
+	if got, _ := stripIllegalControls([]byte("a\x00\x08b\v\fc\x0e\x1fd\x7f")); string(got) != "abcd" {
 		t.Errorf("stripIllegalControls = %q, want %q", got, "abcd")
 	}
 	in := []byte("nothing to do")
-	if got := stripIllegalControls(in); &got[0] != &in[0] {
-		t.Error("a clean header should not be copied")
+	got, note := stripIllegalControls(in)
+	if &got[0] != &in[0] || note != "" {
+		t.Errorf("a clean header should be left alone, note=%q", note)
+	}
+}
+
+func TestRepairNoteSaysWhatWasWrong(t *testing.T) {
+	// The bytes at fault are usually invisible and a QVD cannot be opened as
+	// text, so this note is the only account anyone gets of what was repaired.
+	cases := []struct{ name, raw, want string }{
+		{"control byte", strings.Replace(sampleHeader,
+			"<NoOfSymbols>5</NoOfSymbols>", "<NoOfSymbols\x7f>5</NoOfSymbols>", 1),
+			"0x7F on line 22"},
+		{"unescaped markup", strings.Replace(sampleHeader,
+			"<FieldName>Amount</FieldName>", "<FieldName>Ist <Soll & mehr</FieldName>", 1),
+			`escaped 1 unescaped "<", first on line 17`},
+		{"unclosed root", strings.TrimSuffix(sampleHeader, ">") + strings.Repeat("\n", 1286),
+			"closed the root end tag on line 31"},
+	}
+	for _, c := range cases {
+		h, err := ParseHeaderXML([]byte(c.raw))
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if !strings.Contains(h.RepairNote, c.want) {
+			t.Errorf("%s: note = %q, want it to mention %q", c.name, h.RepairNote, c.want)
+		}
 	}
 }

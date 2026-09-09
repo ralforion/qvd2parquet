@@ -34,8 +34,12 @@ type TableHeader struct {
 	Fields         []FieldHeader `xml:"Fields>QvdFieldHeader"`
 
 	// Repaired records that the header was not well-formed XML and had to be
-	// escaped before it would parse. See ParseHeaderXML.
-	Repaired bool `xml:"-"`
+	// mended before it would parse, and RepairNote says what was wrong and
+	// where. A QVD cannot be opened as text to go and look, and the bytes at
+	// fault are usually invisible ones, so the note is the only account of it
+	// anyone gets. See ParseHeaderXML.
+	Repaired   bool   `xml:"-"`
+	RepairNote string `xml:"-"`
 }
 
 // FieldHeader mirrors one QvdFieldHeader element.
@@ -113,18 +117,20 @@ func ParseHeaderXML(raw []byte) (*TableHeader, error) {
 	// markup lets `<NoOfSymbols\v>` parse as the tag it is, rather than being
 	// escaped into text and losing the field's symbol count.
 	fixed := raw
-	for _, repair := range []func([]byte) []byte{
+	var notes []string
+	for _, repair := range []func([]byte) ([]byte, string){
 		completeRootElement,
 		stripIllegalControls,
 		escapeStrayMarkup,
 	} {
-		next := repair(fixed)
-		if bytes.Equal(next, fixed) {
+		next, note := repair(fixed)
+		if note == "" {
 			continue
 		}
-		fixed = next
+		fixed, notes = next, append(notes, note)
 		if h, err2 := decodeHeader(fixed); err2 == nil {
 			h.Repaired = true
+			h.RepairNote = strings.Join(notes, "; ")
 			return h, nil
 		}
 	}

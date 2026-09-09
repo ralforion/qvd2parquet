@@ -80,7 +80,7 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	// names verbatim, but a file whose header Qlik did not write as valid XML
 	// is worth knowing about before its column names are trusted.
 	if f.Header.Repaired {
-		logf("warning: %s has a malformed XML header; it was repaired to read it", inputPath)
+		logf("warning: %s has a malformed XML header: %s", inputPath, f.Header.RepairNote)
 	}
 
 	// Refuse an output that cannot be written before doing any work for it.

@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,7 +28,7 @@ func TestMalformedHeaderConverts(t *testing.T) {
 	var lines []string
 	opts := testOptions()
 	stats, _, err := Run(context.Background(), in, out, &opts,
-		func(f string, a ...any) { lines = append(lines, f) })
+		func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) })
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -41,7 +42,9 @@ func TestMalformedHeaderConverts(t *testing.T) {
 			t.Errorf("column %q missing from %v", want, schema.Fields())
 		}
 	}
-	if !strings.Contains(strings.Join(lines, "\n"), "malformed XML header") {
-		t.Errorf("the malformed header was not reported: %v", lines)
+	// The warning has to name what was wrong, not just that something was.
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "malformed XML header") || !strings.Contains(joined, "line ") {
+		t.Errorf("the malformed header was not reported with its cause: %v", lines)
 	}
 }

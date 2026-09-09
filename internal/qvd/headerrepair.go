@@ -17,17 +17,47 @@ import (
 // it while the parser stops on a line that says `<NoOfSymbols>1</NoOfSymbols>`
 // and reports "expected attribute name in element". Dropping them is the only
 // repair available, since XML 1.0 has no escape for the C0 set either.
-func stripIllegalControls(raw []byte) []byte {
+func stripIllegalControls(raw []byte) ([]byte, string) {
 	if bytes.IndexFunc(raw, isIllegalControl) < 0 {
-		return raw
+		return raw, ""
 	}
+	type where struct {
+		count, line int
+	}
+	seen := map[byte]*where{}
+	var order []byte
 	out := make([]byte, 0, len(raw))
-	for _, c := range raw {
+	for i, c := range raw {
 		if !isIllegalControl(rune(c)) {
 			out = append(out, c)
+			continue
+		}
+		w := seen[c]
+		if w == nil {
+			w = &where{line: lineAt(raw, i)}
+			seen[c] = w
+			order = append(order, c)
+		}
+		w.count++
+	}
+	var parts []string
+	total := 0
+	for _, c := range order {
+		w := seen[c]
+		total += w.count
+		if len(parts) < 4 {
+			p := fmt.Sprintf("0x%02X on line %d", c, w.line)
+			if w.count > 1 {
+				p = fmt.Sprintf("0x%02X x%d, first on line %d", c, w.count, w.line)
+			}
+			parts = append(parts, p)
 		}
 	}
-	return out
+	if len(order) > len(parts) {
+		parts = append(parts, fmt.Sprintf("and %d more", len(order)-len(parts)))
+	}
+	return out, fmt.Sprintf("dropped %d byte(s) XML does not allow in a tag: %s",
+		total, strings.Join(parts, ", "))
 }
 
 func isIllegalControl(r rune) bool {
@@ -48,9 +78,10 @@ func isIllegalControl(r rune) bool {
 // The one case this cannot recover is a value that looks exactly like a tag,
 // `Menge <Soll>` say: nothing in the bytes distinguishes that from markup, so
 // it stays markup, as it already was.
-func escapeStrayMarkup(raw []byte) []byte {
+func escapeStrayMarkup(raw []byte) ([]byte, string) {
 	var out bytes.Buffer
 	out.Grow(len(raw) + len(raw)/16)
+	var lt, amp, ltLine, ampLine int
 	for i := 0; i < len(raw); {
 		switch raw[i] {
 		case '<':
@@ -59,6 +90,10 @@ func escapeStrayMarkup(raw []byte) []byte {
 				i += n
 				continue
 			}
+			if lt == 0 {
+				ltLine = lineAt(raw, i)
+			}
+			lt++
 			out.WriteString("&lt;")
 			i++
 		case '&':
@@ -67,6 +102,10 @@ func escapeStrayMarkup(raw []byte) []byte {
 				i += n
 				continue
 			}
+			if amp == 0 {
+				ampLine = lineAt(raw, i)
+			}
+			amp++
 			out.WriteString("&amp;")
 			i++
 		default:
@@ -74,7 +113,17 @@ func escapeStrayMarkup(raw []byte) []byte {
 			i++
 		}
 	}
-	return out.Bytes()
+	var parts []string
+	if lt > 0 {
+		parts = append(parts, fmt.Sprintf(`%d unescaped "<", first on line %d`, lt, ltLine))
+	}
+	if amp > 0 {
+		parts = append(parts, fmt.Sprintf(`%d unescaped "&", first on line %d`, amp, ampLine))
+	}
+	if parts == nil {
+		return raw, ""
+	}
+	return out.Bytes(), "escaped " + strings.Join(parts, " and ")
 }
 
 // rootEndTag is the last thing a QVD header should contain.
@@ -88,23 +137,40 @@ const rootEndTag = "</QvdTableHeader"
 // with whitespace, and at least one leaves the root end tag itself a byte
 // short, as `</QvdTableHeader`. Either way the XML the file states is
 // everything up to and including that tag, so that is what gets parsed.
-func completeRootElement(raw []byte) []byte {
+func completeRootElement(raw []byte) ([]byte, string) {
 	// The first occurrence is the real one: anything repeating it later is
 	// trailing content, which is exactly what this trims.
 	i := bytes.Index(raw, []byte(rootEndTag))
 	if i < 0 {
-		return raw
+		return raw, ""
 	}
 	j := i + len(rootEndTag)
 	for j < len(raw) && isSpaceByte(raw[j]) {
 		j++
 	}
 	if j < len(raw) && raw[j] == '>' {
-		return raw[:j+1] // complete tag; drop whatever follows it
+		if j+1 == len(raw) {
+			return raw, ""
+		}
+		return raw[:j+1], fmt.Sprintf("dropped %d bytes after the root end tag",
+			len(raw)-(j+1))
 	}
 	out := make([]byte, 0, i+len(rootEndTag)+1)
 	out = append(out, raw[:i+len(rootEndTag)]...)
-	return append(out, '>')
+	out = append(out, '>')
+	note := fmt.Sprintf("closed the root end tag on line %d", lineAt(raw, i))
+	if n := len(raw) - (i + len(rootEndTag)); n > 0 {
+		note += fmt.Sprintf(" and dropped the %d bytes after it", n)
+	}
+	return out, note
+}
+
+// lineAt is the 1-based line the byte at off sits on.
+func lineAt(raw []byte, off int) int {
+	if off > len(raw) {
+		off = len(raw)
+	}
+	return bytes.Count(raw[:off], []byte("\n")) + 1
 }
 
 // markupLen reports the length of the well-formed markup starting at b[0]=='<',

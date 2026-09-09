@@ -42,7 +42,12 @@ restarts from it.
     has none.
 
   A header that already parses is never rewritten, so no readable QVD changes
-  what it converts to, and a conversion that had to repair one says so.
+  what it converts to. A conversion that had to repair one says exactly what
+  was wrong and on which line, because the bytes at fault are usually invisible
+  ones and a QVD cannot be opened as text to go and look:
+
+      warning: SAP\AFRU.qvd has a malformed XML header:
+      dropped 1 byte(s) XML does not allow in a tag: 0x7F on line 2147
 
 - A header that cannot be repaired now describes itself in the error: its size
   in bytes and lines, whether it ends with a `</QvdTableHeader>` and where, and
