@@ -49,6 +49,18 @@ restarts from it.
       warning: SAP\AFRU.qvd has a malformed XML header:
       dropped 1 byte(s) XML does not allow in a tag: 0x7F on line 2147
 
+- A header that cannot be repaired is now read a second time, from a new
+  handle, and the error says whether the two reads agree. A header that will
+  not parse is either written wrong or read wrong, and those call for opposite
+  responses: re-pull the file, or distrust the machine and the process that
+  read it. Nothing outside the process can tell them apart afterwards, since
+  the bytes on disk are the same either way by the time anyone looks.
+
+      [a second read returned the same 312845 bytes, so the file holds what was parsed]
+      [A SECOND READ RETURNED DIFFERENT BYTES: 312845 then 312845 bytes,
+       first difference at offset 61034, line 2147. The file was read wrong,
+       not written wrong]
+
 - A header that cannot be repaired now describes itself in the error: its size
   in bytes and lines, whether it ends with a `</QvdTableHeader>` and where, and
   the text of the line the parser stopped on. A QVD cannot be opened as text to

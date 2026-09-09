@@ -38,10 +38,18 @@ func Open(path string) (*File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	h, end, err := ReadHeader(f)
+	raw, end, err := ReadHeaderBytes(f)
 	if err != nil {
 		f.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	h, err := ParseHeaderXML(raw)
+	if err != nil {
+		f.Close()
+		// Say whether the bytes just parsed are the bytes on disk. Without
+		// that, a header failure looks the same whether the file is damaged
+		// or this process read it wrong.
+		return nil, fmt.Errorf("%s: %w%s", path, err, SecondReadNote(path, raw))
 	}
 	if err := h.Validate(); err != nil {
 		f.Close()

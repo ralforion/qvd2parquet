@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -74,6 +75,21 @@ type NumberFormat struct {
 // 0x00 byte and returns the parsed header plus the byte offset at which the
 // first symbol table begins.
 func ReadHeader(r io.Reader) (*TableHeader, int64, error) {
+	raw, end, err := ReadHeaderBytes(r)
+	if err != nil {
+		return nil, 0, err
+	}
+	h, err := ParseHeaderXML(raw)
+	if err != nil {
+		return nil, 0, err
+	}
+	return h, end, nil
+}
+
+// ReadHeaderBytes returns the raw header, without its 0x00 terminator, and the
+// offset just past that terminator. Callers that want to say something about a
+// header they could not parse need the bytes they actually read.
+func ReadHeaderBytes(r io.Reader) ([]byte, int64, error) {
 	br := bufio.NewReader(io.LimitReader(r, maxHeaderBytes))
 	raw, err := br.ReadBytes(0x00)
 	if err != nil {
@@ -82,14 +98,37 @@ func ReadHeader(r io.Reader) (*TableHeader, int64, error) {
 		}
 		return nil, 0, fmt.Errorf("read XML header: %w", err)
 	}
-	end := int64(len(raw))
-	raw = raw[:len(raw)-1] // drop the terminator
+	return raw[:len(raw)-1], int64(len(raw)), nil
+}
 
-	h, err := ParseHeaderXML(raw)
+// SecondReadNote reads the header of path again, from a new handle, and says
+// whether it came back the same as raw.
+//
+// A header that will not parse is either written wrong or read wrong, and
+// those call for opposite responses: re-pull the file, or distrust this
+// machine and this process. Nothing outside the process can tell them apart
+// after the fact, because the bytes on disk are the same either way by the
+// time anyone goes to look, so the check has to happen here, while the file is
+// still open and the failure is still fresh.
+func SecondReadNote(path string, raw []byte) string {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, 0, err
+		return ""
 	}
-	return h, end, nil
+	defer f.Close()
+	again, _, err := ReadHeaderBytes(f)
+	if err != nil {
+		return fmt.Sprintf(" [second read of the header failed: %v]", err)
+	}
+	if bytes.Equal(again, raw) {
+		return fmt.Sprintf(" [a second read returned the same %d bytes, so the file holds what was parsed]", len(raw))
+	}
+	off := 0
+	for off < len(raw) && off < len(again) && raw[off] == again[off] {
+		off++
+	}
+	return fmt.Sprintf(" [A SECOND READ RETURNED DIFFERENT BYTES: %d then %d bytes, first difference at offset %d, line %d. "+
+		"The file was read wrong, not written wrong]", len(raw), len(again), off, lineAt(raw, off))
 }
 
 // ParseHeaderXML unmarshals the raw header bytes (without the 0x00 terminator).
