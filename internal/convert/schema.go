@@ -90,6 +90,14 @@ type ResolvedColumn struct {
 	// display string can be compared against the written value.
 	DecSep  string
 	ThouSep string
+	// note formats the schema-note clause that names this column, given the
+	// name it is finally written under. It is set only for a generated dual
+	// companion, whose name is proposed while the type is resolved but can
+	// still be changed by a collision. Holding the clause as a formatter,
+	// rather than rewriting a name back out of finished prose, is what keeps
+	// the note honest: it travels into the schema log, --inspect,
+	// --schema-report and the catalog.
+	note func(name string) string
 }
 
 // ResolvedSchema is the full output schema plus the reasoning behind it.
@@ -335,17 +343,21 @@ func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*Resol
 		}
 		rs.Notes[noteOf[idx]] += n
 	}
+	// A generated column names itself only now, for the same reason: it is
+	// proposed as "${name}__text" while the type is resolved, and a collision
+	// can still send it elsewhere.
+	for i, c := range rs.Columns {
+		if c.note == nil {
+			continue
+		}
+		if n, ok := noteOf[c.SourceIndex]; ok {
+			rs.Notes[n] += "; " + c.note(rs.Columns[i].Name)
+		}
+	}
 	for _, d := range dups {
-		n, ok := noteOf[d.SourceIndex]
-		if !ok {
-			continue
-		}
-		if firstOf[d.SourceIndex] == d.col {
+		if n, ok := noteOf[d.SourceIndex]; ok {
 			rs.Notes[n] += fmt.Sprintf("; the name %q was already taken by an earlier column", d.From)
-			continue
 		}
-		rs.Notes[n] += fmt.Sprintf("; %q was already taken by an earlier column, so the display side is written to %q",
-			d.From, d.To)
 	}
 
 	fields := make([]arrow.Field, len(rs.Columns))
@@ -374,10 +386,6 @@ type DuplicateRename struct {
 	SourceIndex int    `json:"sourceIndex"`
 	From        string `json:"from"`
 	To          string `json:"to"`
-	// col is the renamed column's position in the resolved schema, which the
-	// schema notes need to tell a source column's own name from a generated
-	// companion's.
-	col int
 }
 
 // resolveNameCollisions makes the output column names unique. Two columns can
@@ -423,25 +431,34 @@ func resolveNameCollisions(cols []ResolvedColumn, policy DuplicateNamePolicy) ([
 			continue
 		}
 		if policy == DuplicateError {
-			return nil, duplicateNameError(cols[prev], *c)
+			return nil, duplicateNameError(cols[prev], *c, nextFreeName(c.Name, taken))
 		}
-		from, name := c.Name, ""
-		for n := 2; name == ""; n++ {
-			if cand := fmt.Sprintf("%s_%d", from, n); !taken[cand] {
-				name = cand
-			}
-		}
+		from := c.Name
+		name := nextFreeName(from, taken)
 		taken[name] = true
 		seen[name] = i
 		c.Name = name
-		renames = append(renames, DuplicateRename{SourceIndex: c.SourceIndex, From: from, To: name, col: i})
+		renames = append(renames, DuplicateRename{SourceIndex: c.SourceIndex, From: from, To: name})
 	}
 	return renames, nil
 }
 
+// nextFreeName is the name a suffix gives a column whose own name is already
+// claimed: "${name}_2", then "${name}_3", skipping anything the schema already
+// asks for. The error path uses it too, so the name it offers is the name
+// --duplicate-names=suffix would actually write.
+func nextFreeName(name string, taken map[string]bool) string {
+	for n := 2; ; n++ {
+		if cand := fmt.Sprintf("%s_%d", name, n); !taken[cand] {
+			return cand
+		}
+	}
+}
+
 // duplicateNameError explains a collision in terms of the source fields that
-// caused it, and of the flags that resolve it.
-func duplicateNameError(prev, c ResolvedColumn) error {
+// caused it, and of the flags that resolve it. suffixed is what
+// --duplicate-names=suffix would write the second column as.
+func duplicateNameError(prev, c ResolvedColumn, suffixed string) error {
 	hint := ""
 	if c.Strategy == StrategyDualText || prev.Strategy == StrategyDualText {
 		hint = "; the name is generated for a dual column's display side, so drop it with " +
@@ -450,7 +467,7 @@ func duplicateNameError(prev, c ResolvedColumn) error {
 	if prev.OriginalName != c.Name || c.OriginalName != c.Name {
 		hint += fmt.Sprintf("; source fields %q and %q", prev.OriginalName, c.OriginalName)
 	}
-	hint += fmt.Sprintf("; or pass --duplicate-names=suffix to keep both, writing the second as %q", c.Name+"_2")
+	hint += fmt.Sprintf("; or pass --duplicate-names=suffix to keep both, writing the second as %q", suffixed)
 	return fmt.Errorf("%w: duplicate output column name %q (from source columns %d and %d)%s",
 		ErrSchemaPolicy, c.Name, prev.SourceIndex, c.SourceIndex, hint)
 }
@@ -595,16 +612,17 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 	// is a rendered date -- but only when the number is actually written as a
 	// date type, since beside a bare float64 the reader has no way to know the
 	// value is a date at all.
-	dualNote := ""
+	var cl DualClassification
 	if effectiveDual == DualAuto {
 		effectiveDual = DualNumeric
 		if dual {
-			// Name the column that will actually be generated: with
-			// --field-regex the output name differs from the source field's.
-			cl := ClassifyDual(col, syms, &numeric, opts.Location)
-			dualNote = cl.Note(col.Name, numeric.Name+"__text")
+			cl = ClassifyDual(col, syms, &numeric, opts.Location)
 			if cl.Kind == DualInformative {
 				effectiveDual = DualColumns
+			} else if line := cl.Note(col.Name, ""); line != "" {
+				// No companion column is written, so this clause names
+				// nothing that a collision could still move.
+				note += "; " + line
 			}
 		}
 	}
@@ -619,14 +637,14 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 			Nullable:     true,
 			Strategy:     StrategyDualText,
 		}
-		out = append(out, text)
-		if dualNote != "" {
-			note += "; " + dualNote
-		} else {
-			note += fmt.Sprintf("; display side written to %q", text.Name)
+		// The clause naming it is deferred until its name is settled.
+		text.note = func(name string) string {
+			if line := cl.Note(col.Name, name); line != "" {
+				return line
+			}
+			return fmt.Sprintf("display side written to %q", name)
 		}
-	} else if dualNote != "" {
-		note += "; " + dualNote
+		out = append(out, text)
 	}
 	return out, note, nil
 }

@@ -160,3 +160,127 @@ func TestParseDuplicateNamePolicy(t *testing.T) {
 		t.Error("an unknown mode should be rejected")
 	}
 }
+
+// The refusal offers a name suffix mode would actually write. Hard-coding
+// "${name}_2" made it name a column the file already carries, so following the
+// advice produced a different name than the message promised.
+func TestDuplicateNameErrorOffersTheNameSuffixWouldWrite(t *testing.T) {
+	tbl := qvdtest.Table{Name: "T", Fields: []qvdtest.Field{
+		{Name: "A", Type: "ASCII", Rows: []int{0}, Symbols: []qvd.Symbol{qvdtest.Str("x")}},
+		{Name: "A_2", Type: "ASCII", Rows: []int{0}, Symbols: []qvd.Symbol{qvdtest.Str("y")}},
+		{Name: "A", Type: "ASCII", Rows: []int{0}, Symbols: []qvd.Symbol{qvdtest.Str("z")}},
+	}}
+	in := buildFixture(t, tbl)
+
+	opts := testOptions()
+	_, _, err := Run(context.Background(), in, filepath.Join(t.TempDir(), "o.parquet"), &opts, nil)
+	if !errors.Is(err, ErrSchemaPolicy) {
+		t.Fatalf("err = %v, want ErrSchemaPolicy", err)
+	}
+	if !strings.Contains(err.Error(), `writing the second as "A_3"`) {
+		t.Errorf("error should offer \"A_3\", the name the suffix mode takes: %v", err)
+	}
+
+	// And the advice must hold: what it promised is what the run writes.
+	opts.DuplicateNames = DuplicateSuffix
+	out := filepath.Join(t.TempDir(), "o.parquet")
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatalf("suffix run: %v", err)
+	}
+	schema, _ := readParquet(t, out)
+	var names []string
+	for _, f := range schema.Fields() {
+		names = append(names, f.Name)
+	}
+	if got := strings.Join(names, ","); got != "A,A_2,A_3" {
+		t.Errorf("columns = %s, want A,A_2,A_3", got)
+	}
+}
+
+// The note announcing a dual's companion column is written before collisions
+// are resolved. A renamed companion must not leave the old name standing in
+// it: the note travels into the schema log, --inspect, --schema-report and the
+// catalog.
+func TestDuplicateNamesSuffixCorrectsTheDualCompanionNote(t *testing.T) {
+	tbl := qvdtest.Table{Name: "T", Fields: []qvdtest.Field{
+		{Name: "Qty", Type: "INTEGER", Rows: []int{0},
+			Symbols: []qvd.Symbol{qvdtest.DualInt(1, "one")}},
+		{Name: "Qty__text", Type: "ASCII", Rows: []int{0},
+			Symbols: []qvd.Symbol{qvdtest.Str("collides")}},
+	}}
+	in := buildFixture(t, tbl)
+
+	f, err := qvd.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := f.ReadSymbols(qvd.UnknownSymbolError); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.Dual = DualColumns
+	opts.DuplicateNames = DuplicateSuffix
+	rs, err := ResolveSchema(f, &opts, nil)
+	if err != nil {
+		t.Fatalf("ResolveSchema: %v", err)
+	}
+
+	note := rs.Notes[0]
+	if !strings.Contains(note, `"Qty__text_2"`) {
+		t.Errorf("the note should name the column actually written: %s", note)
+	}
+	if strings.Contains(note, `display side written to "Qty__text"`) ||
+		strings.Contains(note, `kept in "Qty__text"`) {
+		t.Errorf("the note still announces the name the companion lost: %s", note)
+	}
+}
+
+// The companion clause carries an example display string, and that example can
+// be the very name the companion is losing. Rewriting the name out of the
+// finished note hit the example instead of the column mention, corrupting the
+// evidence and still naming the wrong column.
+func TestDuplicateNamesSuffixNoteSurvivesAnExampleThatLooksLikeTheName(t *testing.T) {
+	tbl := qvdtest.Table{Name: "T", Fields: []qvdtest.Field{
+		// "Qty__text" is informative text beside 1, and is also the name the
+		// companion column would take.
+		{Name: "Qty", Type: "INTEGER", Rows: []int{0},
+			Symbols: []qvd.Symbol{qvdtest.DualInt(1, "Qty__text")}},
+		{Name: "Qty__text", Type: "ASCII", Rows: []int{0},
+			Symbols: []qvd.Symbol{qvdtest.Str("collides")}},
+	}}
+	in := buildFixture(t, tbl)
+
+	f, err := qvd.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := f.ReadSymbols(qvd.UnknownSymbolError); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.DuplicateNames = DuplicateSuffix
+	rs, err := ResolveSchema(f, &opts, nil)
+	if err != nil {
+		t.Fatalf("ResolveSchema: %v", err)
+	}
+
+	note := rs.Notes[0]
+	// The example is evidence and must be quoted as it stands in the file.
+	if !strings.Contains(note, `(e.g. "Qty__text" beside 1)`) {
+		t.Errorf("the example display string was altered: %s", note)
+	}
+	if !strings.Contains(note, `kept in "Qty__text_2"`) {
+		t.Errorf("the note should name the column actually written: %s", note)
+	}
+	// And the column has to be there, holding the display string.
+	out := filepath.Join(t.TempDir(), "o.parquet")
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	rows := readParquetRows(t, out)
+	if len(rows) != 1 || rows[0]["Qty__text"] != "collides" || rows[0]["Qty__text_2"] != "Qty__text" {
+		t.Errorf("rows = %v, want Qty__text=collides and Qty__text_2=Qty__text", rows)
+	}
+}
