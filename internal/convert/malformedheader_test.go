@@ -11,9 +11,9 @@ import (
 	"github.com/ralforion/qvd2parquet/internal/qvdtest"
 )
 
-// Qlik copies field names into the XML header without escaping them, so a SAP
-// name carrying a comparison sign leaves the header malformed. The file still
-// has to convert, and the column has to keep the name the file states.
+// A header carrying an unescaped '<' or '&' in a field name is not well-formed
+// XML. The file still has to convert, and the column has to keep the name the
+// file states.
 func TestMalformedHeaderConverts(t *testing.T) {
 	const name = "AFRU-||-ABARB-||-Ist <Soll (Abw.)"
 	tbl := qvdtest.Table{Name: "AFRU", Fields: []qvdtest.Field{

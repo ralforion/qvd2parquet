@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -105,45 +104,16 @@ func ReadHeaderBytes(r io.Reader) ([]byte, int64, error) {
 	return raw[:len(raw)-1], int64(len(raw)), nil
 }
 
-// SecondReadNote reads the header of path again, from a new handle, and says
-// whether it came back the same as raw.
-//
-// A header that will not parse is either written wrong or read wrong, and
-// those call for opposite responses: re-pull the file, or distrust this
-// machine and this process. Nothing outside the process can tell them apart
-// after the fact, because the bytes on disk are the same either way by the
-// time anyone goes to look, so the check has to happen here, while the file is
-// still open and the failure is still fresh.
-func SecondReadNote(path string, raw []byte) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	again, _, err := ReadHeaderBytes(f)
-	if err != nil {
-		return fmt.Sprintf(" [second read of the header failed: %v]", err)
-	}
-	if bytes.Equal(again, raw) {
-		return fmt.Sprintf(" [a second read returned the same %d bytes, so the file holds what was parsed]", len(raw))
-	}
-	off := 0
-	for off < len(raw) && off < len(again) && raw[off] == again[off] {
-		off++
-	}
-	return fmt.Sprintf(" [A SECOND READ RETURNED DIFFERENT BYTES: %d then %d bytes, first difference at offset %d, line %d. "+
-		"The file was read wrong, not written wrong]", len(raw), len(again), off, lineAt(raw, off))
-}
-
 // ParseHeaderXML unmarshals the raw header bytes (without the 0x00 terminator).
 //
-// A header that is not well-formed XML is repaired and reparsed rather than
-// rejected, because what Qlik writes between the declaration and the 0x00
-// terminator is not always XML: field names are copied in unescaped, so a SAP
-// name along the lines of `Ist <Soll (Abw.)` is markup where it should be
-// text, and the root end tag is not always closed before the padding that runs
-// to the terminator. Headers that parse are never rewritten, so the repair
-// cannot change what a readable QVD decodes to.
+// A header that is not well-formed XML is mended and reparsed rather than
+// rejected. Each repair addresses a fault that has exactly one sensible
+// reading, and none is a guess about intent: a byte XML does not permit is
+// dropped, a `<` that cannot be starting a tag is escaped, and content after
+// the root element is cut. What put those bytes there is not established.
+//
+// Headers that parse are never rewritten, so the repair cannot change what a
+// readable QVD decodes to, and a header that needed one says so.
 func ParseHeaderXML(raw []byte) (*TableHeader, error) {
 	// Some writers emit a UTF-8 BOM before the declaration.
 	raw = trimBOM(raw)
@@ -201,11 +171,21 @@ func parseHeaderXMLError(raw []byte, err error) error {
 	return fmt.Errorf("parse QVD XML header: %w", err)
 }
 
-// decodeHeader unmarshals one candidate header body.
-func decodeHeader(raw []byte) (*TableHeader, error) {
+// decodeHeader unmarshals one candidate header body, tolerating the mistakes
+// encoding/xml can recover from on its own.
+func decodeHeader(raw []byte) (*TableHeader, error) { return decodeHeaderMode(raw, false) }
+
+// decodeHeaderStrict unmarshals a header the way the XML specification
+// requires. It is what decides whether a header needs a second look: a
+// tolerant parse can accept an unknown entity or an unclosed element and hand
+// back a header nobody checked, which is exactly the case the second read
+// exists to catch.
+func decodeHeaderStrict(raw []byte) (*TableHeader, error) { return decodeHeaderMode(raw, true) }
+
+func decodeHeaderMode(raw []byte, strict bool) (*TableHeader, error) {
 	var h TableHeader
-	dec := xml.NewDecoder(bytes.NewReader(raw))
-	dec.Strict = false
+	dec := xml.NewDecoder(bytes.NewReader(trimBOM(raw)))
+	dec.Strict = strict
 	if err := dec.Decode(&h); err != nil {
 		return nil, err
 	}

@@ -12,10 +12,9 @@ import (
 // (0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F), and 0x7F, which XML allows in text but
 // not in a name.
 //
-// Every one of them renders as nothing in an editor and none survive a copy
-// and paste, so a header holding one looks perfectly correct to anyone reading
-// it while the parser stops on a line that says `<NoOfSymbols>1</NoOfSymbols>`
-// and reports "expected attribute name in element". Dropping them is the only
+// None of them can appear in a tag name, and every one renders as nothing in
+// an editor, so a header holding one can look correct to anyone reading it
+// while the parser refuses the line it sits on. Dropping them is the only
 // repair available, since XML 1.0 has no escape for the C0 set either.
 func stripIllegalControls(raw []byte) ([]byte, string) {
 	if bytes.IndexFunc(raw, isIllegalControl) < 0 {
@@ -65,15 +64,12 @@ func isIllegalControl(r rune) bool {
 }
 
 // escapeStrayMarkup escapes the '<' and '&' bytes in a QVD header that cannot
-// be starting markup, so that a header Qlik wrote without escaping its own
-// string values parses as XML.
+// be starting markup, so that a header carrying an unescaped one parses.
 //
-// Qlik copies field names, comments and number formats into the header
-// verbatim. A SAP-derived name such as `Ist <Soll (Abw.)` or a comment
-// containing `R&D` is then not well-formed XML, and the whole file is
-// unreadable over one character in one name. Every such byte is escaped here
-// except where it genuinely opens a tag, a declaration, a comment, a CDATA
-// section or an entity reference, which leaves valid headers untouched.
+// A '<' is left alone wherever it genuinely opens a tag, a declaration, a
+// comment, a CDATA section or an entity reference, so a valid header is
+// returned unchanged and only a byte that no well-formed document could hold
+// is touched.
 //
 // The one case this cannot recover is a value that looks exactly like a tag,
 // `Menge <Soll>` say: nothing in the bytes distinguishes that from markup, so
@@ -132,11 +128,11 @@ const rootEndTag = "</QvdTableHeader"
 // completeRootElement cuts the header back to the end of its root element,
 // supplying the closing '>' when the bytes do not have one.
 //
-// The header is terminated by a 0x00 byte, not by its own last character, and
-// what sits between the two is up to the writer: observed QVDs pad the gap
-// with whitespace, and at least one leaves the root end tag itself a byte
-// short, as `</QvdTableHeader`. Either way the XML the file states is
-// everything up to and including that tag, so that is what gets parsed.
+// The header is terminated by a 0x00 byte, not by its own last character, so
+// what sits between the end of the XML and that terminator is not part of the
+// document. The XML the file states is everything up to and including the root
+// end tag, so that is what gets parsed, and a `>` is supplied if the bytes
+// stop one short of it.
 func completeRootElement(raw []byte) ([]byte, string) {
 	// The first occurrence is the real one: anything repeating it later is
 	// trailing content, which is exactly what this trims.

@@ -15,75 +15,57 @@ restarts from it.
 
 ### Fixed
 
-- QVD files whose XML header is not well-formed now convert instead of failing
-  with `parse QVD XML header: XML syntax error on line N`. Two shapes of this
-  were found in QlikView-written SAP extracts, and both are now repaired and
-  reparsed:
+- A QVD whose XML header does not parse is no longer given up on at the first
+  attempt. Three files in one long batch failed this way and converted cleanly
+  when rerun on their own, against bytes with the same SHA-256:
 
-  - Field names, comments and number formats are copied into the header
-    verbatim, without escaping, so a single SAP-derived name along the lines of
-    `Ist <Soll (Abw.)`, or a comment holding a bare `&`, is markup where it
-    should be text. Those bytes are now escaped, which recovers the name
-    exactly as it stands in the file.
-  - Invisible bytes turn up inside tags: the C0 controls XML 1.0 forbids
-    anywhere in a document, not even escaped (0x00-0x08, 0x0B, 0x0C,
-    0x0E-0x1F), and 0x7F, which XML allows in text but not in a name. Any of
-    them in `<NoOfSymbols>` renders as nothing in an editor and survives no
-    copy and paste, so the header reads as perfectly correct while the parser
-    stops on a line that says `<NoOfSymbols>1</NoOfSymbols>` and reports
-    "expected attribute name in element". They are now dropped, which is the
-    only repair available, and the field keeps its values.
-  - The header is terminated by a 0x00 byte rather than by its own last
-    character, and the gap between the two is the writer's business: some files
-    pad it with whitespace, and at least one leaves the root end tag a byte
-    short, as `</QvdTableHeader`. The parser then ran off the end of the padding
-    and reported an EOF a thousand lines past the last field. The header is now
-    cut back to its root element, with the closing `>` supplied when the file
-    has none.
+      parse QVD XML header: XML syntax error on line 2147: expected attribute name in element
+      parse QVD XML header: XML syntax error on line 279: invalid characters between </B and >
+      parse QVD XML header: XML syntax error on line 3203: unexpected EOF
+
+  What produced those bytes is not established, so nothing here assumes a
+  cause. The header is now read twice, from two handles, and compared:
+
+  - Two reads that agree are what the file holds.
+  - Two reads that disagree mean the first read was wrong, whatever the reason.
+    The read that parses is used, and the disagreement is reported with the
+    offset and line it starts at. The comparison runs on every file, not only
+    on a failure, because a read that differs but still parses -- a wrong digit
+    in `NoOfRecords` or `BitWidth` is valid XML -- would otherwise go through
+    unremarked, and because after the run nothing can recover the fact: the
+    file on disk reads correctly either way by the time anyone looks.
+
+  The gate is a strict parse. A tolerant one accepts an unknown entity or an
+  unclosed element and hands back a header nobody checked, which is the case
+  the second read exists to catch.
+
+- Only once two reads agree, and neither is valid XML, is the header mended.
+  Three faults have exactly one sensible reading and are repaired; none is a
+  guess about intent:
+
+  - Bytes that cannot occur in a tag are dropped: the C0 controls XML 1.0
+    forbids anywhere in a document, not even escaped (0x00-0x08, 0x0B, 0x0C,
+    0x0E-0x1F), and 0x7F, which XML allows in text but not in a name. Each of
+    these renders as nothing in an editor, so a header holding one can read as
+    correct while the parser refuses the line it sits on.
+  - A `<` or `&` that cannot be opening markup or an entity is escaped, which
+    recovers the surrounding value exactly as it stands in the file.
+  - Content after the root element is cut, and the closing `>` supplied if the
+    bytes stop one short of it. The header is terminated by a 0x00 byte rather
+    than by its own last character, so what sits between the two is not part of
+    the document.
 
   A header that already parses is never rewritten, so no readable QVD changes
-  what it converts to. A conversion that had to repair one says exactly what
-  was wrong and on which line, because the bytes at fault are usually invisible
-  ones and a QVD cannot be opened as text to go and look:
+  what it converts to, and every repair is reported with what it did and where:
 
-      warning: SAP\AFRU.qvd has a malformed XML header:
+      warning: X.qvd has a malformed XML header:
       dropped 1 byte(s) XML does not allow in a tag: 0x7F on line 2147
 
-- A header that fails to read or parse is now read once more from a new handle
-  before the file is given up on. A header that will not parse once and does a
-  moment later, over a file whose bytes have not changed, was not read
-  correctly the first time, and in a batch running for hours over hundreds of
-  files that is the difference between a warning on one file and losing that
-  file's conversion. The retry is bounded at one and is never silent:
-
-      warning: SAP\AFRU.qvd: the first read of the header did not parse
-      (XML syntax error on line 2147: expected attribute name in element);
-      a second read returned different bytes (312845 then 312845, first
-      difference at offset 61034, line 2147) and parsed
-
-  A file read differently on two consecutive attempts deserves more attention
-  than the conversion the retry rescued, so the offset is named. The retry runs
-  before XML repairs are accepted: a repair is used only when two reads return
-  the same header bytes, so a transient bad read is not mistaken for a malformed
-  QVD on disk.
-
-- A header that cannot be repaired is now read a second time, from a new
-  handle, and the error says whether the two reads agree. A header that will
-  not parse is either written wrong or read wrong, and those call for opposite
-  responses: re-pull the file, or distrust the machine and the process that
-  read it. Nothing outside the process can tell them apart afterwards, since
-  the bytes on disk are the same either way by the time anyone looks.
-
-      [a second read returned the same 312845 bytes, so the file holds what was parsed]
-      [A SECOND READ RETURNED DIFFERENT BYTES: 312845 then 312845 bytes,
-       first difference at offset 61034, line 2147. The file was read wrong,
-       not written wrong]
-
-- A header that cannot be repaired now describes itself in the error: its size
-  in bytes and lines, whether it ends with a `</QvdTableHeader>` and where, and
-  the text of the line the parser stopped on. A QVD cannot be opened as text to
-  go and look at line 3203 by hand, so the error naming only the number left
-  nowhere to go.
+- A header that cannot be mended now describes itself in the error instead of
+  naming a line number in a file that cannot be opened as text: its size in
+  bytes and lines, whether it ends with a `</QvdTableHeader>` and where, the
+  line the parser stopped on quoted so that an invisible byte shows as an
+  escape, and whether the second read agreed.
 
 ## [2.6.0] - 2026-09-09
 
