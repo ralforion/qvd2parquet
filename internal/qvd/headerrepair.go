@@ -49,6 +49,36 @@ func escapeStrayMarkup(raw []byte) []byte {
 	return out.Bytes()
 }
 
+// rootEndTag is the last thing a QVD header should contain.
+const rootEndTag = "</QvdTableHeader"
+
+// completeRootElement cuts the header back to the end of its root element,
+// supplying the closing '>' when the bytes do not have one.
+//
+// The header is terminated by a 0x00 byte, not by its own last character, and
+// what sits between the two is up to the writer: observed QVDs pad the gap
+// with whitespace, and at least one leaves the root end tag itself a byte
+// short, as `</QvdTableHeader`. Either way the XML the file states is
+// everything up to and including that tag, so that is what gets parsed.
+func completeRootElement(raw []byte) []byte {
+	// The first occurrence is the real one: anything repeating it later is
+	// trailing content, which is exactly what this trims.
+	i := bytes.Index(raw, []byte(rootEndTag))
+	if i < 0 {
+		return raw
+	}
+	j := i + len(rootEndTag)
+	for j < len(raw) && isSpaceByte(raw[j]) {
+		j++
+	}
+	if j < len(raw) && raw[j] == '>' {
+		return raw[:j+1] // complete tag; drop whatever follows it
+	}
+	out := make([]byte, 0, i+len(rootEndTag)+1)
+	out = append(out, raw[:i+len(rootEndTag)]...)
+	return append(out, '>')
+}
+
 // markupLen reports the length of the well-formed markup starting at b[0]=='<',
 // or 0 if what follows is not markup at all.
 func markupLen(b []byte) int {
@@ -223,10 +253,31 @@ func isHexByte(c byte) bool {
 	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
-// headerLineContext renders the 1-based source line the XML parser stopped on,
-// so that a header this package cannot repair names the text that broke it
-// instead of only a line number in a file the caller cannot open as text.
-func headerLineContext(raw []byte, line int) string {
+// headerDiagnostics describes a header this package could not parse: how much
+// of it there was, whether it ends where a header should, and the source line
+// the parser stopped on. A QVD cannot be opened as text to go and look, so an
+// error naming only a line number leaves the caller with nowhere to go.
+func headerDiagnostics(raw []byte, line int) string {
+	lines := bytes.Count(raw, []byte("\n")) + 1
+	var root string
+	switch i := bytes.Index(raw, []byte(rootEndTag)); {
+	case i < 0:
+		root = "no " + rootEndTag + "> end tag"
+	case bytes.Contains(raw[i:], []byte(rootEndTag+">")):
+		root = fmt.Sprintf("%s> ends on line %d", rootEndTag,
+			bytes.Count(raw[:i], []byte("\n"))+1)
+	default:
+		root = rootEndTag + "> end tag is incomplete"
+	}
+	out := fmt.Sprintf(" (header %d bytes, %d lines; %s", len(raw), lines, root)
+	if text := headerLine(raw, line); text != "" {
+		out += fmt.Sprintf("; line %d: %s", line, text)
+	}
+	return out + ")"
+}
+
+// headerLine returns the 1-based source line, trimmed and bounded.
+func headerLine(raw []byte, line int) string {
 	if line <= 0 {
 		return ""
 	}
@@ -249,5 +300,5 @@ func headerLineContext(raw []byte, line int) string {
 	if len(text) > max {
 		text = text[:max] + "..."
 	}
-	return fmt.Sprintf(" (line %d: %s)", line, text)
+	return text
 }

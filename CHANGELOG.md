@@ -16,16 +16,31 @@ restarts from it.
 ### Fixed
 
 - QVD files whose XML header is not well-formed now convert instead of failing
-  with `parse QVD XML header: XML syntax error on line N`. Qlik copies field
-  names, comments and number formats into the header verbatim, without escaping
-  them, so a single SAP-derived name along the lines of `Ist <Soll (Abw.)` --
-  or a comment holding a bare `&` -- made the whole file unreadable. Such bytes
-  are now escaped and the header is parsed again, which recovers the name
-  exactly as it stands in the file. A header that already parses is never
-  rewritten, so no readable QVD changes what it converts to.
+  with `parse QVD XML header: XML syntax error on line N`. Two shapes of this
+  were found in QlikView-written SAP extracts, and both are now repaired and
+  reparsed:
 
-  A header that no escaping can rescue now quotes the offending line in the
-  error, since a QVD cannot be opened as text to go and look at it.
+  - Field names, comments and number formats are copied into the header
+    verbatim, without escaping, so a single SAP-derived name along the lines of
+    `Ist <Soll (Abw.)`, or a comment holding a bare `&`, is markup where it
+    should be text. Those bytes are now escaped, which recovers the name
+    exactly as it stands in the file.
+  - The header is terminated by a 0x00 byte rather than by its own last
+    character, and the gap between the two is the writer's business: some files
+    pad it with whitespace, and at least one leaves the root end tag a byte
+    short, as `</QvdTableHeader`. The parser then ran off the end of the padding
+    and reported an EOF a thousand lines past the last field. The header is now
+    cut back to its root element, with the closing `>` supplied when the file
+    has none.
+
+  A header that already parses is never rewritten, so no readable QVD changes
+  what it converts to, and a conversion that had to repair one says so.
+
+- A header that cannot be repaired now describes itself in the error: its size
+  in bytes and lines, whether it ends with a `</QvdTableHeader>` and where, and
+  the text of the line the parser stopped on. A QVD cannot be opened as text to
+  go and look at line 3203 by hand, so the error naming only the number left
+  nowhere to go.
 
 ## [2.6.0] - 2026-09-09
 

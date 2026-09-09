@@ -77,18 +77,67 @@ func TestParseHeaderXMLReportsTheOffendingLine(t *testing.T) {
 	}
 }
 
-func TestHeaderLineContext(t *testing.T) {
+func TestHeaderLine(t *testing.T) {
 	raw := []byte("a\nb\n  <FieldName>Ist <Soll</FieldName>\r\nd\n")
-	got := headerLineContext(raw, 3)
-	if want := " (line 3: <FieldName>Ist <Soll</FieldName>)"; got != want {
-		t.Errorf("headerLineContext = %q, want %q", got, want)
+	if got, want := headerLine(raw, 3), "<FieldName>Ist <Soll</FieldName>"; got != want {
+		t.Errorf("headerLine = %q, want %q", got, want)
 	}
-	if got := headerLineContext(raw, 99); got != "" {
+	if got := headerLine(raw, 99); got != "" {
 		t.Errorf("out-of-range line = %q, want empty", got)
 	}
-	long := []byte(strings.Repeat("x", 400))
-	if got := headerLineContext(long, 1); !strings.HasSuffix(got, "...)") {
+	if got := headerLine([]byte(strings.Repeat("x", 400)), 1); !strings.HasSuffix(got, "...") {
 		t.Errorf("long line not truncated: %q", got)
+	}
+}
+
+func TestHeaderDiagnostics(t *testing.T) {
+	full := []byte("<QvdTableHeader>\n<x>\n</QvdTableHeader>")
+	if got := headerDiagnostics(full, 2); !strings.Contains(got, "ends on line 3") ||
+		!strings.Contains(got, "38 bytes, 3 lines") || !strings.Contains(got, "line 2: <x>") {
+		t.Errorf("headerDiagnostics = %q", got)
+	}
+	// The shape seen in the wild: the end tag never closes, and whitespace
+	// padding runs on to the terminator.
+	cut := []byte("<QvdTableHeader>\n<x>\n</QvdTableHeader\n\n\n")
+	if got := headerDiagnostics(cut, 6); !strings.Contains(got, "end tag is incomplete") {
+		t.Errorf("headerDiagnostics = %q", got)
+	}
+	if got := headerDiagnostics([]byte("<QvdTableHeader>\n"), 2); !strings.Contains(got, "no </QvdTableHeader> end tag") {
+		t.Errorf("headerDiagnostics = %q", got)
+	}
+}
+
+func TestCompleteRootElement(t *testing.T) {
+	const body = "<QvdTableHeader>\n  <TableName>T</TableName>\n </QvdTableHeader>"
+	cases := map[string]string{
+		body:                        body,               // already exact
+		body + "\n\n\n":             body,               // padding after the end tag
+		body + "\x01\x02":           body,               // or anything else after it
+		body[:len(body)-1]:          body,               // the missing '>'
+		body[:len(body)-1] + "\n\n": body,               // missing '>', then padding
+		"<QvdTableHeader>":          "<QvdTableHeader>", // no end tag to work with
+	}
+	for in, want := range cases {
+		if got := string(completeRootElement([]byte(in))); got != want {
+			t.Errorf("completeRootElement(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseHeaderXMLCompletesTheRootElement(t *testing.T) {
+	// A header whose root end tag is a byte short, padded out to where the
+	// 0x00 terminator sits. Left alone the parser runs off the end of the
+	// padding and reports an EOF a thousand lines past the last field.
+	raw := strings.TrimSuffix(sampleHeader, ">") + strings.Repeat("\n", 1286)
+	h, err := ParseHeaderXML([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseHeaderXML: %v", err)
+	}
+	if len(h.Fields) != 2 || !h.Repaired {
+		t.Errorf("got %d fields, repaired=%v", len(h.Fields), h.Repaired)
+	}
+	if err := h.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
 	}
 }
 
