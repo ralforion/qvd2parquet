@@ -143,7 +143,7 @@ qvd2parquet --catalog-scan --catalog-out catalog.parquet <file-or-directory>...
   -timezone none             none|Local|UTC|IANA timezone name
   -schema path.json          Explicit schema override
   -schema-report path.json   Write the inferred schema/profile report
-  -quality-gate full         Validation mode: none|basic|numeric|full
+  -quality-gate full         Validation mode: none|basic|numeric|full|reread
   -quality-report path.json  Write the post-conversion quality report
   -quality-tolerance 1e-9    Relative tolerance for floating-point quality checks
   -quality-abs-tolerance 0   Absolute tolerance for floating-point quality checks
@@ -1506,19 +1506,39 @@ final-looking output behind.
 | `basic` | the file opens; row count, column names, and types match the resolved schema; per-column null counts match |
 | `numeric` | everything in `basic` plus sum, min, max (and sum of squares for floats) per numeric, decimal, date, timestamp and time column |
 | `full` (default) | everything in `numeric` plus order-independent `sha256` value fingerprints per column |
+| `reread` | everything in `full` plus a second, independent pass over the QVD, compared against the first |
 
-Integer, decimal and date/time aggregates are compared exactly — decimal sums
-use scaled-integer arithmetic, with no floating-point tolerance. Floating-point
-sums use both tolerances:
+Every mode but `reread` validates the written Parquet against metrics collected
+from the values the converter produced, and none of them can question those
+values. A record byte read wrong yields a different symbol index, a different
+symbol index yields a value that is entirely well formed, and the Parquet then
+faithfully contains it: there is no syntax to violate and nothing downstream to
+notice. Only reading the source a second time can tell.
+
+`reread` reads every range twice as the conversion goes and compares the two
+straight away: each column's symbol table before a record is decoded from it,
+then each record chunk before it is converted. The first range that does not
+match ends the conversion, naming the exact byte:
 
 ```text
-abs(a-b) <= absTolerance || abs(a-b) <= relTolerance * max(abs(a), abs(b), 1)
+FAIL X.qvd: the file did not read the same way twice: rows 1966080..2031616:
+the byte at offset 154201656 read 0x41 then 0x61. Nothing read from this file
+can be trusted and no output was kept
 ```
 
-`full` mode builds a multiset fingerprint (row count, XOR of digests, and a
-modular sum of digests) rather than an ordered stream hash, so it is valid
-despite unordered chunk delivery. Nulls are marked explicitly in the digest, so
-a null never collides with a zero or an empty string.
+An offset and two byte values are what anyone chasing the layer below can act
+on. Checking as it goes means a file whose reads do not agree costs the chunks
+up to the first bad one, not the whole conversion, and no output is kept.
+
+Symbol tables are checked by streaming digest, so a table of any size costs one
+buffer. Record chunks are compared byte for byte, which is what names the
+offset; that costs one extra chunk-sized buffer and one extra file handle per
+decode worker.
+
+What it cannot see is a read that is wrong the same way twice. A second read
+this soon after the first is likely served from the page cache, so it catches
+corruption after the read more readily than a bad read from storage. That is a
+limit of any check inside one process.
 
 `--decimal-strict` fails instead of rounding, and reports up to three offending
 values per column with the total:

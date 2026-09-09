@@ -121,11 +121,13 @@ func compareColumn(src, pq *ColumnMetrics, opts *Options) []string {
 			errs = append(errs, fmt.Sprintf("max differs: source %s, Parquet %s", ss.Max, ps.Max))
 		}
 	}
-	if opts.Quality != QualityFull {
+	// Every mode from full up compares fingerprints, so this is a floor, not
+	// an equality: a mode above full still wants everything full checks.
+	if opts.Quality < QualityFull {
 		return errs
 	}
 
-	// full: order-independent value fingerprints.
+	// full and above: order-independent value fingerprints.
 	if ss.Hash != ps.Hash {
 		errs = append(errs, fmt.Sprintf("value fingerprint differs: source %s, Parquet %s",
 			shortHash(ss.Hash), shortHash(ps.Hash)))
@@ -219,7 +221,7 @@ func readParquetMetrics(ctx context.Context, path string, rs *ResolvedSchema, op
 
 	// Progress is aggregated across workers, so it counts the whole gate
 	// rather than whichever worker happens to report.
-	hash := opts.Quality == QualityFull
+	hash := opts.Quality >= QualityFull
 	gateStart := time.Now()
 	var progMu sync.Mutex
 	var seen, nextProgress int64 = 0, opts.ProgressEvery

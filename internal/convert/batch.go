@@ -39,9 +39,10 @@ type Batch struct {
 	schema     *arrow.Schema
 	builders   []array.Builder
 	converters []columnConverter
-	rec        *array.RecordBuilder
-	rows       int
-	capacity   int
+
+	rec      *array.RecordBuilder
+	rows     int
+	capacity int
 }
 
 // Converter precomputes everything the decode workers need.

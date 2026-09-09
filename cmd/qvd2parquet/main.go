@@ -133,7 +133,7 @@ func run() int {
 		timezone      = fs.String("timezone", def.TimezoneName, "none|Local|UTC|IANA timezone name for date/time conversion; none writes a naive wall clock")
 		schemaPath    = fs.String("schema", "", "Optional explicit schema override JSON")
 		schemaReport  = fs.String("schema-report", "", "Write the inferred schema/profile report to this path")
-		qualityGate   = fs.String("quality-gate", def.Quality.String(), "Validation mode: none|basic|numeric|full")
+		qualityGate   = fs.String("quality-gate", def.Quality.String(), "Validation mode: none|basic|numeric|full|reread")
 		qualityReport = fs.String("quality-report", "", "Write the post-conversion quality report to this path")
 		qualityTol    = fs.Float64("quality-tolerance", def.QualityRelTolerance, "Relative tolerance for floating-point quality checks")
 		qualityAbsTol = fs.Float64("quality-abs-tolerance", def.QualityAbsTolerance, "Absolute tolerance for floating-point quality checks")

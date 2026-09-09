@@ -89,7 +89,9 @@ func ReadHeader(r io.Reader) (*TableHeader, int64, error) {
 // offset just past that terminator. Callers that want to say something about a
 // header they could not parse need the bytes they actually read.
 func ReadHeaderBytes(r io.Reader) ([]byte, int64, error) {
-	br := bufio.NewReader(io.LimitReader(r, maxHeaderBytes))
+	// checkedReader wraps the file rather than the LimitReader, so the count is
+	// checked against the exact slice the read was given.
+	br := bufio.NewReader(io.LimitReader(checkedReader{r}, maxHeaderBytes))
 	raw, err := br.ReadBytes(0x00)
 	if err != nil {
 		if errors.Is(err, io.EOF) {

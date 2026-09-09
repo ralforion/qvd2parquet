@@ -115,6 +115,10 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	}
 
 	symStart := time.Now()
+	// Digests are taken as the symbol tables and records are read, so the
+	// check afterwards compares against what this pass actually saw rather
+	// than against a later reading of the file.
+	f.VerifyReads = opts.Quality >= QualityReread
 	if err := f.ReadSymbols(qvd.UnknownSymbolError); err != nil {
 		return nil, nil, err
 	}

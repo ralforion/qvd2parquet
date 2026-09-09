@@ -13,6 +13,72 @@ restarts from it.
 
 ## [Unreleased]
 
+### Added
+
+- A read that reports more bytes than the buffer it was given is now refused
+  rather than believed. Nothing in the Go stack checks for it: on Windows,
+  `internal/poll` passes the count `ReadFile` writes into
+  `lpNumberOfBytesRead` straight through `execIO`, `os.File` returns it
+  unchanged, and `io.LimitReader` and `io.SectionReader` pass it on. One such
+  report has been seen from Windows on a share during a network outage, 4308
+  bytes claimed for a 4096-byte buffer.
+
+  Nothing downstream survives it. `bufio.Reader` adds the count to its write
+  index, so a buffer that claims more than it holds leaves the reader slicing
+  bytes that read never wrote: whatever the buffer held before, spliced into
+  the middle of the data. In an XML header that is a stray byte inside a tag,
+  from nowhere, in a file that reads correctly the next time.
+
+  Whether that has ever happened here is unknown, and this is not a claim that
+  it has. It costs one comparison per read to refuse it rather than decode it.
+
+  This applies to sequential reads, and only can: on the `ReadAt` path the
+  count is consumed inside `os.File.ReadAt`, which slices the caller's buffer
+  by it (`b = b[m:]`) before any wrapper regains control, so an over-count
+  there panics on the slice bounds rather than corrupting anything. That path
+  fails loudly on its own. The symbol tables are now read sequentially rather
+  than through an `io.SectionReader` so that the guard applies to them, with
+  each column seeking to its own start so a short read in one cannot shift the
+  ones after it.
+
+- `--quality-gate reread` checks that the QVD reads the same way twice. Every
+  other mode validates the written Parquet against metrics collected from the
+  values the converter produced, and none of them can question those values: a
+  record byte read wrong points at a different symbol, the symbol yields a
+  value that is entirely well formed, and the Parquet faithfully contains it.
+  There is no syntax to violate and nothing downstream to notice. This closes
+  the gap left by 2.6.1, which verified only the header.
+
+  Every range is read twice as the conversion goes and compared straight away:
+  each column's symbol table before a record is decoded from it, then each
+  record chunk before it is converted. The first range that does not match ends
+  the conversion, naming the exact byte:
+
+      the file did not read the same way twice: rows 1966080..2031616: the byte
+      at offset 154201656 read 0x41 then 0x61. Nothing read from this file can
+      be trusted and no output was kept
+
+  Checking as it goes rather than at the end means a file whose reads do not
+  agree costs the chunks up to the first bad one, not the whole conversion. No
+  output is kept either way.
+
+  A verifier that cannot be opened fails the conversion rather than skipping
+  the check. A decode worker that cannot get its own handle shares the file's
+  and loses only parallelism, but a verifier without one has nothing to compare
+  against, and carrying on would make the mode a no-op that reports success.
+  Handle exhaustion in a long batch is exactly where that would happen, and
+  exactly where the check is wanted.
+
+  Symbol tables are checked by streaming digest, so a table of any size costs
+  one buffer. Record chunks are compared byte for byte, which is what names the
+  offset; that costs one extra chunk-sized buffer and one extra file handle per
+  decode worker. The default is unchanged at `full`.
+
+  What it cannot see is a read that is wrong the same way twice: a second read
+  this soon after the first is likely served from the page cache, so it catches
+  corruption after the read more readily than a bad read from storage. No check
+  inside one process can do better.
+
 ### Fixed
 
 - The per-file notes about excluded columns now print after the line naming the

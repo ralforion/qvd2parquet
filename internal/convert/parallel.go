@@ -1,6 +1,8 @@
 package convert
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -197,7 +199,11 @@ func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressF
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			w := c.newWorker()
+			w, err := c.newWorker()
+			if err != nil {
+				fail(err)
+				return
+			}
 			defer w.release()
 			for ch := range work {
 				if ctx.Err() != nil {
@@ -303,12 +309,47 @@ type worker struct {
 	file *os.File
 	// own is this worker's private handle on the input, closed on release.
 	// It is nil when the worker shares the File's handle instead.
-	own    *os.File
-	batch  *Batch
-	raw    []byte
-	symIdx []int64
-	hash   bool
-	mem    memory.Allocator
+	own *os.File
+	// verify is a second private handle used to read each chunk again and
+	// compare, with verifyRaw as its buffer. Both are nil unless the quality
+	// mode asks for the source read to be checked.
+	verify      io.ReaderAt
+	verifyClose func()
+	verifyRaw   []byte
+	batch       *Batch
+	raw         []byte
+	symIdx      []int64
+	hash        bool
+	mem         memory.Allocator
+}
+
+// openVerifyReader opens the reader a worker uses to read each chunk a second
+// time. It is a variable so a test can supply a reader that returns something
+// else, which is the situation the check exists for and the one thing a real
+// file cannot be made to do on demand.
+// It fails rather than falling back. A decode worker that cannot get its own
+// handle shares the File's and loses only parallelism, but a verifier that
+// cannot get one has nothing to compare against, and continuing would turn the
+// mode into a no-op that reports success. Handle exhaustion in a long batch is
+// exactly where that would happen, and exactly where the check is wanted.
+var openVerifyReader = func(qf *qvd.File) (io.ReaderAt, func(), error) {
+	f, err := os.Open(qf.Path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: open %s to verify reads: %v", ErrInput, qf.Path, err)
+	}
+	mine, errMine := f.Stat()
+	orig, errOrig := qf.FileHandle().Stat()
+	if errMine != nil || errOrig != nil {
+		f.Close()
+		return nil, nil, fmt.Errorf("%w: verify reads of %s: %v", ErrInput, qf.Path,
+			cmp.Or(errMine, errOrig))
+	}
+	if !os.SameFile(mine, orig) {
+		f.Close()
+		return nil, nil, fmt.Errorf("%w: verify reads of %s: the file was replaced during conversion",
+			ErrInput, qf.Path)
+	}
+	return f, func() { f.Close() }, nil
 }
 
 // openWorkerFile opens a private handle on the QVD for one decode worker. It
@@ -338,7 +379,7 @@ func openWorkerFile(qf *qvd.File) *os.File {
 	return f
 }
 
-func (c *Converter) newWorker() *worker {
+func (c *Converter) newWorker() (*worker, error) {
 	mem := memory.NewGoAllocator()
 	w := &worker{
 		c:      c,
@@ -346,13 +387,24 @@ func (c *Converter) newWorker() *worker {
 		batch:  c.NewBatch(mem, c.BatchRows),
 		raw:    make([]byte, c.BatchRows*c.File.RecordByteSize),
 		symIdx: make([]int64, len(c.File.Columns)),
-		hash:   c.Options.Quality == QualityFull,
+		hash:   c.Options.Quality >= QualityFull,
 		mem:    mem,
 	}
 	if own := openWorkerFile(c.File); own != nil {
 		w.own, w.file = own, own
 	}
-	return w
+	if c.File.VerifyReads {
+		// A private reader and buffer per worker, so the check costs one more
+		// chunk-sized allocation and no contention.
+		verify, closeFn, err := openVerifyReader(c.File)
+		if err != nil {
+			w.release()
+			return nil, err
+		}
+		w.verify, w.verifyClose = verify, closeFn
+		w.verifyRaw = make([]byte, c.BatchRows*c.File.RecordByteSize)
+	}
+	return w, nil
 }
 
 func (w *worker) release() {
@@ -360,6 +412,45 @@ func (w *worker) release() {
 	if w.own != nil {
 		w.own.Close()
 	}
+	if w.verifyClose != nil {
+		w.verifyClose()
+	}
+}
+
+// verifyChunk reads the same range a second time, from this worker's own
+// handle, and reports the first byte that differs.
+//
+// Nothing else covers the read itself. A record byte read wrong points at a
+// different symbol, the symbol yields a value that is entirely well formed,
+// and the Parquet then faithfully contains it: there is no syntax to violate
+// and nothing downstream to notice. Comparing bytes says exactly which offset
+// disagreed, which is what anyone chasing the layer below this one can act on.
+//
+// What it cannot see is a read that is wrong the same way twice. A second read
+// this soon after the first is likely served from the page cache, so this
+// catches corruption after the read more readily than a bad read from storage.
+func (w *worker) verifyChunk(ch DecodeChunk, first []byte) error {
+	again := w.verifyRaw[:len(first)]
+	n, err := w.verify.ReadAt(again, ch.ByteOffset)
+	if err != nil && !(errors.Is(err, io.EOF) && n == len(again)) {
+		return fmt.Errorf("%w: verify rows %d..%d at offset %d: read %d of %d bytes: %v",
+			ErrInput, ch.StartRow, ch.StartRow+int64(ch.RowCount), ch.ByteOffset, n, len(again), err)
+	}
+	if n != len(again) {
+		return fmt.Errorf("%w: verify rows %d..%d at offset %d: got %d of %d bytes",
+			ErrInput, ch.StartRow, ch.StartRow+int64(ch.RowCount), ch.ByteOffset, n, len(again))
+	}
+	if bytes.Equal(first, again) {
+		return nil
+	}
+	at := 0
+	for at < len(first) && first[at] == again[at] {
+		at++
+	}
+	return fmt.Errorf("%w: rows %d..%d: the byte at offset %d read 0x%02X then 0x%02X. "+
+		"Nothing read from this file can be trusted and no output was kept",
+		qvd.ErrUnstableRead, ch.StartRow, ch.StartRow+int64(ch.RowCount),
+		ch.ByteOffset+int64(at), first[at], again[at])
 }
 
 // decodeChunk reads one contiguous byte range and converts it into an Arrow
@@ -370,6 +461,11 @@ func (w *worker) decodeChunk(ch DecodeChunk) (DecodeResult, error) {
 	buf := w.raw[:size]
 	// ReadAt reports a short read as io.EOF, so check the byte count too: the
 	// file can be truncated or replaced after the up-front size check.
+	// os.File.ReadAt slices the caller's buffer by the count the read reports
+	// (b = b[m:]), so a count larger than the buffer panics there rather than
+	// being believed. That is loud and safe, which is why this path is not
+	// wrapped the way the sequential header and symbol reads are: a wrapper
+	// here would never regain control to refuse it.
 	n, err := w.file.ReadAt(buf, ch.ByteOffset)
 	if err != nil && !(errors.Is(err, io.EOF) && n == size) {
 		return DecodeResult{}, fmt.Errorf("%w: read rows %d..%d at offset %d: read %d of %d bytes: %v",
@@ -379,6 +475,15 @@ func (w *worker) decodeChunk(ch DecodeChunk) (DecodeResult, error) {
 		return DecodeResult{}, fmt.Errorf("%w: read rows %d..%d at offset %d: got %d of %d bytes; "+
 			"the input was truncated or modified during conversion",
 			ErrInput, ch.StartRow, ch.StartRow+int64(ch.RowCount), ch.ByteOffset, n, size)
+	}
+	// Read the same range again and compare, before anything is decoded from
+	// it. Failing here rather than after the conversion means a file whose
+	// reads do not agree costs the chunks up to the first bad one, not the
+	// whole file.
+	if w.verify != nil {
+		if err := w.verifyChunk(ch, buf); err != nil {
+			return DecodeResult{}, err
+		}
 	}
 
 	metrics := NewMetrics(w.c.Schema)
