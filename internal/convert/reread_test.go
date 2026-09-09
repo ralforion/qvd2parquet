@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,10 +23,13 @@ func verifyFixture(t *testing.T, rows []int) string {
 }
 
 // converts and returns the digests the run recorded.
-func convertVerifying(t *testing.T, in, out string) (*qvd.File, []DecodeChunk, [][32]byte) {
+func convertVerifying(t *testing.T, in string, batchRows int) (*qvd.File, []DecodeChunk, [][32]byte) {
 	t.Helper()
 	opts := testOptions()
 	opts.Quality = QualityReread
+	if batchRows > 0 {
+		opts.BatchRows = batchRows
+	}
 	f, err := qvd.Open(in)
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +59,7 @@ func convertVerifying(t *testing.T, in, out string) (*qvd.File, []DecodeChunk, [
 // The ordinary case: what was read is what the file holds.
 func TestVerifySourceReadsAgrees(t *testing.T) {
 	in := verifyFixture(t, []int{0, 1, 2, 1})
-	f, chunks, digests := convertVerifying(t, in, "")
+	f, chunks, digests := convertVerifying(t, in, 0)
 	defer f.Close()
 
 	diffs, err := VerifySourceReads(context.Background(), in, f, chunks, digests, nil)
@@ -72,7 +76,7 @@ func TestVerifySourceReadsAgrees(t *testing.T) {
 // this below our level can act on.
 func TestVerifySourceReadsCatchesChangedRecords(t *testing.T) {
 	in := verifyFixture(t, []int{0, 1, 2, 1})
-	f, chunks, digests := convertVerifying(t, in, "")
+	f, chunks, digests := convertVerifying(t, in, 0)
 	defer f.Close()
 
 	flipByte(t, in, f.RecordStart)
@@ -93,7 +97,7 @@ func TestVerifySourceReadsCatchesChangedRecords(t *testing.T) {
 // carries the wrong value.
 func TestVerifySourceReadsCatchesChangedSymbols(t *testing.T) {
 	in := verifyFixture(t, []int{0, 1, 2, 1})
-	f, chunks, digests := convertVerifying(t, in, "")
+	f, chunks, digests := convertVerifying(t, in, 0)
 	defer f.Close()
 
 	// Somewhere inside the first column's symbol table.
@@ -113,7 +117,7 @@ func TestVerifySourceReadsCatchesChangedSymbols(t *testing.T) {
 
 func TestVerifySourceReadsRefusesAReplacedFile(t *testing.T) {
 	in := verifyFixture(t, []int{0, 1})
-	f, chunks, digests := convertVerifying(t, in, "")
+	f, chunks, digests := convertVerifying(t, in, 0)
 	defer f.Close()
 
 	other := verifyFixture(t, []int{0, 1, 2})
@@ -213,5 +217,39 @@ func TestFingerprintsAreComparedFromFullUpwards(t *testing.T) {
 				t.Errorf("errors = %v", report.Columns[0].Errors)
 			}
 		})
+	}
+}
+
+// The scan does not stop at the first differing range. One out of thousands is
+// a flip; most of them is something systematic, and only the total says which.
+func TestVerifySourceReadsCountsEveryDifferingRange(t *testing.T) {
+	// Enough rows to span several chunks.
+	rows := make([]int, 0, 400)
+	for i := 0; i < 400; i++ {
+		rows = append(rows, i%3)
+	}
+	in := verifyFixture(t, rows)
+	f, chunks, digests := convertVerifying(t, in, 64)
+	defer f.Close()
+	if len(chunks) < 2 {
+		t.Skip("fixture did not produce multiple chunks")
+	}
+
+	// Break every chunk, not just the first.
+	for _, ch := range chunks {
+		flipByte(t, in, ch.ByteOffset)
+	}
+
+	diffs, err := VerifySourceReads(context.Background(), in, f, chunks, digests, nil)
+	if err != nil {
+		t.Fatalf("VerifySourceReads: %v", err)
+	}
+	last := diffs[len(diffs)-1]
+	want := fmt.Sprintf("%d of ", len(chunks))
+	if !strings.HasPrefix(last, want) {
+		t.Errorf("total = %q, want it to start %q (every chunk was broken)", last, want)
+	}
+	if named := len(diffs) - 1; named > maxReadDiffsNamed {
+		t.Errorf("named %d ranges, want at most %d", named, maxReadDiffsNamed)
 	}
 }

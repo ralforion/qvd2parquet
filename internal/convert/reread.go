@@ -10,10 +10,11 @@ import (
 	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
 
-// maxReadDiffsReported bounds the list of differing ranges. A read that went
-// wrong once is the thing to act on; a thousand of them say nothing more than
-// the first three do.
-const maxReadDiffsReported = 3
+// maxReadDiffsNamed bounds how many differing ranges are named. The count of
+// them is not bounded: one range out of thousands is a flip, and most of them
+// is something systematic, and that difference is worth more than the fourth
+// offset.
+const maxReadDiffsNamed = 3
 
 // VerifySourceReads reads every byte the conversion read a second time and
 // compares it against a digest taken as the conversion read it.
@@ -50,7 +51,7 @@ func VerifySourceReads(ctx context.Context, path string, f *qvd.File,
 		return nil, fmt.Errorf("verify %s: the file was replaced while it was being converted", path)
 	}
 
-	var diffs []string
+	var diffs readDiffs
 	buf := make([]byte, 1<<20)
 
 	// Symbol tables first: a wrong byte there is worth more than a wrong
@@ -63,11 +64,11 @@ func VerifySourceReads(ctx context.Context, path string, f *qvd.File,
 		if err != nil {
 			return nil, fmt.Errorf("verify %s: %w", path, err)
 		}
-		if sum != f.SymbolDigests[i] {
-			diffs = appendDiff(diffs, fmt.Sprintf(
+		diffs.check(sum == f.SymbolDigests[i], func() string {
+			return fmt.Sprintf(
 				"the symbol table of column %q, %d bytes at offset %d, read differently the second time",
-				f.Columns[i].Name, r.Length, r.Offset))
-		}
+				f.Columns[i].Name, r.Length, r.Offset)
+		})
 	}
 
 	for _, ch := range chunks {
@@ -79,27 +80,50 @@ func VerifySourceReads(ctx context.Context, path string, f *qvd.File,
 		if err != nil {
 			return nil, fmt.Errorf("verify %s: %w", path, err)
 		}
-		if sum != chunkDigests[ch.Index] {
-			diffs = appendDiff(diffs, fmt.Sprintf(
+		diffs.check(sum == chunkDigests[ch.Index], func() string {
+			return fmt.Sprintf(
 				"records for rows %d..%d, %d bytes at offset %d, read differently the second time",
-				ch.StartRow, ch.StartRow+int64(ch.RowCount), size, ch.ByteOffset))
-		}
+				ch.StartRow, ch.StartRow+int64(ch.RowCount), size, ch.ByteOffset)
+		})
 		if progress != nil {
 			progress(ch.StartRow + int64(ch.RowCount))
 		}
 	}
-	return diffs, nil
+	return diffs.report(), nil
 }
 
-// appendDiff keeps the first few differences and counts the rest.
-func appendDiff(diffs []string, d string) []string {
-	if len(diffs) < maxReadDiffsReported {
-		return append(diffs, d)
+// readDiffs collects the ranges that did not read the same way twice.
+//
+// The scan does not stop at the first one. The bytes have already been read
+// once by the conversion, so finishing the check costs a fraction of what has
+// already been spent, and the total is the most useful thing it can report:
+// one differing range out of thousands is a flip, and most of them differing
+// is something systematic. Those call for different questions.
+type readDiffs struct {
+	named   []string
+	differ  int
+	checked int
+}
+
+func (d *readDiffs) check(same bool, describe func() string) {
+	d.checked++
+	if same {
+		return
 	}
-	if len(diffs) == maxReadDiffsReported {
-		return append(diffs, "and more ranges after these")
+	d.differ++
+	if len(d.named) < maxReadDiffsNamed {
+		d.named = append(d.named, describe())
 	}
-	return diffs
+}
+
+// report is empty when every range read the same way twice.
+func (d *readDiffs) report() []string {
+	if d.differ == 0 {
+		return nil
+	}
+	out := append([]string(nil), d.named...)
+	return append(out, fmt.Sprintf("%d of %d byte range(s) read differently in total",
+		d.differ, d.checked))
 }
 
 // digestRange hashes length bytes at off.

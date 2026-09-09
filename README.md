@@ -1523,8 +1523,12 @@ the digests. What it reports is a byte range, not a column:
 FAIL X.qvd: quality gate failure: X.qvd did not read the same way twice, so
 nothing read from it can be trusted and no output was kept: records for rows
 1966080..2031616, 3670016 bytes at offset 154201653, read differently the
-second time
+second time; 1 of 39147 byte range(s) read differently in total
 ```
+
+The scan does not stop at the first difference. One differing range out of
+thousands is a flip; most of them differing is something systematic. The first
+three ranges are named, and the count is not capped.
 
 An offset is what anyone chasing the layer below can act on, and comparing
 bytes rather than decoded values means the second pass is a plain sequential

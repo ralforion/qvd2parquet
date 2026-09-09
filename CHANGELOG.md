@@ -29,7 +29,15 @@ restarts from it.
   anyone chasing the layer below can act on:
 
       records for rows 1966080..2031616, 3670016 bytes at offset 154201653,
-      read differently the second time
+      read differently the second time; 1 of 39147 byte range(s) read
+      differently in total
+
+  The scan does not stop at the first difference. The bytes have already been
+  read once by the conversion, so finishing costs a fraction of what has been
+  spent, and the total is the most useful thing it can report: one differing
+  range out of thousands is a flip, most of them differing is something
+  systematic, and those call for different questions. The first three ranges
+  are named; the count is not capped.
 
   A difference fails the conversion outright rather than reporting a gate
   result, and no output is kept: there is no way to tell which of two
