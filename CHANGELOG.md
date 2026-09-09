@@ -49,6 +49,21 @@ restarts from it.
       warning: SAP\AFRU.qvd has a malformed XML header:
       dropped 1 byte(s) XML does not allow in a tag: 0x7F on line 2147
 
+- A header that fails to read or parse is now read once more from a new handle
+  before the file is given up on. A header that will not parse once and does a
+  moment later, over a file whose bytes have not changed, was not read
+  correctly the first time, and in a batch running for hours over hundreds of
+  files that is the difference between a warning on one file and losing that
+  file's conversion. The retry is bounded at one and is never silent:
+
+      warning: SAP\AFRU.qvd: the first read of the header did not parse
+      (XML syntax error on line 2147: expected attribute name in element);
+      a second read returned different bytes (312845 then 312845, first
+      difference at offset 61034, line 2147) and parsed
+
+  A file read differently on two consecutive attempts deserves more attention
+  than the conversion the retry rescued, so the offset is named.
+
 - A header that cannot be repaired is now read a second time, from a new
   handle, and the error says whether the two reads agree. A header that will
   not parse is either written wrong or read wrong, and those call for opposite

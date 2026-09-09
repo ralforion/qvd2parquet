@@ -41,6 +41,10 @@ type TableHeader struct {
 	// anyone gets. See ParseHeaderXML.
 	Repaired   bool   `xml:"-"`
 	RepairNote string `xml:"-"`
+
+	// ReadNote is set when the header only parsed on a second read of the same
+	// file. See readHeaderRetrying.
+	ReadNote string `xml:"-"`
 }
 
 // FieldHeader mirrors one QvdFieldHeader element.

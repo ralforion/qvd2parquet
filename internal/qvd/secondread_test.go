@@ -31,3 +31,31 @@ func TestSecondReadNoteOnAnUnreadablePath(t *testing.T) {
 		t.Errorf("SecondReadNote = %q, want empty for a path that cannot be reopened", got)
 	}
 }
+
+func TestDescribeDiff(t *testing.T) {
+	if got := describeDiff([]byte("abc"), []byte("abc")); got != "returned the same bytes" {
+		t.Errorf("describeDiff = %q", got)
+	}
+	got := describeDiff([]byte("line1\nab"), []byte("line1\naX"))
+	for _, want := range []string{"different bytes", "offset 7", "line 2"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("describeDiff = %q, want it to mention %q", got, want)
+		}
+	}
+}
+
+func TestReadNoteEmptyForAGoodHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ok.qvd")
+	raw := append([]byte(sampleHeader), 0x00)
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+	if f.Header.ReadNote != "" {
+		t.Errorf("ReadNote = %q, want empty when the first read parsed", f.Header.ReadNote)
+	}
+}

@@ -1,6 +1,7 @@
 package qvd
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -38,18 +39,10 @@ func Open(path string) (*File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	raw, end, err := ReadHeaderBytes(f)
+	h, end, readNote, err := readHeaderRetrying(path, f)
 	if err != nil {
 		f.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	h, err := ParseHeaderXML(raw)
-	if err != nil {
-		f.Close()
-		// Say whether the bytes just parsed are the bytes on disk. Without
-		// that, a header failure looks the same whether the file is damaged
-		// or this process read it wrong.
-		return nil, fmt.Errorf("%s: %w%s", path, err, SecondReadNote(path, raw))
 	}
 	if err := h.Validate(); err != nil {
 		f.Close()
@@ -66,7 +59,65 @@ func Open(path string) (*File, error) {
 		Profiles:       make([]*ColumnProfile, len(h.Fields)),
 		f:              f,
 	}
+	h.ReadNote = readNote
 	return qf, nil
+}
+
+// readHeaderRetrying reads and parses the header, and on any failure reads it
+// once more from a new handle before giving up.
+//
+// A header that will not read or parse once and does both a moment later, over
+// a file whose bytes have not changed, was not read correctly the first time.
+// Nothing the caller can do about that is better than trying again, and in a
+// batch that runs for hours over hundreds of files it is the difference
+// between a warning on one file and losing that file's whole conversion.
+//
+// The retry is bounded at one, and it is not silent: a second read that
+// disagrees with the first is reported, with the offset it disagrees at,
+// because a file being read differently on two consecutive attempts is worth
+// more attention than the conversion it rescued.
+func readHeaderRetrying(path string, f *os.File) (*TableHeader, int64, string, error) {
+	raw, end, err := ReadHeaderBytes(f)
+	var h *TableHeader
+	if err == nil {
+		h, err = ParseHeaderXML(raw)
+	}
+	if err == nil {
+		return h, end, "", nil
+	}
+
+	f2, oerr := os.Open(path)
+	if oerr != nil {
+		return nil, 0, "", err
+	}
+	defer f2.Close()
+	raw2, end2, err2 := ReadHeaderBytes(f2)
+	if err2 == nil {
+		h, err2 = ParseHeaderXML(raw2)
+	}
+	if err2 != nil {
+		// Both attempts failed. Report the first failure, since that is the
+		// one whose bytes were examined, and say whether the second read saw
+		// the same file: written wrong and read wrong call for opposite
+		// responses and look identical afterwards.
+		return nil, 0, "", fmt.Errorf("%w%s", err, SecondReadNote(path, raw))
+	}
+	return h, end2, fmt.Sprintf(
+		"the first read of the header did not parse (%v); a second read %s and parsed",
+		err, describeDiff(raw, raw2)), nil
+}
+
+// describeDiff says how two reads of the same header differ.
+func describeDiff(a, b []byte) string {
+	if bytes.Equal(a, b) {
+		return "returned the same bytes"
+	}
+	off := 0
+	for off < len(a) && off < len(b) && a[off] == b[off] {
+		off++
+	}
+	return fmt.Sprintf("returned different bytes (%d then %d, first difference at offset %d, line %d)",
+		len(a), len(b), off, lineAt(a, off))
 }
 
 // Close releases the underlying file handle.

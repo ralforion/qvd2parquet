@@ -79,6 +79,11 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	// Say so when the header was not well-formed XML. The repair recovers the
 	// names verbatim, but a file whose header Qlik did not write as valid XML
 	// is worth knowing about before its column names are trusted.
+	// A file whose header read differently on two consecutive attempts is
+	// worth more attention than the conversion the retry rescued.
+	if f.Header.ReadNote != "" {
+		logf("warning: %s: %s", inputPath, f.Header.ReadNote)
+	}
 	if f.Header.Repaired {
 		logf("warning: %s has a malformed XML header: %s", inputPath, f.Header.RepairNote)
 	}
