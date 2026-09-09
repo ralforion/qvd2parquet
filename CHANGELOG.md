@@ -13,6 +13,8 @@ restarts from it.
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-09-09
+
 ### Added
 
 - A read that reports more bytes than the buffer it was given is now refused
@@ -1050,7 +1052,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.6.1...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.7.0...HEAD
+[2.7.0]: https://github.com/ralforion/qvd2parquet/compare/v2.6.1...v2.7.0
 [2.6.1]: https://github.com/ralforion/qvd2parquet/compare/v2.6.0...v2.6.1
 [2.6.0]: https://github.com/ralforion/qvd2parquet/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/ralforion/qvd2parquet/compare/v2.4.0...v2.5.0
