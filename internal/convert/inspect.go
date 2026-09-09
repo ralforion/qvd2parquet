@@ -168,6 +168,11 @@ func (r *InspectReport) Write(w io.Writer) error {
 	if line := r.Renames.Line(maxNamedFields); line != "" {
 		fmt.Fprintf(w, "Field regex     %s\n", line)
 	}
+	if r.Schema != nil {
+		if line := duplicateRenameLine(r.Schema.Duplicates, maxNamedFields); line != "" {
+			fmt.Fprintf(w, "Duplicate names %s\n", line)
+		}
+	}
 	switch {
 	case r.EncodingErr != nil:
 		fmt.Fprintf(w, "Encoding        cannot be applied: %v\n", r.EncodingErr)
