@@ -271,7 +271,7 @@ func TestRunIsByteIdenticalAcrossWorkerCounts(t *testing.T) {
 
 func TestQualityGateModes(t *testing.T) {
 	in := buildFixture(t, sampleTable(1000))
-	for _, mode := range []QualityMode{QualityBasic, QualityNumeric, QualityFull} {
+	for _, mode := range []QualityMode{QualityBasic, QualityNumeric, QualityFull, QualityReread} {
 		t.Run(mode.String(), func(t *testing.T) {
 			dir := t.TempDir()
 			out := filepath.Join(dir, "out.parquet")

@@ -178,3 +178,40 @@ func flipByte(t *testing.T, path string, off int64) {
 		t.Fatal(err)
 	}
 }
+
+// Every mode from full up compares value fingerprints. This was an equality
+// check against full, so reread quietly graded like numeric: it collected the
+// fingerprints and never looked at them.
+func TestFingerprintsAreComparedFromFullUpwards(t *testing.T) {
+	in := buildFixture(t, sampleTable(300))
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out.parquet")
+	opts := testOptions()
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, mode := range []QualityMode{QualityFull, QualityReread} {
+		t.Run(mode.String(), func(t *testing.T) {
+			qf, rs, metrics := reconvert(t, in, &opts)
+			defer qf.Close()
+
+			// Everything else about the source still matches the Parquet, so
+			// only a fingerprint comparison can catch this.
+			metrics.Columns[0].fp.add([32]byte{1, 2, 3})
+
+			o := opts
+			o.Quality = mode
+			report, err := RunQualityGate(context.Background(), in, out, out, rs, metrics, &o, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Passed {
+				t.Fatalf("%s did not compare value fingerprints", mode)
+			}
+			if !strings.Contains(strings.Join(report.Columns[0].Errors, " "), "fingerprint differs") {
+				t.Errorf("errors = %v", report.Columns[0].Errors)
+			}
+		})
+	}
+}
