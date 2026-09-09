@@ -13,6 +13,8 @@ restarts from it.
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-09-09
+
 ### Fixed
 
 - A QVD whose XML header does not parse is no longer given up on at the first
@@ -968,7 +970,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.6.1...HEAD
+[2.6.1]: https://github.com/ralforion/qvd2parquet/compare/v2.6.0...v2.6.1
 [2.6.0]: https://github.com/ralforion/qvd2parquet/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/ralforion/qvd2parquet/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/ralforion/qvd2parquet/compare/v2.3.2...v2.4.0
