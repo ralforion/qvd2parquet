@@ -219,7 +219,7 @@ func readParquetMetrics(ctx context.Context, path string, rs *ResolvedSchema, op
 
 	// Progress is aggregated across workers, so it counts the whole gate
 	// rather than whichever worker happens to report.
-	hash := opts.Quality == QualityFull
+	hash := opts.Quality >= QualityFull
 	gateStart := time.Now()
 	var progMu sync.Mutex
 	var seen, nextProgress int64 = 0, opts.ProgressEvery

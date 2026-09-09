@@ -13,6 +13,32 @@ restarts from it.
 
 ## [Unreleased]
 
+### Added
+
+- `--quality-gate reread` decodes the QVD a second time, from scratch, and
+  compares the two passes. Every other mode validates the written Parquet
+  against metrics collected from the values the converter produced, and none of
+  them can question those values: a record byte read wrong yields a different
+  symbol index, a different symbol index yields a value that is entirely well
+  formed, and the Parquet faithfully contains it. There is no syntax to violate
+  and nothing downstream to notice. This closes the gap left by 2.6.1, which
+  verified only the header.
+
+  The second pass reopens the file, re-reads the symbol tables and decodes
+  every record again with the schema the first pass resolved, then compares
+  exactly: null counts, non-null counts, value fingerprints, sums and extrema,
+  to the digit. Holding the schema fixed is deliberate, since the question is
+  whether the same bytes read the same way twice.
+
+  A difference fails the conversion outright rather than reporting a gate
+  result, and no output is kept. There is no way to tell which of two
+  disagreeing passes was right, so there is no version of the file worth
+  writing.
+
+  It costs a second full pass over the source, so a conversion takes roughly
+  twice as long. The default is unchanged at `full`.
+
+
 ## [2.6.1] - 2026-09-09
 
 ### Fixed

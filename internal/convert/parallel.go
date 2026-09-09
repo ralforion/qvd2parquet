@@ -346,7 +346,7 @@ func (c *Converter) newWorker() *worker {
 		batch:  c.NewBatch(mem, c.BatchRows),
 		raw:    make([]byte, c.BatchRows*c.File.RecordByteSize),
 		symIdx: make([]int64, len(c.File.Columns)),
-		hash:   c.Options.Quality == QualityFull,
+		hash:   c.Options.Quality >= QualityFull,
 		mem:    mem,
 	}
 	if own := openWorkerFile(c.File); own != nil {

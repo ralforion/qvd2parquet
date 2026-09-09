@@ -189,6 +189,10 @@ const (
 	// the fingerprints are what catch a value that survived the type policy
 	// but not the round trip.
 	QualityFull
+	// QualityReread adds a second, independent pass over the QVD, compared
+	// against the first. Everything else validates the written Parquet against
+	// what the conversion believed it read; only this questions that belief.
+	QualityReread
 )
 
 // ParseQualityMode maps the --quality-gate flag value.
@@ -202,12 +206,14 @@ func ParseQualityMode(s string) (QualityMode, error) {
 		return QualityNumeric, nil
 	case "full":
 		return QualityFull, nil
+	case "reread":
+		return QualityReread, nil
 	}
-	return 0, fmt.Errorf("invalid --quality-gate %q: want none|basic|numeric|full", s)
+	return 0, fmt.Errorf("invalid --quality-gate %q: want none|basic|numeric|full|reread", s)
 }
 
 func (q QualityMode) String() string {
-	return [...]string{"none", "basic", "numeric", "full"}[q]
+	return [...]string{"none", "basic", "numeric", "full", "reread"}[q]
 }
 
 // Options is the resolved conversion configuration.

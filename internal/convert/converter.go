@@ -275,6 +275,29 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 
 	// Validate the temporary file, so a failed gate never leaves a
 	// final-looking output in place.
+	// The source is re-read before the Parquet is checked against it, because
+	// checking the output against a reading of the input that was itself wrong
+	// proves nothing. If the two reads disagree there is no version of this
+	// file worth writing, so the conversion fails rather than reporting a gate
+	// result computed from bytes nobody can vouch for.
+	if opts.Quality >= QualityReread {
+		rereadStart := time.Now()
+		prog := newProgressETA(f.NoOfRecords, rereadStart)
+		again, err := RereadSourceMetrics(ctx, inputPath, rs, opts, func(rows int64) {
+			logf("rereading source %s", prog.Report(rows, time.Now()))
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		if diffs := CompareSourceReads(metrics, again); len(diffs) > 0 {
+			return nil, nil, fmt.Errorf("%w: %s read differently on two passes, so neither read "+
+				"can be trusted and no output was kept: %s",
+				ErrQualityGate, inputPath, strings.Join(diffs, "; "))
+		}
+		logf("reread source in %s: two passes agree",
+			time.Since(rereadStart).Round(time.Millisecond))
+	}
+
 	var report *QualityReport
 	if opts.Quality != QualityNone {
 		gateStart := time.Now()

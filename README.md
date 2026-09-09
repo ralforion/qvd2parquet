@@ -143,7 +143,7 @@ qvd2parquet --catalog-scan --catalog-out catalog.parquet <file-or-directory>...
   -timezone none             none|Local|UTC|IANA timezone name
   -schema path.json          Explicit schema override
   -schema-report path.json   Write the inferred schema/profile report
-  -quality-gate full         Validation mode: none|basic|numeric|full
+  -quality-gate full         Validation mode: none|basic|numeric|full|reread
   -quality-report path.json  Write the post-conversion quality report
   -quality-tolerance 1e-9    Relative tolerance for floating-point quality checks
   -quality-abs-tolerance 0   Absolute tolerance for floating-point quality checks
@@ -1506,6 +1506,28 @@ final-looking output behind.
 | `basic` | the file opens; row count, column names, and types match the resolved schema; per-column null counts match |
 | `numeric` | everything in `basic` plus sum, min, max (and sum of squares for floats) per numeric, decimal, date, timestamp and time column |
 | `full` (default) | everything in `numeric` plus order-independent `sha256` value fingerprints per column |
+| `reread` | everything in `full` plus a second, independent pass over the QVD, compared against the first |
+
+Every mode but `reread` validates the written Parquet against metrics collected
+from the values the converter produced, and none of them can question those
+values. A record byte read wrong yields a different symbol index, a different
+symbol index yields a value that is entirely well formed, and the Parquet then
+faithfully contains it: there is no syntax to violate and nothing downstream to
+notice. Only reading the source a second time can tell.
+
+`reread` opens the QVD again, re-reads the symbol tables, and decodes every
+record a second time with the schema the first pass resolved, then compares the
+two exactly -- null counts, non-null counts, fingerprints, sums and extrema, to
+the digit. The schema is held fixed on purpose: the question is whether the same
+bytes read the same way twice.
+
+Any difference fails the conversion outright rather than reporting a gate
+result, and no output is kept. There is no way to tell which of two disagreeing
+passes was right, so there is no version of the file worth writing.
+
+It costs a second full pass over the source, so a conversion takes roughly twice
+as long. That is the price of the only check that covers the read itself.
+
 
 Integer, decimal and date/time aggregates are compared exactly — decimal sums
 use scaled-integer arithmetic, with no floating-point tolerance. Floating-point
