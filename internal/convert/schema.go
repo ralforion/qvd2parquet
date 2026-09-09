@@ -90,6 +90,14 @@ type ResolvedColumn struct {
 	// display string can be compared against the written value.
 	DecSep  string
 	ThouSep string
+	// note formats the schema-note clause that names this column, given the
+	// name it is finally written under. It is set only for a generated dual
+	// companion, whose name is proposed while the type is resolved but can
+	// still be changed by a collision. Holding the clause as a formatter,
+	// rather than rewriting a name back out of finished prose, is what keeps
+	// the note honest: it travels into the schema log, --inspect,
+	// --schema-report and the catalog.
+	note func(name string) string
 }
 
 // ResolvedSchema is the full output schema plus the reasoning behind it.
@@ -335,25 +343,21 @@ func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*Resol
 		}
 		rs.Notes[noteOf[idx]] += n
 	}
-	for _, d := range dups {
-		n, ok := noteOf[d.SourceIndex]
-		if !ok {
+	// A generated column names itself only now, for the same reason: it is
+	// proposed as "${name}__text" while the type is resolved, and a collision
+	// can still send it elsewhere.
+	for i, c := range rs.Columns {
+		if c.note == nil {
 			continue
 		}
-		// A generated companion was announced by name while the type was
-		// being resolved, before any collision was known. Correct that
-		// mention rather than appending a second name and leaving the note
-		// to contradict itself: the note travels into the schema log,
-		// --inspect, --schema-report and the catalog.
-		if firstOf[d.SourceIndex] != d.col {
-			stale, final := fmt.Sprintf("%q", d.From), fmt.Sprintf("%q", d.To)
-			if fixed := strings.Replace(rs.Notes[n], stale, final, 1); fixed != rs.Notes[n] {
-				rs.Notes[n] = fixed
-			} else {
-				rs.Notes[n] += fmt.Sprintf("; display side written to %s", final)
-			}
+		if n, ok := noteOf[c.SourceIndex]; ok {
+			rs.Notes[n] += "; " + c.note(rs.Columns[i].Name)
 		}
-		rs.Notes[n] += fmt.Sprintf("; the name %q was already taken by an earlier column", d.From)
+	}
+	for _, d := range dups {
+		if n, ok := noteOf[d.SourceIndex]; ok {
+			rs.Notes[n] += fmt.Sprintf("; the name %q was already taken by an earlier column", d.From)
+		}
 	}
 
 	fields := make([]arrow.Field, len(rs.Columns))
@@ -382,10 +386,6 @@ type DuplicateRename struct {
 	SourceIndex int    `json:"sourceIndex"`
 	From        string `json:"from"`
 	To          string `json:"to"`
-	// col is the renamed column's position in the resolved schema, which the
-	// schema notes need to tell a source column's own name from a generated
-	// companion's.
-	col int
 }
 
 // resolveNameCollisions makes the output column names unique. Two columns can
@@ -438,7 +438,7 @@ func resolveNameCollisions(cols []ResolvedColumn, policy DuplicateNamePolicy) ([
 		taken[name] = true
 		seen[name] = i
 		c.Name = name
-		renames = append(renames, DuplicateRename{SourceIndex: c.SourceIndex, From: from, To: name, col: i})
+		renames = append(renames, DuplicateRename{SourceIndex: c.SourceIndex, From: from, To: name})
 	}
 	return renames, nil
 }
@@ -612,16 +612,17 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 	// is a rendered date -- but only when the number is actually written as a
 	// date type, since beside a bare float64 the reader has no way to know the
 	// value is a date at all.
-	dualNote := ""
+	var cl DualClassification
 	if effectiveDual == DualAuto {
 		effectiveDual = DualNumeric
 		if dual {
-			// Name the column that will actually be generated: with
-			// --field-regex the output name differs from the source field's.
-			cl := ClassifyDual(col, syms, &numeric, opts.Location)
-			dualNote = cl.Note(col.Name, numeric.Name+"__text")
+			cl = ClassifyDual(col, syms, &numeric, opts.Location)
 			if cl.Kind == DualInformative {
 				effectiveDual = DualColumns
+			} else if line := cl.Note(col.Name, ""); line != "" {
+				// No companion column is written, so this clause names
+				// nothing that a collision could still move.
+				note += "; " + line
 			}
 		}
 	}
@@ -636,14 +637,14 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 			Nullable:     true,
 			Strategy:     StrategyDualText,
 		}
-		out = append(out, text)
-		if dualNote != "" {
-			note += "; " + dualNote
-		} else {
-			note += fmt.Sprintf("; display side written to %q", text.Name)
+		// The clause naming it is deferred until its name is settled.
+		text.note = func(name string) string {
+			if line := cl.Note(col.Name, name); line != "" {
+				return line
+			}
+			return fmt.Sprintf("display side written to %q", name)
 		}
-	} else if dualNote != "" {
-		note += "; " + dualNote
+		out = append(out, text)
 	}
 	return out, note, nil
 }

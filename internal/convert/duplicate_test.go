@@ -235,3 +235,52 @@ func TestDuplicateNamesSuffixCorrectsTheDualCompanionNote(t *testing.T) {
 		t.Errorf("the note still announces the name the companion lost: %s", note)
 	}
 }
+
+// The companion clause carries an example display string, and that example can
+// be the very name the companion is losing. Rewriting the name out of the
+// finished note hit the example instead of the column mention, corrupting the
+// evidence and still naming the wrong column.
+func TestDuplicateNamesSuffixNoteSurvivesAnExampleThatLooksLikeTheName(t *testing.T) {
+	tbl := qvdtest.Table{Name: "T", Fields: []qvdtest.Field{
+		// "Qty__text" is informative text beside 1, and is also the name the
+		// companion column would take.
+		{Name: "Qty", Type: "INTEGER", Rows: []int{0},
+			Symbols: []qvd.Symbol{qvdtest.DualInt(1, "Qty__text")}},
+		{Name: "Qty__text", Type: "ASCII", Rows: []int{0},
+			Symbols: []qvd.Symbol{qvdtest.Str("collides")}},
+	}}
+	in := buildFixture(t, tbl)
+
+	f, err := qvd.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := f.ReadSymbols(qvd.UnknownSymbolError); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.DuplicateNames = DuplicateSuffix
+	rs, err := ResolveSchema(f, &opts, nil)
+	if err != nil {
+		t.Fatalf("ResolveSchema: %v", err)
+	}
+
+	note := rs.Notes[0]
+	// The example is evidence and must be quoted as it stands in the file.
+	if !strings.Contains(note, `(e.g. "Qty__text" beside 1)`) {
+		t.Errorf("the example display string was altered: %s", note)
+	}
+	if !strings.Contains(note, `kept in "Qty__text_2"`) {
+		t.Errorf("the note should name the column actually written: %s", note)
+	}
+	// And the column has to be there, holding the display string.
+	out := filepath.Join(t.TempDir(), "o.parquet")
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	rows := readParquetRows(t, out)
+	if len(rows) != 1 || rows[0]["Qty__text"] != "collides" || rows[0]["Qty__text_2"] != "Qty__text" {
+		t.Errorf("rows = %v, want Qty__text=collides and Qty__text_2=Qty__text", rows)
+	}
+}
