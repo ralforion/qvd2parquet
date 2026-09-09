@@ -2,6 +2,7 @@ package convert
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -198,7 +199,11 @@ func (c *Converter) Run(ctx context.Context, sink RecordSink, progress ProgressF
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			w := c.newWorker()
+			w, err := c.newWorker()
+			if err != nil {
+				fail(err)
+				return
+			}
 			defer w.release()
 			for ch := range work {
 				if ctx.Err() != nil {
@@ -322,12 +327,29 @@ type worker struct {
 // time. It is a variable so a test can supply a reader that returns something
 // else, which is the situation the check exists for and the one thing a real
 // file cannot be made to do on demand.
-var openVerifyReader = func(qf *qvd.File) (io.ReaderAt, func()) {
-	f := openWorkerFile(qf)
-	if f == nil {
-		return nil, nil
+// It fails rather than falling back. A decode worker that cannot get its own
+// handle shares the File's and loses only parallelism, but a verifier that
+// cannot get one has nothing to compare against, and continuing would turn the
+// mode into a no-op that reports success. Handle exhaustion in a long batch is
+// exactly where that would happen, and exactly where the check is wanted.
+var openVerifyReader = func(qf *qvd.File) (io.ReaderAt, func(), error) {
+	f, err := os.Open(qf.Path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: open %s to verify reads: %v", ErrInput, qf.Path, err)
 	}
-	return f, func() { f.Close() }
+	mine, errMine := f.Stat()
+	orig, errOrig := qf.FileHandle().Stat()
+	if errMine != nil || errOrig != nil {
+		f.Close()
+		return nil, nil, fmt.Errorf("%w: verify reads of %s: %v", ErrInput, qf.Path,
+			cmp.Or(errMine, errOrig))
+	}
+	if !os.SameFile(mine, orig) {
+		f.Close()
+		return nil, nil, fmt.Errorf("%w: verify reads of %s: the file was replaced during conversion",
+			ErrInput, qf.Path)
+	}
+	return f, func() { f.Close() }, nil
 }
 
 // openWorkerFile opens a private handle on the QVD for one decode worker. It
@@ -357,7 +379,7 @@ func openWorkerFile(qf *qvd.File) *os.File {
 	return f
 }
 
-func (c *Converter) newWorker() *worker {
+func (c *Converter) newWorker() (*worker, error) {
 	mem := memory.NewGoAllocator()
 	w := &worker{
 		c:      c,
@@ -374,10 +396,15 @@ func (c *Converter) newWorker() *worker {
 	if c.File.VerifyReads {
 		// A private reader and buffer per worker, so the check costs one more
 		// chunk-sized allocation and no contention.
-		w.verify, w.verifyClose = openVerifyReader(c.File)
+		verify, closeFn, err := openVerifyReader(c.File)
+		if err != nil {
+			w.release()
+			return nil, err
+		}
+		w.verify, w.verifyClose = verify, closeFn
 		w.verifyRaw = make([]byte, c.BatchRows*c.File.RecordByteSize)
 	}
-	return w
+	return w, nil
 }
 
 func (w *worker) release() {

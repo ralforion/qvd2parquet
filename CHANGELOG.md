@@ -36,6 +36,13 @@ restarts from it.
   agree costs the chunks up to the first bad one, not the whole conversion. No
   output is kept either way.
 
+  A verifier that cannot be opened fails the conversion rather than skipping
+  the check. A decode worker that cannot get its own handle shares the file's
+  and loses only parallelism, but a verifier without one has nothing to compare
+  against, and carrying on would make the mode a no-op that reports success.
+  Handle exhaustion in a long batch is exactly where that would happen, and
+  exactly where the check is wanted.
+
   Symbol tables are checked by streaming digest, so a table of any size costs
   one buffer. Record chunks are compared byte for byte, which is what names the
   offset; that costs one extra chunk-sized buffer and one extra file handle per

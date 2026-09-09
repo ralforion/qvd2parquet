@@ -310,7 +310,10 @@ func decodeWindows(ctx context.Context, f *qvd.File, sub *ResolvedSchema, opts *
 	if err != nil {
 		return nil, 0, err
 	}
-	w := conv.newWorker()
+	w, err := conv.newWorker()
+	if err != nil {
+		return nil, 0, err
+	}
 	defer w.release()
 
 	var records []arrow.Record

@@ -64,9 +64,12 @@ func TestVerifyingRunStopsOnAChangedRecord(t *testing.T) {
 	in := verifyFixture(t, rows)
 
 	restore := openVerifyReader
-	openVerifyReader = func(qf *qvd.File) (io.ReaderAt, func()) {
-		r, closeFn := restore(qf)
-		return flipAt{r: r, at: qf.RecordStart + 3}, closeFn
+	openVerifyReader = func(qf *qvd.File) (io.ReaderAt, func(), error) {
+		r, closeFn, err := restore(qf)
+		if err != nil {
+			return nil, nil, err
+		}
+		return flipAt{r: r, at: qf.RecordStart + 3}, closeFn, nil
 	}
 	defer func() { openVerifyReader = restore }()
 
@@ -95,9 +98,12 @@ func TestVerifyingRunStopsEarly(t *testing.T) {
 
 	var chunksRead int64
 	restore := openVerifyReader
-	openVerifyReader = func(qf *qvd.File) (io.ReaderAt, func()) {
-		r, closeFn := restore(qf)
-		return countingFlip{r: r, at: qf.RecordStart + 3, n: &chunksRead}, closeFn
+	openVerifyReader = func(qf *qvd.File) (io.ReaderAt, func(), error) {
+		r, closeFn, err := restore(qf)
+		if err != nil {
+			return nil, nil, err
+		}
+		return countingFlip{r: r, at: qf.RecordStart + 3, n: &chunksRead}, closeFn, nil
 	}
 	defer func() { openVerifyReader = restore }()
 
@@ -153,4 +159,25 @@ func (f countingFlip) ReadAt(p []byte, off int64) (int, error) {
 		p[i] ^= 0x01
 	}
 	return n, err
+}
+
+// A verifier that cannot be opened must fail the conversion, not quietly skip
+// the check. Handle exhaustion in a long batch is exactly where this would
+// happen, and exactly where the check is wanted.
+func TestVerifyingRunFailsWhenTheVerifierCannotOpen(t *testing.T) {
+	in := verifyFixture(t, []int{0, 1, 2, 1})
+
+	restore := openVerifyReader
+	openVerifyReader = func(qf *qvd.File) (io.ReaderAt, func(), error) {
+		return nil, nil, errors.New("too many open files")
+	}
+	defer func() { openVerifyReader = restore }()
+
+	err := runVerifying(t, in, 0)
+	if err == nil {
+		t.Fatal("the conversion succeeded with no verification performed")
+	}
+	if !strings.Contains(err.Error(), "too many open files") {
+		t.Errorf("error = %v, want the opener's failure", err)
+	}
 }
