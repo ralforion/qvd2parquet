@@ -32,6 +32,10 @@ type TableHeader struct {
 	Offset         int64         `xml:"Offset"`
 	Length         int64         `xml:"Length"`
 	Fields         []FieldHeader `xml:"Fields>QvdFieldHeader"`
+
+	// Repaired records that the header was not well-formed XML and had to be
+	// escaped before it would parse. See ParseHeaderXML.
+	Repaired bool `xml:"-"`
 }
 
 // FieldHeader mirrors one QvdFieldHeader element.
@@ -85,14 +89,39 @@ func ReadHeader(r io.Reader) (*TableHeader, int64, error) {
 }
 
 // ParseHeaderXML unmarshals the raw header bytes (without the 0x00 terminator).
+//
+// A header that is not well-formed XML is escaped once and reparsed rather
+// than rejected, because Qlik writes its own string values into the header
+// without escaping them: one SAP field name along the lines of
+// `Ist <Soll (Abw.)` otherwise costs the whole file. Headers that parse are
+// never rewritten, so the repair cannot change what a readable QVD decodes to.
 func ParseHeaderXML(raw []byte) (*TableHeader, error) {
 	// Some writers emit a UTF-8 BOM before the declaration.
 	raw = trimBOM(raw)
+	h, err := decodeHeader(raw)
+	if err == nil {
+		return h, nil
+	}
+	var se *xml.SyntaxError
+	if !errors.As(err, &se) {
+		return nil, fmt.Errorf("parse QVD XML header: %w", err)
+	}
+	if repaired := escapeStrayMarkup(raw); !bytes.Equal(repaired, raw) {
+		if h, err2 := decodeHeader(repaired); err2 == nil {
+			h.Repaired = true
+			return h, nil
+		}
+	}
+	return nil, fmt.Errorf("parse QVD XML header: %w%s", err, headerLineContext(raw, se.Line))
+}
+
+// decodeHeader unmarshals one candidate header body.
+func decodeHeader(raw []byte) (*TableHeader, error) {
 	var h TableHeader
 	dec := xml.NewDecoder(bytes.NewReader(raw))
 	dec.Strict = false
 	if err := dec.Decode(&h); err != nil {
-		return nil, fmt.Errorf("parse QVD XML header: %w", err)
+		return nil, err
 	}
 	if h.XMLName.Local != "QvdTableHeader" {
 		return nil, fmt.Errorf("unexpected QVD header root element %q", h.XMLName.Local)

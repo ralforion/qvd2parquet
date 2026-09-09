@@ -13,6 +13,20 @@ restarts from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- QVD files whose XML header is not well-formed now convert instead of failing
+  with `parse QVD XML header: XML syntax error on line N`. Qlik copies field
+  names, comments and number formats into the header verbatim, without escaping
+  them, so a single SAP-derived name along the lines of `Ist <Soll (Abw.)` --
+  or a comment holding a bare `&` -- made the whole file unreadable. Such bytes
+  are now escaped and the header is parsed again, which recovers the name
+  exactly as it stands in the file. A header that already parses is never
+  rewritten, so no readable QVD changes what it converts to.
+
+  A header that no escaping can rescue now quotes the offending line in the
+  error, since a QVD cannot be opened as text to go and look at it.
+
 ## [2.6.0] - 2026-09-09
 
 ### Added

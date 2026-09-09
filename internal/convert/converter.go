@@ -76,6 +76,13 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	}
 	defer f.Close()
 
+	// Say so when the header was not well-formed XML. The escaping recovers
+	// the names verbatim, but a file whose header Qlik wrote unescaped is
+	// worth knowing about before its column names are trusted.
+	if f.Header.Repaired {
+		logf("warning: %s has a malformed XML header; it was escaped to read it", inputPath)
+	}
+
 	// Refuse an output that cannot be written before doing any work for it.
 	// The writer checks again when it creates the file, which is what
 	// actually guarantees it; this only means a missing --force costs
