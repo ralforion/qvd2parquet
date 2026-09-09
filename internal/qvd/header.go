@@ -40,10 +40,6 @@ type TableHeader struct {
 	// anyone gets. See ParseHeaderXML.
 	Repaired   bool   `xml:"-"`
 	RepairNote string `xml:"-"`
-
-	// ReadNote is set when the header only parsed on a second read of the same
-	// file. See readHeaderRetrying.
-	ReadNote string `xml:"-"`
 }
 
 // FieldHeader mirrors one QvdFieldHeader element.
@@ -148,19 +144,6 @@ func ParseHeaderXML(raw []byte) (*TableHeader, error) {
 		}
 	}
 	return nil, parseHeaderXMLError(raw, err)
-}
-
-// parseHeaderXMLStrict unmarshals the raw header without repairing malformed
-// XML. Open uses this before it accepts a repair, so a transient bad read is
-// retried from disk rather than silently mended as if the file itself held
-// those bytes.
-func parseHeaderXMLStrict(raw []byte) (*TableHeader, error) {
-	raw = trimBOM(raw)
-	h, err := decodeHeader(raw)
-	if err != nil {
-		return nil, parseHeaderXMLError(raw, err)
-	}
-	return h, nil
 }
 
 func parseHeaderXMLError(raw []byte, err error) error {

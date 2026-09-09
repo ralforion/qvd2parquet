@@ -7,30 +7,101 @@ import (
 	"testing"
 )
 
-// A header that will not parse is either written wrong or read wrong, and the
-// error has to say which, because nothing outside the process can tell them
-// apart afterwards.
-func TestOpenSaysWhetherASecondReadAgrees(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "bad.qvd")
-	// Malformed beyond any repair: no root element at all.
-	raw := append([]byte("<QvdTableHeader><Fields><FieldName>x</Fiel"), 0x00, 'd', 'a', 't', 'a')
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		t.Fatal(err)
+// A header is read twice and the reads must agree. Two reads that differ end
+// the file: there is no way to tell which was right, so converting on either
+// is a guess.
+func TestOpenRefusesWhenTwoReadsDiffer(t *testing.T) {
+	cases := map[string]string{
+		// Differs and both parse: valid XML either way, which is the case a
+		// failure-triggered retry could never see.
+		"both parse": strings.Replace(sampleHeader,
+			"<NoOfRecords>3</NoOfRecords>", "<NoOfRecords>4</NoOfRecords>", 1),
+		// Differs and only the second parses.
+		"second parses": sampleHeader,
 	}
-	_, err := Open(path)
-	if err == nil {
-		t.Fatal("want an error")
-	}
-	if !strings.Contains(err.Error(), "a second read returned the same") {
-		t.Errorf("error does not report the second read: %v", err)
+	for name, second := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "drift.qvd")
+			firstBytes := []byte(sampleHeader)
+			if name == "second parses" {
+				firstBytes = []byte(strings.Replace(sampleHeader,
+					"<NoOfSymbols>5</NoOfSymbols>", "<NoOfSymbols\x7f>5</NoOfSymbols>", 1))
+			}
+			if err := os.WriteFile(path, append(firstBytes, 0x00), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+
+			_, _, err = readHeaderVerified(path, f, func(p string) (*os.File, error) {
+				if err := os.WriteFile(p, append([]byte(second), 0x00), 0o644); err != nil {
+					return nil, err
+				}
+				return os.Open(p)
+			})
+			if err == nil {
+				t.Fatal("want an error when two reads of the header differ")
+			}
+			for _, want := range []string{"different bytes", "offset", "read wrong"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %v, want it to mention %q", err, want)
+				}
+			}
+		})
 	}
 }
 
-func TestOpenRepairsHeaderOnlyAfterASecondReadAgrees(t *testing.T) {
+// Reads that differ because the file was replaced are not reads that went
+// wrong, and must not be reported as though they were.
+func TestOpenRefusesAReplacedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "swapped.qvd")
+	if err := os.WriteFile(path, append([]byte(sampleHeader), 0x00), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	_, _, err = readHeaderVerified(path, f, func(p string) (*os.File, error) {
+		other := filepath.Join(dir, "other.qvd")
+		if err := os.WriteFile(other, append([]byte(sampleHeader), 0x00), 0o644); err != nil {
+			return nil, err
+		}
+		return os.Open(other) // a different file at the same moment
+	})
+	if err == nil || !strings.Contains(err.Error(), "replaced") {
+		t.Errorf("error = %v, want it to say the file was replaced", err)
+	}
+}
+
+func TestOpenAcceptsTwoAgreeingReads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ok.qvd")
+	if err := os.WriteFile(path, append([]byte(sampleHeader), 0x00), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+	if f.Header.TableName != "Sales" || f.Header.Repaired {
+		t.Errorf("TableName=%q repaired=%v", f.Header.TableName, f.Header.Repaired)
+	}
+}
+
+// A header that is consistently malformed is still mended, since both reads
+// agree that this is what the file holds.
+func TestOpenStillMendsAConsistentlyMalformedHeader(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad.qvd")
-	raw := append([]byte(strings.Replace(sampleHeader,
-		"<NoOfSymbols>5</NoOfSymbols>", "<NoOfSymbols\x7f>5</NoOfSymbols>", 1)), 0x00)
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
+	raw := strings.Replace(sampleHeader,
+		"<NoOfSymbols>5</NoOfSymbols>", "<NoOfSymbols\x7f>5</NoOfSymbols>", 1)
+	if err := os.WriteFile(path, append([]byte(raw), 0x00), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	f, err := Open(path)
@@ -39,171 +110,33 @@ func TestOpenRepairsHeaderOnlyAfterASecondReadAgrees(t *testing.T) {
 	}
 	defer f.Close()
 	if !f.Header.Repaired {
-		t.Fatal("Open should still repair a header whose bad bytes repeat")
+		t.Error("header was not marked as repaired")
 	}
-	if f.Header.ReadNote != "" {
-		t.Errorf("ReadNote = %q, want empty for stable malformed bytes", f.Header.ReadNote)
-	}
-}
-
-func TestOpenRetriesBeforeRepairingHeader(t *testing.T) {
-	earlyTerminator := append([]byte{}, sampleHeader[:strings.Index(sampleHeader, "<Fields>")]...)
-	earlyTerminator = append(earlyTerminator, 0x00)
-	earlyTerminator = append(earlyTerminator, sampleHeader[strings.Index(sampleHeader, "<Fields>"):]...)
-	earlyTerminator = append(earlyTerminator, 0x00)
-
-	cases := []struct {
-		name string
-		raw  []byte
-	}{
-		{
-			name: "control byte in tag",
-			raw: append([]byte(strings.Replace(sampleHeader,
-				"<NoOfSymbols>5</NoOfSymbols>", "<NoOfSymbols\x7f>5</NoOfSymbols>", 1)), 0x00),
-		},
-		{
-			name: "early terminator",
-			raw:  earlyTerminator,
-		},
-		{
-			name: "mangled end tag",
-			raw: append([]byte(strings.Replace(sampleHeader,
-				"</BitOffset>", "</B itOffset>", 1)), 0x00),
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "flaky.qvd")
-			if err := os.WriteFile(path, tc.raw, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			first, err := os.Open(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			correct := append([]byte(sampleHeader), 0x00)
-			h, _, trusted, note, err := readHeaderRetryingWithOpen(path, first,
-				func(p string) (*os.File, error) {
-					if err := os.WriteFile(path, correct, 0o644); err != nil {
-						return nil, err
-					}
-					return os.Open(p)
-				})
-			if err != nil {
-				first.Close()
-				t.Fatalf("readHeaderRetryingWithOpen: %v", err)
-			}
-			defer trusted.Close()
-			if trusted == first {
-				t.Fatal("retry should use the handle that produced the trusted header")
-			}
-			if h.Repaired {
-				t.Fatal("a transient bad read was repaired instead of retried")
-			}
-			if h.TableName != "Sales" {
-				t.Errorf("TableName = %q, want Sales", h.TableName)
-			}
-			if !strings.Contains(note, "second read returned different bytes") ||
-				!strings.Contains(note, "and parsed") {
-				t.Errorf("ReadNote = %q", note)
-			}
-		})
+	if got := f.Header.Fields[1].NoOfSymbols; got != 5 {
+		t.Errorf("NoOfSymbols = %d, want 5", got)
 	}
 }
 
-func TestCompareNote(t *testing.T) {
-	same := compareNote([]byte("abc"), []byte("abc"), nil)
-	if !strings.Contains(same, "the same 3 bytes") {
-		t.Errorf("compareNote = %q", same)
-	}
-	diff := compareNote([]byte("abc"), []byte("abX"), nil)
-	if !strings.Contains(diff, "DIFFERENT BYTES") || !strings.Contains(diff, "offset 2") {
-		t.Errorf("compareNote = %q", diff)
-	}
-	if got := compareNote(nil, nil, os.ErrNotExist); !strings.Contains(got, "failed too") {
-		t.Errorf("compareNote = %q", got)
-	}
-}
-
-func TestDescribeDiff(t *testing.T) {
-	if got := describeDiff([]byte("abc"), []byte("abc")); got != "returned the same bytes" {
-		t.Errorf("describeDiff = %q", got)
-	}
-	got := describeDiff([]byte("line1\nab"), []byte("line1\naX"))
-	for _, want := range []string{"different bytes", "offset 7", "line 2"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("describeDiff = %q, want it to mention %q", got, want)
+func TestSameOpenFile(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a")
+	b := filepath.Join(dir, "b")
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
 		}
 	}
-}
+	fa, _ := os.Open(a)
+	defer fa.Close()
+	fa2, _ := os.Open(a)
+	defer fa2.Close()
+	fb, _ := os.Open(b)
+	defer fb.Close()
 
-func TestReadNoteEmptyForAGoodHeader(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ok.qvd")
-	raw := append([]byte(sampleHeader), 0x00)
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		t.Fatal(err)
+	if same, err := sameOpenFile(fa, fa2); err != nil || !same {
+		t.Errorf("same file reported as different: %v %v", same, err)
 	}
-	f, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer f.Close()
-	if f.Header.ReadNote != "" {
-		t.Errorf("ReadNote = %q, want empty when the first read parsed", f.Header.ReadNote)
-	}
-}
-
-// The case a failure-triggered retry cannot catch: two reads that differ and
-// both parse. A wrong digit in NoOfRecords is valid XML, so nothing about the
-// parse would ever mention it.
-func TestOpenReportsTwoReadsThatDifferAndBothParse(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "drift.qvd")
-	firstBytes := append([]byte(sampleHeader), 0x00)
-	if err := os.WriteFile(path, firstBytes, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	other := append([]byte(strings.Replace(sampleHeader,
-		"<NoOfRecords>3</NoOfRecords>", "<NoOfRecords>4</NoOfRecords>", 1)), 0x00)
-
-	h, _, trusted, note, err := readHeaderRetryingWithOpen(path, f,
-		func(p string) (*os.File, error) {
-			if err := os.WriteFile(path, other, 0o644); err != nil {
-				return nil, err
-			}
-			return os.Open(p)
-		})
-	if err != nil {
-		f.Close()
-		t.Fatalf("readHeaderRetryingWithOpen: %v", err)
-	}
-	defer trusted.Close()
-
-	if h.NoOfRecords != 3 {
-		t.Errorf("NoOfRecords = %d, want the first read's 3", h.NoOfRecords)
-	}
-	if !strings.Contains(note, "DIFFERENT BYTES") {
-		t.Errorf("a disagreement between two parseable reads went unreported: %q", note)
-	}
-	if !strings.Contains(note, "offset") {
-		t.Errorf("note names no offset: %q", note)
-	}
-}
-
-// A header that only a tolerant parse accepts must not slip past the second
-// read: the strict parse is what decides whether a header is looked at twice.
-func TestToleratedHeaderStillGetsASecondRead(t *testing.T) {
-	// An unknown entity is accepted by encoding/xml with Strict false.
-	raw := strings.Replace(sampleHeader, "<TableName>Sales</TableName>",
-		"<TableName>Sales &nope; Ltd</TableName>", 1)
-	if _, err := decodeHeaderStrict([]byte(raw)); err == nil {
-		t.Fatal("expected the strict decoder to reject an unknown entity")
-	}
-	if _, err := decodeHeader([]byte(raw)); err != nil {
-		t.Fatalf("expected the tolerant decoder to accept it: %v", err)
+	if same, err := sameOpenFile(fa, fb); err != nil || same {
+		t.Errorf("different files reported as same: %v %v", same, err)
 	}
 }

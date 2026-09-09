@@ -24,29 +24,28 @@ restarts from it.
       parse QVD XML header: XML syntax error on line 3203: unexpected EOF
 
   What produced those bytes is not established, so nothing here assumes a
-  cause. The header is now read twice, from two handles, and compared:
+  cause. The header is now read twice, from two handles, and the two reads must
+  agree before anything is built on them.
 
-  - Two reads that agree are what the file holds.
-  - Two reads that disagree mean the first read was wrong, whatever the reason.
-    The read that parses is used, and the disagreement is reported with the
-    offset and line it starts at. The comparison runs on every file, not only
-    on a failure, because a read that differs but still parses -- a wrong digit
-    in `NoOfRecords` or `BitWidth` is valid XML -- would otherwise go through
-    unremarked, and because after the run nothing can recover the fact: the
-    file on disk reads correctly either way by the time anyone looks.
+  The comparison runs on every file, not only after a failure, because a read
+  that differs but still parses would otherwise go unremarked: a wrong digit in
+  `NoOfRecords` or `BitWidth` is valid XML, and a conversion built on it would
+  be wrong in a way nothing downstream checks. It costs a few hundred kilobytes
+  against files of gigabytes.
 
-  The gate is a strict parse. A tolerant one accepts an unknown entity or an
-  unclosed element and hands back a header nobody checked, which is the case
-  the second read exists to catch.
+  **Two reads that disagree end the file.** There is no way to tell which read
+  was right, so converting on either is a guess. The error says the file was
+  read wrong rather than written wrong, and names the offset and line where the
+  reads part company. The second handle is checked with `os.SameFile` first, so
+  an input replaced mid-run is reported as replaced rather than as misread.
 
-- Only once two reads agree, and neither is valid XML, is the header mended.
-  Three faults have exactly one sensible reading and are repaired; none is a
-  guess about intent:
+- Only once two reads agree, and the header is not valid XML, is it mended.
+  Three faults have exactly one sensible reading; none is a guess about intent:
 
   - Bytes that cannot occur in a tag are dropped: the C0 controls XML 1.0
     forbids anywhere in a document, not even escaped (0x00-0x08, 0x0B, 0x0C,
-    0x0E-0x1F), and 0x7F, which XML allows in text but not in a name. Each of
-    these renders as nothing in an editor, so a header holding one can read as
+    0x0E-0x1F), and 0x7F, which XML allows in text but not in a name. Each
+    renders as nothing in an editor, so a header holding one can read as
     correct while the parser refuses the line it sits on.
   - A `<` or `&` that cannot be opening markup or an entity is escaped, which
     recovers the surrounding value exactly as it stands in the file.
@@ -63,9 +62,20 @@ restarts from it.
 
 - A header that cannot be mended now describes itself in the error instead of
   naming a line number in a file that cannot be opened as text: its size in
-  bytes and lines, whether it ends with a `</QvdTableHeader>` and where, the
-  line the parser stopped on quoted so that an invisible byte shows as an
-  escape, and whether the second read agreed.
+  bytes and lines, whether it ends with a `</QvdTableHeader>` and where, and
+  the line the parser stopped on, quoted so an invisible byte shows as an
+  escape.
+
+### Known limitation
+
+- Only the header is read twice. Symbol tables and record chunks are still read
+  once, and a wrong byte there becomes a different valid string, number or
+  symbol index with no syntax to violate. The quality gate does not cover this
+  either: it re-reads the written Parquet and compares it against metrics
+  gathered during the conversion's single pass over the QVD, so a source read
+  that was wrong but internally consistent passes. Verifying the data the way
+  the header is now verified needs a second pass over the source, which is not
+  in this release.
 
 ## [2.6.0] - 2026-09-09
 

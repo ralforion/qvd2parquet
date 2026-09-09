@@ -2,6 +2,7 @@ package qvd
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,13 +40,16 @@ func Open(path string) (*File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	h, end, trusted, readNote, err := readHeaderRetrying(path, f)
+	raw, end, err := readHeaderVerified(path, f, os.Open)
 	if err != nil {
 		f.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	// Records are decoded from the handle whose read produced this header.
-	f = trusted
+	h, err := ParseHeaderXML(raw)
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	if err := h.Validate(); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -61,136 +65,77 @@ func Open(path string) (*File, error) {
 		Profiles:       make([]*ColumnProfile, len(h.Fields)),
 		f:              f,
 	}
-	h.ReadNote = readNote
 	return qf, nil
 }
 
-// readHeaderRetrying reads the header twice, from two handles, and returns the
-// one that holds up.
+// readHeaderVerified reads the header from two handles and requires the two
+// reads to agree before returning anything.
 //
 // The header is read twice always, not only after a failure. It is a few
-// hundred kilobytes against files of gigabytes, so the cost is nothing, and
-// whether two consecutive reads of the same bytes agree is the one fact about
-// a suspect header that cannot be recovered after the run: by the time anyone
-// goes to look, the file on disk reads correctly either way. It also catches
-// what a failure-triggered retry cannot, a read that differs but still parses
-// -- a wrong digit in NoOfRecords or BitWidth is valid XML and would otherwise
-// go through unremarked.
+// hundred kilobytes against files of gigabytes, so the cost is nothing, and it
+// catches what a failure-triggered retry cannot: a read that differs but still
+// parses. A wrong digit in NoOfRecords or BitWidth is valid XML, and a
+// conversion built on it would be wrong in a way nothing downstream checks.
 //
-// The gate is a strict parse. A tolerant one accepts an unknown entity or an
-// unclosed element and hands back a header nobody checked, which is the case
-// the second read exists to catch. Tolerant parsing and then repair are tried
-// only after both reads have been given the strict test, so a transient bad
-// read is never mistaken for a malformed QVD, and a malformed QVD is never
-// quietly rewritten on the strength of one read.
-//
-// The returned handle is the one whose read was trusted, and the other is
-// closed: records must be decoded from the file that produced the header the
-// schema was built from.
-func readHeaderRetrying(path string, first *os.File) (*TableHeader, int64, *os.File, string, error) {
-	return readHeaderRetryingWithOpen(path, first, os.Open)
-}
+// Two reads that disagree end the file here rather than picking a winner.
+// There is no way to tell which read was right, so a conversion built on
+// either is a guess, and a file that does not read consistently is not one to
+// convert on the strength of the read that happened to parse. The failure is a
+// signal about the machine or the process, not about the file, and it says so.
+func readHeaderVerified(path string, first *os.File,
+	open func(string) (*os.File, error)) ([]byte, int64, error) {
 
-// headerRead is one attempt at reading the header.
-type headerRead struct {
-	f   *os.File
-	raw []byte
-	end int64
-	err error
-}
+	raw, end, err := ReadHeaderBytes(first)
 
-// readHeaderRetryingWithOpen is readHeaderRetrying with the reopen injected, so
-// that a read which fails once and succeeds next can be tested.
-func readHeaderRetryingWithOpen(path string, first *os.File,
-	open func(string) (*os.File, error)) (*TableHeader, int64, *os.File, string, error) {
+	second, oerr := open(path)
+	if oerr != nil {
+		return nil, 0, fmt.Errorf("the header could not be read a second time to verify it: %w", oerr)
+	}
+	defer second.Close()
 
-	a := headerRead{f: first}
-	a.raw, a.end, a.err = ReadHeaderBytes(a.f)
-
-	var b headerRead
-	if f2, err := open(path); err != nil {
-		b.err = err
-	} else {
-		b.f = f2
-		b.raw, b.end, b.err = ReadHeaderBytes(b.f)
+	// The path can name a different file than the first handle if the input
+	// was replaced mid-run, and then the two reads differ for a reason that
+	// has nothing to do with how they were read. Saying "read wrong" about
+	// that would be false.
+	same, serr := sameOpenFile(first, second)
+	if serr != nil {
+		return nil, 0, fmt.Errorf("the header could not be verified: %w", serr)
+	}
+	if !same {
+		return nil, 0, errors.New("the file at this path was replaced while it was being read")
 	}
 
-	disagree := ""
-	if a.err == nil && b.err == nil && !bytes.Equal(a.raw, b.raw) {
-		off := firstDiffOffset(a.raw, b.raw)
-		disagree = fmt.Sprintf("TWO READS OF THE HEADER RETURNED DIFFERENT BYTES: %d then %d, "+
-			"first difference at offset %d, line %d; the file was read wrong rather than written wrong",
-			len(a.raw), len(b.raw), off, lineAt(a.raw, off))
-	}
+	raw2, _, err2 := ReadHeaderBytes(second)
 
-	// Strict first, on both reads, before anything tolerant or mended.
-	for _, r := range []headerRead{a, b} {
-		if r.err != nil {
-			continue
-		}
-		h, err := decodeHeaderStrict(r.raw)
-		if err != nil {
-			continue
-		}
-		note := disagree
-		if r.f == b.f && a.err == nil {
-			note = joinNotes(fmt.Sprintf("the first read of the header did not parse; a second read %s and parsed",
-				describeDiff(a.raw, b.raw)), disagree)
-		}
-		return h, r.end, keep(r.f, a.f, b.f), note, nil
-	}
-
-	// Neither read is valid XML, so the header is not valid XML. Mend what can
-	// be mended without guessing; ParseHeaderXML records what it did.
-	for _, r := range []headerRead{a, b} {
-		if r.err != nil {
-			continue
-		}
-		if h, err := ParseHeaderXML(r.raw); err == nil {
-			return h, r.end, keep(r.f, a.f, b.f), disagree, nil
-		}
-	}
-
-	if b.f != nil {
-		b.f.Close()
-	}
-	err := a.err
-	if err == nil {
-		_, err = ParseHeaderXML(a.raw)
-	}
-	return nil, 0, nil, "", fmt.Errorf("%w%s", err, compareNote(a.raw, b.raw, b.err))
-}
-
-// keep closes whichever of the two handles was not chosen and returns the one
-// that was. A nil handle is one that never opened.
-func keep(chosen, first, second *os.File) *os.File {
-	for _, f := range []*os.File{first, second} {
-		if f != nil && f != chosen {
-			f.Close()
-		}
-	}
-	return chosen
-}
-
-// joinNotes puts two warnings on one line, dropping the empty ones.
-func joinNotes(a, b string) string {
 	switch {
-	case a == "":
-		return b
-	case b == "":
-		return a
+	case err != nil && err2 != nil:
+		return nil, 0, err // consistently unreadable: report it as it stands
+	case err != nil:
+		return nil, 0, fmt.Errorf("the header read once and not the other time (%w), "+
+			"so the file was read wrong rather than written wrong", err)
+	case err2 != nil:
+		return nil, 0, fmt.Errorf("a second read of the header failed where the first did not (%w), "+
+			"so the file was read wrong rather than written wrong", err2)
+	case !bytes.Equal(raw, raw2):
+		off := firstDiffOffset(raw, raw2)
+		return nil, 0, fmt.Errorf("two reads of the header returned different bytes: %d then %d, "+
+			"first difference at offset %d, line %d. The file was read wrong rather than written wrong, "+
+			"so neither read can be trusted", len(raw), len(raw2), off, lineAt(raw, off))
 	}
-	return a + "; " + b
+	return raw, end, nil
 }
 
-// describeDiff says how two reads of the same header differ.
-func describeDiff(a, b []byte) string {
-	if bytes.Equal(a, b) {
-		return "returned the same bytes"
+// sameOpenFile reports whether two handles refer to the same file.
+func sameOpenFile(a, b *os.File) (bool, error) {
+	ai, err := a.Stat()
+	if err != nil {
+		return false, err
 	}
-	off := firstDiffOffset(a, b)
-	return fmt.Sprintf("returned different bytes (%d then %d, first difference at offset %d, line %d)",
-		len(a), len(b), off, lineAt(a, off))
+	bi, err := b.Stat()
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(ai, bi), nil
 }
 
 // firstDiffOffset is the offset of the first byte at which a and b differ.
@@ -200,23 +145,6 @@ func firstDiffOffset(a, b []byte) int {
 		off++
 	}
 	return off
-}
-
-// compareNote reports what a second read of the header saw, for a header that
-// could not be parsed either way. Nothing outside the process can tell a file
-// that was written wrong from one that was read wrong after the fact, since
-// the bytes on disk are the same either way by the time anyone looks.
-func compareNote(raw, raw2 []byte, err2 error) string {
-	switch {
-	case err2 != nil:
-		return fmt.Sprintf(" [a second read of the header failed too: %v]", err2)
-	case bytes.Equal(raw, raw2):
-		return fmt.Sprintf(" [a second read returned the same %d bytes, so the file holds what was parsed]", len(raw))
-	}
-	off := firstDiffOffset(raw, raw2)
-	return fmt.Sprintf(" [TWO READS OF THE HEADER RETURNED DIFFERENT BYTES: %d then %d, "+
-		"first difference at offset %d, line %d; it was read wrong rather than written wrong]",
-		len(raw), len(raw2), off, lineAt(raw, off))
 }
 
 // Close releases the underlying file handle.
