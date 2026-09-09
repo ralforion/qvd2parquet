@@ -116,11 +116,6 @@ type fileRecord struct {
 	Encodings       []string `json:"encodings"`
 	FieldsRenamed   int      `json:"fieldsRenamed"`
 	FieldsUnchanged int      `json:"fieldsUnchanged"`
-	// DuplicateNames counts the columns --duplicate-names=suffix renamed to
-	// keep an earlier column of the same name. Non-zero is worth a look: two
-	// fields collapsing to one name is usually a --field-regex that is
-	// coarser than intended.
-	DuplicateNames int `json:"duplicateNames"`
 
 	QualityMode   string   `json:"qualityMode"`
 	QualityPassed *bool    `json:"qualityPassed"`
@@ -171,7 +166,6 @@ func (w *LogWriter) File(r FileResult) {
 		}
 		rec.FieldsRenamed = r.Stats.Renames.Renamed
 		rec.FieldsUnchanged = len(r.Stats.Renames.Unchanged)
-		rec.DuplicateNames = len(r.Stats.Duplicates)
 	}
 	if r.Quality != nil {
 		passed := r.Quality.Passed

@@ -36,9 +36,6 @@ type Stats struct {
 	// that worked.
 	ExcludeNoMatch []string
 	Renames        RenameSummary
-	// Duplicates records the columns --duplicate-names=suffix renamed so that
-	// two fields resolving to one name both reach the output.
-	Duplicates []DuplicateRename
 	// Encodings names the columns written with a pinned or measured encoding,
 	// as "NAME=encoding".
 	Encodings []string
@@ -132,9 +129,6 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	}
 	if line := rs.Renames.Line(maxNamedFields); line != "" {
 		logf("field-regex: %s", line)
-	}
-	if line := duplicateRenameLine(rs.Duplicates, maxNamedFields); line != "" {
-		logf("duplicate-names: %s", line)
 	}
 
 	// Batch size depends on the resolved column count, so it can only be
@@ -308,7 +302,6 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 		DecimalsNearLimit: decimalsNearLimit(rs, f),
 		ExcludeNoMatch:    unmatchedExcludes,
 		Renames:           rs.Renames,
-		Duplicates:        rs.Duplicates,
 		Encodings:         enc.Pinned,
 	}
 	if fi, err := os.Stat(outputPath); err == nil {
@@ -332,33 +325,8 @@ type SchemaReport struct {
 	RecordByteSize int    `json:"recordByteSize"`
 	// FieldRegex is present only when --field-regex was given, and says which
 	// of the selected fields it left alone.
-	FieldRegex *FieldRegexReport `json:"fieldRegex,omitempty"`
-	// DuplicateNames is present only when --duplicate-names=suffix actually
-	// renamed something, and names both the taken name and the one written.
-	DuplicateNames []DuplicateRename    `json:"duplicateNames,omitempty"`
-	Columns        []SchemaReportColumn `json:"columns"`
-}
-
-// duplicateRenameLine renders the renames for one log line, naming at most
-// max of them. A run over a folder of wide extracts must not print a hundred.
-func duplicateRenameLine(dups []DuplicateRename, max int) string {
-	if len(dups) == 0 {
-		return ""
-	}
-	named := dups
-	if len(named) > max {
-		named = named[:max]
-	}
-	parts := make([]string, 0, len(named))
-	for _, d := range named {
-		parts = append(parts, fmt.Sprintf("%q -> %q", d.From, d.To))
-	}
-	line := fmt.Sprintf("%d duplicate output column name(s) kept under a suffix: %s",
-		len(dups), strings.Join(parts, ", "))
-	if len(dups) > len(named) {
-		line += fmt.Sprintf(" (and %d more)", len(dups)-len(named))
-	}
-	return line
+	FieldRegex *FieldRegexReport    `json:"fieldRegex,omitempty"`
+	Columns    []SchemaReportColumn `json:"columns"`
 }
 
 // FieldRegexReport summarises a --field-regex run over one file. Unlike the
@@ -427,7 +395,6 @@ func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema, 
 		Rows:           f.NoOfRecords,
 		RecordByteSize: f.RecordByteSize,
 	}
-	rep.DuplicateNames = rs.Duplicates
 	if rs.Renames.Fields > 0 {
 		rep.FieldRegex = &FieldRegexReport{
 			Fields:    rs.Renames.Fields,

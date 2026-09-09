@@ -120,7 +120,6 @@ func run() int {
 		fieldComment  = fs.String("field-comment", "", "Template for the column comment (default \"${comment}\")")
 		mixed         = fs.String("mixed", def.Mixed.String(), "Mixed-type strategy: error|string|promote|dual-columns")
 		dual          = fs.String("dual", def.Dual.String(), "Dual strategy: auto|numeric|text|columns")
-		dupNames      = fs.String("duplicate-names", def.DuplicateNames.String(), "Two columns resolving to one name: error|suffix (suffix keeps both as NAME and NAME_2)")
 		promote       = fs.String("numeric-promote", def.NumericPromote.String(), "Numeric widening: decimal (exact, scale inferred from values) | true (float64) | false")
 		strFallback   = fs.Bool("mixed-string-fallback", def.MixedStringFallback, "Convert otherwise-invalid mixed columns to string")
 		decSource     = fs.String("decimal-source", def.DecimalSource.String(), "Decimal extraction: auto|text|numeric")
@@ -253,9 +252,6 @@ func run() int {
 		return usageErr(err)
 	}
 	if opts.Dual, err = convert.ParseDualStrategy(*dual); err != nil {
-		return usageErr(err)
-	}
-	if opts.DuplicateNames, err = convert.ParseDuplicateNamePolicy(*dupNames); err != nil {
 		return usageErr(err)
 	}
 	if opts.DecimalSource, err = convert.ParseDecimalSource(*decSource); err != nil {

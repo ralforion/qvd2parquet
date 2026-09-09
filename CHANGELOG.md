@@ -13,24 +13,6 @@ restarts from it.
 
 ## [Unreleased]
 
-### Added
-
-- `--duplicate-names=suffix` keeps both columns when two of them resolve to the
-  same output name, writing the later one as `${name}_2`, `${name}_3` and so
-  on. The common cause is a `--field-regex` that keeps only the technical part
-  of a composite SAP name, so `A057-||-DATBI-||-...` and `B057-||-DATBI-||-...`
-  both become `DATBI`; a generated `${name}__text` companion landing on a real
-  field of that name does it too. The default stays `error`, since a collision
-  is usually a rule that is coarser than intended, and its message now names
-  the new mode.
-
-  Nothing is dropped and nothing is guessed: each column keeps its own comment
-  and its `qvd.field` metadata, a suffix never takes a name the file already
-  uses, and a generated dual companion yields to a real field of that name. The
-  renames are reported in the schema notes, on a `duplicate-names:` line, in
-  `--inspect`, under `duplicateNames` in `--schema-report`, and as a count in
-  each `--log` record.
-
 ## [2.5.0] - 2026-09-08
 
 ### Added
