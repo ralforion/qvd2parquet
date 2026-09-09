@@ -340,12 +340,20 @@ func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*Resol
 		if !ok {
 			continue
 		}
-		if firstOf[d.SourceIndex] == d.col {
-			rs.Notes[n] += fmt.Sprintf("; the name %q was already taken by an earlier column", d.From)
-			continue
+		// A generated companion was announced by name while the type was
+		// being resolved, before any collision was known. Correct that
+		// mention rather than appending a second name and leaving the note
+		// to contradict itself: the note travels into the schema log,
+		// --inspect, --schema-report and the catalog.
+		if firstOf[d.SourceIndex] != d.col {
+			stale, final := fmt.Sprintf("%q", d.From), fmt.Sprintf("%q", d.To)
+			if fixed := strings.Replace(rs.Notes[n], stale, final, 1); fixed != rs.Notes[n] {
+				rs.Notes[n] = fixed
+			} else {
+				rs.Notes[n] += fmt.Sprintf("; display side written to %s", final)
+			}
 		}
-		rs.Notes[n] += fmt.Sprintf("; %q was already taken by an earlier column, so the display side is written to %q",
-			d.From, d.To)
+		rs.Notes[n] += fmt.Sprintf("; the name %q was already taken by an earlier column", d.From)
 	}
 
 	fields := make([]arrow.Field, len(rs.Columns))
@@ -423,14 +431,10 @@ func resolveNameCollisions(cols []ResolvedColumn, policy DuplicateNamePolicy) ([
 			continue
 		}
 		if policy == DuplicateError {
-			return nil, duplicateNameError(cols[prev], *c)
+			return nil, duplicateNameError(cols[prev], *c, nextFreeName(c.Name, taken))
 		}
-		from, name := c.Name, ""
-		for n := 2; name == ""; n++ {
-			if cand := fmt.Sprintf("%s_%d", from, n); !taken[cand] {
-				name = cand
-			}
-		}
+		from := c.Name
+		name := nextFreeName(from, taken)
 		taken[name] = true
 		seen[name] = i
 		c.Name = name
@@ -439,9 +443,22 @@ func resolveNameCollisions(cols []ResolvedColumn, policy DuplicateNamePolicy) ([
 	return renames, nil
 }
 
+// nextFreeName is the name a suffix gives a column whose own name is already
+// claimed: "${name}_2", then "${name}_3", skipping anything the schema already
+// asks for. The error path uses it too, so the name it offers is the name
+// --duplicate-names=suffix would actually write.
+func nextFreeName(name string, taken map[string]bool) string {
+	for n := 2; ; n++ {
+		if cand := fmt.Sprintf("%s_%d", name, n); !taken[cand] {
+			return cand
+		}
+	}
+}
+
 // duplicateNameError explains a collision in terms of the source fields that
-// caused it, and of the flags that resolve it.
-func duplicateNameError(prev, c ResolvedColumn) error {
+// caused it, and of the flags that resolve it. suffixed is what
+// --duplicate-names=suffix would write the second column as.
+func duplicateNameError(prev, c ResolvedColumn, suffixed string) error {
 	hint := ""
 	if c.Strategy == StrategyDualText || prev.Strategy == StrategyDualText {
 		hint = "; the name is generated for a dual column's display side, so drop it with " +
@@ -450,7 +467,7 @@ func duplicateNameError(prev, c ResolvedColumn) error {
 	if prev.OriginalName != c.Name || c.OriginalName != c.Name {
 		hint += fmt.Sprintf("; source fields %q and %q", prev.OriginalName, c.OriginalName)
 	}
-	hint += fmt.Sprintf("; or pass --duplicate-names=suffix to keep both, writing the second as %q", c.Name+"_2")
+	hint += fmt.Sprintf("; or pass --duplicate-names=suffix to keep both, writing the second as %q", suffixed)
 	return fmt.Errorf("%w: duplicate output column name %q (from source columns %d and %d)%s",
 		ErrSchemaPolicy, c.Name, prev.SourceIndex, c.SourceIndex, hint)
 }

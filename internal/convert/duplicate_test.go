@@ -160,3 +160,78 @@ func TestParseDuplicateNamePolicy(t *testing.T) {
 		t.Error("an unknown mode should be rejected")
 	}
 }
+
+// The refusal offers a name suffix mode would actually write. Hard-coding
+// "${name}_2" made it name a column the file already carries, so following the
+// advice produced a different name than the message promised.
+func TestDuplicateNameErrorOffersTheNameSuffixWouldWrite(t *testing.T) {
+	tbl := qvdtest.Table{Name: "T", Fields: []qvdtest.Field{
+		{Name: "A", Type: "ASCII", Rows: []int{0}, Symbols: []qvd.Symbol{qvdtest.Str("x")}},
+		{Name: "A_2", Type: "ASCII", Rows: []int{0}, Symbols: []qvd.Symbol{qvdtest.Str("y")}},
+		{Name: "A", Type: "ASCII", Rows: []int{0}, Symbols: []qvd.Symbol{qvdtest.Str("z")}},
+	}}
+	in := buildFixture(t, tbl)
+
+	opts := testOptions()
+	_, _, err := Run(context.Background(), in, filepath.Join(t.TempDir(), "o.parquet"), &opts, nil)
+	if !errors.Is(err, ErrSchemaPolicy) {
+		t.Fatalf("err = %v, want ErrSchemaPolicy", err)
+	}
+	if !strings.Contains(err.Error(), `writing the second as "A_3"`) {
+		t.Errorf("error should offer \"A_3\", the name the suffix mode takes: %v", err)
+	}
+
+	// And the advice must hold: what it promised is what the run writes.
+	opts.DuplicateNames = DuplicateSuffix
+	out := filepath.Join(t.TempDir(), "o.parquet")
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatalf("suffix run: %v", err)
+	}
+	schema, _ := readParquet(t, out)
+	var names []string
+	for _, f := range schema.Fields() {
+		names = append(names, f.Name)
+	}
+	if got := strings.Join(names, ","); got != "A,A_2,A_3" {
+		t.Errorf("columns = %s, want A,A_2,A_3", got)
+	}
+}
+
+// The note announcing a dual's companion column is written before collisions
+// are resolved. A renamed companion must not leave the old name standing in
+// it: the note travels into the schema log, --inspect, --schema-report and the
+// catalog.
+func TestDuplicateNamesSuffixCorrectsTheDualCompanionNote(t *testing.T) {
+	tbl := qvdtest.Table{Name: "T", Fields: []qvdtest.Field{
+		{Name: "Qty", Type: "INTEGER", Rows: []int{0},
+			Symbols: []qvd.Symbol{qvdtest.DualInt(1, "one")}},
+		{Name: "Qty__text", Type: "ASCII", Rows: []int{0},
+			Symbols: []qvd.Symbol{qvdtest.Str("collides")}},
+	}}
+	in := buildFixture(t, tbl)
+
+	f, err := qvd.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := f.ReadSymbols(qvd.UnknownSymbolError); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.Dual = DualColumns
+	opts.DuplicateNames = DuplicateSuffix
+	rs, err := ResolveSchema(f, &opts, nil)
+	if err != nil {
+		t.Fatalf("ResolveSchema: %v", err)
+	}
+
+	note := rs.Notes[0]
+	if !strings.Contains(note, `"Qty__text_2"`) {
+		t.Errorf("the note should name the column actually written: %s", note)
+	}
+	if strings.Contains(note, `display side written to "Qty__text"`) ||
+		strings.Contains(note, `kept in "Qty__text"`) {
+		t.Errorf("the note still announces the name the companion lost: %s", note)
+	}
+}
