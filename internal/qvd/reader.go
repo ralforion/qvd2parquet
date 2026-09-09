@@ -380,7 +380,7 @@ func (qf *File) ReadSymbols(policy UnknownSymbolPolicy) error {
 		}
 		// Read exactly the declared table length so a decoding bug in one
 		// column cannot desynchronize the following ones.
-		sec := io.NewSectionReader(qf.f, pos, c.Length)
+		sec := io.NewSectionReader(checkedReaderAt{qf.f}, pos, c.Length)
 		var r io.Reader = sec
 		var sum hash.Hash
 		if qf.VerifyReads {
