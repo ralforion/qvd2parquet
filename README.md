@@ -715,7 +715,9 @@ are compared, so a conversion given a relative `--out-dir` and a scan naming
 the same directory absolutely are one file rather than two; where a stored path
 is relative to a working directory the scan cannot reconstruct, the file's name
 stands in, but only when exactly one table in the catalog wrote a file of that
-name. And where an output has belonged to more than one table over the life of
+name. A stored path that is absolute never falls back, however the scan was
+spelled: the scan has just read its file from the directory it is running in,
+so a path that does not match an absolute stored one is a different file. And where an output has belonged to more than one table over the life of
 a catalog, which it can because nothing is ever removed, the scan refreshes the
 table the most recent conversion of that file wrote.
 

@@ -408,11 +408,13 @@ func TestBaseNameFallbackIsNarrow(t *testing.T) {
 	other.OutputFile = "elsewhere/orders.parquet"
 	other.ToolVersion = "converted"
 
-	scanPath := filepath.Join(string(filepath.Separator), "elsewhere", "entirely", "orders.parquet")
+	absScan := filepath.Join(string(filepath.Separator), "elsewhere", "entirely", "orders.parquet")
+	relScan := filepath.Join("other", "orders.parquet")
 
 	tests := []struct {
 		name      string
 		stored    []Row
+		scan      string
 		wantTable string
 		wantRows  int
 	}{
@@ -420,24 +422,32 @@ func TestBaseNameFallbackIsNarrow(t *testing.T) {
 			// The stored path means nothing outside the directory it was
 			// written in, so the name is all there is, and it is unambiguous.
 			"a relative stored path falls back to the name",
-			[]Row{relative}, "HeaderOrders", 1,
+			[]Row{relative}, absScan, "HeaderOrders", 1,
 		},
 		{
 			// An absolute stored path already means the same file everywhere,
 			// so a scan that does not match it is describing a different file.
 			"an absolute stored path does not",
-			[]Row{absolute}, "orders", 2,
+			[]Row{absolute}, absScan, "orders", 2,
+		},
+		{
+			// And that holds however the scan was spelled. The scan has just
+			// read the file from the directory it is running in, so its path
+			// resolves correctly whether or not it was written absolute: a
+			// relative spelling is not doubt about which file it means.
+			"an absolute stored path does not, whatever the scan is spelled",
+			[]Row{absolute}, relScan, "orders", 2,
 		},
 		{
 			// Two tables wrote a file of this name. Guessing between them
 			// would hand the scan another table's metadata.
 			"two tables of the same name decline",
-			[]Row{relative, other}, "orders", 3,
+			[]Row{relative, other}, absScan, "orders", 3,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Merge(tt.stored, []Row{scanRow(scanPath, "Id", 1)})
+			got := Merge(tt.stored, []Row{scanRow(tt.scan, "Id", 1)})
 			if len(got) != tt.wantRows {
 				t.Errorf("merge produced %d rows, want %d: %+v", len(got), tt.wantRows, got)
 			}

@@ -224,6 +224,14 @@ type ident struct {
 // that is absolute already means the same file everywhere, so a scan that does
 // not match it is describing a different file and gets no metadata from it;
 // and a name two tables both wrote says nothing about which one is meant.
+//
+// The doubt is entirely on the stored side. Whatever spelling the scan was
+// given resolves correctly, because the scan has just read that file from the
+// directory the process is running in, so a scanned path that does not match
+// an absolute stored one is conclusive however it was written. Asking that the
+// scanned path be absolute too would let "other/orders.parquet" claim the
+// identity and the metadata of an unrelated /srv/original/orders.parquet, and
+// replace its row.
 func resolveScanned(output string, pathOf func(string) string,
 	files, bases map[string]ident) (ident, bool) {
 
@@ -231,10 +239,7 @@ func resolveScanned(output string, pathOf func(string) string,
 		return id, true
 	}
 	id, ok := bases[filepath.Base(output)]
-	if !ok || id.ambiguous {
-		return ident{}, false
-	}
-	if id.absolute && filepath.IsAbs(output) {
+	if !ok || id.ambiguous || id.absolute {
 		return ident{}, false
 	}
 	return id, true

@@ -67,7 +67,10 @@ restarts from it.
   file's name stands in, and only then: an absolute stored path already means
   the same file everywhere, so a scan that does not match it is describing a
   different file, and a name two tables both wrote says nothing about which is
-  meant. Where an output has belonged to more than one table, which it can
+  meant. The doubt is entirely on the stored side -- a scan has just read its
+  file from the directory the process is running in, so its path resolves
+  correctly whether or not it was written absolute, and a relative spelling is
+  not doubt about which file is meant. Where an output has belonged to more than one table, which it can
   because nothing is ever removed, the scan refreshes the one the most recent
   conversion of that file wrote rather than whichever row sorts last.
 
