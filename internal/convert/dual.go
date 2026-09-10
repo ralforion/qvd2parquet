@@ -118,18 +118,145 @@ func textRendersNumber(text string, n float64, decSep, thouSep string) bool {
 	if isZeroPadded(t) {
 		return false
 	}
-	v, ok := parseLocalizedNumber(t, decSep, thouSep)
-	if !ok {
-		return false
+	if v, ok := parseLocalizedNumber(t, decSep, thouSep); ok && numbersMatch(n, v) {
+		return true
 	}
-	// Compare with a tolerance that absorbs the rounding a display format
-	// applies, e.g. "1.234,56" shown for 1234.5600000001.
+	// A field that groups its digits without declaring the separator would
+	// otherwise read as informative: "3.449" parses as 3.449, which is not
+	// 3449, so every value in the column looks like text the number does not
+	// carry. Retry with the grouping removed. The number to match is already
+	// known, so this cannot turn a genuinely different string into a
+	// rendering -- only a string that ungroups to exactly n is accepted.
+	if thouSep == "" || thouSep == decSep {
+		// The two separators come as a pair: where '.' groups the digits ','
+		// is the decimal point, and the other way round. A field that declares
+		// its decimal separator keeps it and only the other character can be
+		// grouping; a field that declares nothing leaves both readings open.
+		for _, pair := range [...][2]string{{".", ","}, {",", "."}} {
+			group, dec := pair[0], pair[1]
+			if decSep != "" && dec != decSep {
+				continue
+			}
+			g, ok := ungroupDigits(t, group[0], dec)
+			if !ok {
+				continue
+			}
+			v, ok := parseLocalizedNumber(g, dec, "")
+			if !ok {
+				continue
+			}
+			// The grouping was inferred rather than declared, so the match has
+			// to be exact wherever exactness is meaningful. An integer
+			// rendering has nothing to round, and numbersMatch is relative: at
+			// two billion its tolerance spans whole integers, so it would
+			// accept "2.000.000.000" beside 2000000001 and drop a display
+			// string that really does say something else. A fractional value
+			// keeps the tolerance, which is there to absorb the rounding a
+			// display format applies.
+			if isIntegral(n) && isIntegral(v) {
+				if n == v {
+					return true
+				}
+				continue
+			}
+			if numbersMatch(n, v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isIntegral reports whether f is a whole number.
+func isIntegral(f float64) bool {
+	return !math.IsInf(f, 0) && !math.IsNaN(f) && f == math.Trunc(f)
+}
+
+// numbersMatch compares with a tolerance that absorbs the rounding a display
+// format applies, e.g. "1.234,56" shown for 1234.5600000001.
+func numbersMatch(n, v float64) bool {
 	if n == v {
 		return true
 	}
 	diff := math.Abs(n - v)
 	scale := math.Max(math.Max(math.Abs(n), math.Abs(v)), 1)
 	return diff <= 1e-9*scale
+}
+
+// ungroupDigits removes sep from text when text is a number whose integer part
+// sep groups in threes, such as "1.234.567" or "1.234,56". Grouping must be
+// exact: the first group is one to three digits and every later one exactly
+// three, so "1.5" is never read as 15, and a separator after the decimal point
+// is not grouping at all. It reports false when text is not grouped that way,
+// leaving the string to count as informative.
+func ungroupDigits(text string, sep byte, decSep string) (string, bool) {
+	if strings.IndexByte(text, sep) < 0 {
+		return "", false
+	}
+	// The grouped part ends at the decimal separator, if there is one.
+	head, tail := text, ""
+	if i := strings.Index(text, decSep); i >= 0 {
+		head, tail = text[:i], text[i:]
+	}
+	if strings.IndexByte(tail, sep) >= 0 {
+		return "", false
+	}
+	// A sign or an accounting bracket surrounds the digits rather than
+	// interrupting them, and parseLocalizedNumber reads it back afterwards.
+	start, end := 0, len(head)
+	for start < end && (head[start] == '+' || head[start] == '-' || head[start] == '(') {
+		start++
+	}
+	for end > start && head[end-1] == ')' {
+		end--
+	}
+	digits := head[start:end]
+
+	groups, run := 0, 0
+	for i := 0; i < len(digits); i++ {
+		switch c := digits[i]; {
+		case c >= '0' && c <= '9':
+			run++
+		case c == sep:
+			if groups == 0 {
+				if run < 1 || run > 3 {
+					return "", false
+				}
+			} else if run != 3 {
+				return "", false
+			}
+			groups, run = groups+1, 0
+		default:
+			return "", false
+		}
+	}
+	if groups == 0 || run != 3 {
+		return "", false
+	}
+
+	plain := make([]byte, 0, len(digits))
+	for i := 0; i < len(digits); i++ {
+		if digits[i] != sep {
+			plain = append(plain, digits[i])
+		}
+	}
+	// The padding test the caller ran was defeated by the separator: the
+	// second character of "0.003.449" is punctuation, not a digit, so the
+	// string did not look padded. It is, and ungrouping is what reveals it --
+	// "0003449" is a zero-padded code whose width is part of the value, not a
+	// rendering of 3449. Tested here rather than by the caller because the
+	// sign and any accounting bracket are already off.
+	if isZeroPadded(string(plain)) {
+		return "", false
+	}
+
+	var b strings.Builder
+	b.Grow(len(text))
+	b.WriteString(head[:start])
+	b.Write(plain)
+	b.WriteString(head[end:])
+	b.WriteString(tail)
+	return b.String(), true
 }
 
 // isZeroPadded reports whether text is a number written with leading zeros.

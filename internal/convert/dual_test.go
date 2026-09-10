@@ -873,3 +873,121 @@ func TestZeroPaddedCodesYieldToExplicitDual(t *testing.T) {
 		})
 	}
 }
+
+// A QVD that groups its digits without declaring the separator used to make
+// every value in the column look informative: "3.449" parses as 3.449, not
+// 3449, so a real SAP extract wrote a __text companion holding nothing but a
+// second copy of the number.
+func TestUndeclaredThousandsSeparatorIsFormatting(t *testing.T) {
+	tests := []struct {
+		name string
+		col  qvd.Column
+		syms []qvd.Symbol
+		want DualKind
+	}{
+		{
+			"grouped integers with no declared separator",
+			qvd.Column{QlikType: qvd.QlikInteger},
+			[]qvd.Symbol{qvdtest.DualInt(3449, "3.449"), qvdtest.DualInt(1234567, "1.234.567")},
+			DualFormatting,
+		},
+		{
+			"comma grouping with no declared separator",
+			qvd.Column{QlikType: qvd.QlikInteger},
+			[]qvd.Symbol{qvdtest.DualInt(3449, "3,449"), qvdtest.DualInt(12000, "12,000")},
+			DualFormatting,
+		},
+		{
+			"grouping is not assumed for a two digit tail",
+			qvd.Column{QlikType: qvd.QlikInteger},
+			[]qvd.Symbol{qvdtest.DualInt(15, "1.5")},
+			DualInformative,
+		},
+		{
+			// The declaration says '.' is the decimal point, so "3.449" is
+			// 3.449 and stating it beside 3449 is information, not formatting.
+			"a declared decimal separator is believed",
+			qvd.Column{QlikType: qvd.QlikInteger, DecSep: "."},
+			[]qvd.Symbol{qvdtest.DualInt(3449, "3.449")},
+			DualInformative,
+		},
+		{
+			"labels are still informative",
+			qvd.Column{QlikType: qvd.QlikInteger},
+			[]qvd.Symbol{qvdtest.DualInt(3449, "3.449"), qvdtest.DualInt(1, "Open")},
+			DualInformative,
+		},
+		{
+			"zero padding still outranks grouping",
+			qvd.Column{QlikType: qvd.QlikInteger},
+			[]qvd.Symbol{qvdtest.DualInt(3449, "003.449")},
+			DualInformative,
+		},
+		{
+			// The separator hides the padding from the caller's test: the
+			// second character is punctuation, not a digit. Ungrouping is what
+			// reveals "0003449", a code whose width is part of the value.
+			"padding a group separator hides is still padding",
+			qvd.Column{QlikType: qvd.QlikInteger},
+			[]qvd.Symbol{qvdtest.DualInt(3449, "0.003.449")},
+			DualInformative,
+		},
+		{
+			// numbersMatch is relative, and at two billion its tolerance spans
+			// whole integers. An inferred grouping has to match exactly.
+			"a large integer that differs is not a rendering",
+			qvd.Column{QlikType: qvd.QlikInteger},
+			[]qvd.Symbol{qvdtest.DualInt(2000000001, "2.000.000.000")},
+			DualInformative,
+		},
+		{
+			"a large integer that matches still is",
+			qvd.Column{QlikType: qvd.QlikInteger},
+			[]qvd.Symbol{qvdtest.DualInt(2000000000, "2.000.000.000")},
+			DualFormatting,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rc := &ResolvedColumn{Strategy: StrategyInt64}
+			got := ClassifyDual(tt.col, tt.syms, rc, time.UTC)
+			if got.Kind != tt.want {
+				t.Fatalf("kind = %v, want %v (example %q beside %v)",
+					got.Kind, tt.want, got.Example, got.ExampleNumber)
+			}
+		})
+	}
+}
+
+func TestUngroupDigits(t *testing.T) {
+	tests := []struct {
+		text   string
+		sep    byte
+		decSep string
+		want   string
+		ok     bool
+	}{
+		{"3.449", '.', ",", "3449", true},
+		{"1.234.567", '.', ",", "1234567", true},
+		{"1.234,56", '.', ",", "1234,56", true},
+		{"-1.234", '.', ",", "-1234", true},
+		{"(1.234)", '.', ",", "(1234)", true},
+		{"12,000", ',', ".", "12000", true},
+		{"0.003.449", '.', ",", "", false}, // padding the separator hid
+		{"01.234", '.', ",", "", false},    // a padded first group
+		{"1.5", '.', ",", "", false},       // group of one, not three
+		{"12.34", '.', ",", "", false},     // group of two
+		{"1.2345", '.', ",", "", false},    // group of four
+		{"3449", '.', ",", "", false},      // nothing to ungroup
+		{"1,23.456", '.', ",", "", false},  // separator after the decimal point
+		{"Open", '.', ",", "", false},      // not a number at all
+		{"A.BCD", '.', ",", "", false},     // digits only
+	}
+	for _, tt := range tests {
+		got, ok := ungroupDigits(tt.text, tt.sep, tt.decSep)
+		if ok != tt.ok || got != tt.want {
+			t.Errorf("ungroupDigits(%q, %q, %q) = %q, %v; want %q, %v",
+				tt.text, string(tt.sep), tt.decSep, got, ok, tt.want, tt.ok)
+		}
+	}
+}

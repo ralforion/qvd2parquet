@@ -13,6 +13,45 @@ restarts from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- A field that groups its digits without declaring the separator no longer
+  reads as informative. `--dual=auto` is documented to drop a display string
+  that is only a rendering of the number, and a localized one is the case it
+  names, but the test parsed the string under the field's *declared*
+  separators: with none declared, `parseLocalizedNumber` falls back to `.` as
+  the decimal point, so "3.449" came back as 3.449, which is not 3449, and
+  every value in the column looked like text the number does not carry.
+
+  On a real SAP extract this put `OBKNR__text` beside `OBKNR` in `OBJK`,
+  2,969,274 duals classified informative out of 2,969,274 -- the total ratio
+  being the tell, since a column that genuinely mixes codes and labels does not
+  reach 100%. The sidecar held nothing but a second copy of the number in
+  German grouping. `SER01` and `SER02` carried one each on the same run.
+
+  The comparison now retries with the grouping removed when the field declares
+  no thousands separator. It cannot turn a genuinely different string into a
+  rendering: the number to match is already known, and an inferred grouping is
+  held to exact equality where exactness is meaningful, so a whole number must
+  match to the digit. The ordinary comparison is relative, and at two billion
+  its tolerance spans whole integers -- it would have taken "2.000.000.000"
+  beside 2000000001 for a rendering and dropped a string that says something
+  else. A fractional value keeps the tolerance, which is there to absorb the
+  rounding a display format applies.
+
+  The grouping itself must also be exact, the first group one to three digits
+  and every later one three, so "1.5" is never read as 15. A declared decimal
+  separator is still believed -- with `DecSep="."` the string "3.449" is 3.449
+  and stating it beside 3449 is information. Zero padding still outranks
+  grouping, and is re-tested once the separators are gone: the padding in
+  "0.003.449" is invisible to a test that looks at the second character, but
+  ungrouping reveals "0003449", a code whose width is part of the value.
+
+  This changes what an affected file converts to on the defaults, by one
+  column: the `__text` companion is no longer written. It is the same
+  correction 1.0.1 made for zero-padded codes, in the same classifier, and
+  `--dual=columns` still writes both sides for anyone who wants them.
+
 ## [2.7.0] - 2026-09-09
 
 ### Added
