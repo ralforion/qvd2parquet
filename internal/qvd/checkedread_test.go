@@ -1,8 +1,10 @@
 package qvd
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -86,6 +88,34 @@ func TestReadHeaderBytesRefusesAnImpossibleCount(t *testing.T) {
 	// only shape of it that is impossible rather than merely surprising.
 	_, _, err := ReadHeaderBytes(&overReporter{r: bytes.NewReader(body), extra: 8192})
 	if !errors.Is(err, ErrUnstableRead) {
+		t.Fatalf("error = %v, want ErrUnstableRead", err)
+	}
+}
+
+// The guard exists to choose an error over a panic, not to prevent corruption:
+// an over-reported count is caught by the runtime either way. This pins what
+// bufio does with one, since the whole rationale rests on it.
+func TestAnOverCountPanicsInBufioWithoutTheGuard(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("bufio accepted an impossible count without panicking")
+		}
+		if !strings.Contains(fmt.Sprint(r), "slice bounds out of range") {
+			t.Errorf("panic = %v, want a slice bounds failure", r)
+		}
+	}()
+	body := strings.Repeat("<Tag>x</Tag>\n", 500)
+	br := bufio.NewReader(&overReporter{r: strings.NewReader(body), extra: 212})
+	_, _ = br.ReadBytes(0x00)
+}
+
+// And with the guard it is an error, which is the whole point: one file fails
+// instead of the run.
+func TestTheGuardTurnsThatPanicIntoAnError(t *testing.T) {
+	body := strings.Repeat("<Tag>x</Tag>\n", 500)
+	br := bufio.NewReader(checkedReader{&overReporter{r: strings.NewReader(body), extra: 212}})
+	if _, err := br.ReadBytes(0x00); !errors.Is(err, ErrUnstableRead) {
 		t.Fatalf("error = %v, want ErrUnstableRead", err)
 	}
 }
