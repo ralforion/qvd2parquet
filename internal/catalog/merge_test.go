@@ -1,0 +1,247 @@
+package catalog
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// col builds a row for one column of one table, with everything a merge keys
+// on or is expected to carry across.
+func col(table, name, pqType string, ordinal int32) Row {
+	return Row{
+		Source:       SourceQVD,
+		SourceFile:   table + ".qvd",
+		SourceTable:  table,
+		OutputFile:   table + ".parquet",
+		Ordinal:      ordinal,
+		ColumnName:   name,
+		SourceColumn: name,
+		ParquetType:  pqType,
+		HasSymbols:   true,
+	}
+}
+
+// writeCatalog runs a whole catalog write through the writer, so the tests
+// exercise the same path a run takes rather than a hand-built file.
+func writeCatalog(t *testing.T, path, version string, force bool, rows []Row) *Writer {
+	t.Helper()
+	w, err := NewWriter(path, version, force)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	w.Add(rows)
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	return w
+}
+
+// byKey indexes a catalog for assertions.
+func byKey(rows []Row) map[key]Row {
+	m := make(map[key]Row, len(rows))
+	for _, r := range rows {
+		m[keyOf(r)] = r
+	}
+	return m
+}
+
+// A run over one table must not erase the record of the others. This is the
+// whole point of an additive catalog: a nightly job converts a subset.
+func TestCatalogKeepsTablesTheRunDidNotTouch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "catalog.parquet")
+	writeCatalog(t, path, "1", false, []Row{
+		col("A057", "DATBI", "int64", 1),
+		col("A057", "KSCHL", "utf8", 2),
+		col("MARA", "MATNR", "utf8", 1),
+	})
+	w := writeCatalog(t, path, "2", false, []Row{col("MARA", "MATNR", "utf8", 1)})
+
+	if !w.Merging() {
+		t.Fatal("second run did not merge into the existing catalog")
+	}
+	if w.StoredLen() != 3 {
+		t.Fatalf("StoredLen = %d, want 3", w.StoredLen())
+	}
+
+	got, err := ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("catalog holds %d rows, want 3: %+v", len(got), got)
+	}
+	idx := byKey(got)
+	if r, ok := idx[key{"A057", "DATBI"}]; !ok {
+		t.Error("A057.DATBI was dropped by a run that only converted MARA")
+	} else if r.ToolVersion != "1" {
+		t.Errorf("A057.DATBI tool_version = %q, want the run that wrote it, %q", r.ToolVersion, "1")
+	}
+	if r := idx[key{"MARA", "MATNR"}]; r.ToolVersion != "2" {
+		t.Errorf("MARA.MATNR tool_version = %q, want the newer run, %q", r.ToolVersion, "2")
+	}
+}
+
+// A column whose type changed is updated in place rather than recorded twice.
+func TestCatalogUpdatesAChangedType(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "catalog.parquet")
+	writeCatalog(t, path, "1", false, []Row{col("A057", "KBETR", "float64", 1)})
+	writeCatalog(t, path, "2", false, []Row{col("A057", "KBETR", "decimal(4, 2)", 1)})
+
+	got, err := ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("catalog holds %d rows, want 1: %+v", len(got), got)
+	}
+	if got[0].ParquetType != "decimal(4, 2)" {
+		t.Errorf("parquet_type = %q, want the type the later run wrote", got[0].ParquetType)
+	}
+}
+
+// A new column of a table the catalog already knows is added beside the ones
+// it has, and a column the run no longer produces is kept.
+func TestCatalogAddsAndKeepsColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "catalog.parquet")
+	writeCatalog(t, path, "1", false, []Row{
+		col("A057", "DATBI", "int64", 1),
+		col("A057", "GONE", "utf8", 2),
+	})
+	writeCatalog(t, path, "2", false, []Row{
+		col("A057", "DATBI", "int64", 1),
+		col("A057", "NEW", "utf8", 2),
+	})
+
+	got, err := ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	idx := byKey(got)
+	for _, want := range []string{"DATBI", "GONE", "NEW"} {
+		if _, ok := idx[key{"A057", want}]; !ok {
+			t.Errorf("A057.%s missing from the merged catalog", want)
+		}
+	}
+	// The dropped column keeps the run that last saw it, which is what makes
+	// it findable as stale.
+	if r := idx[key{"A057", "GONE"}]; r.ToolVersion != "1" {
+		t.Errorf("A057.GONE tool_version = %q, want %q", r.ToolVersion, "1")
+	}
+}
+
+// --force is still replace, for the run that wants to start over.
+func TestForceReplacesTheCatalog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "catalog.parquet")
+	writeCatalog(t, path, "1", false, []Row{col("A057", "DATBI", "int64", 1)})
+	w := writeCatalog(t, path, "2", true, []Row{col("MARA", "MATNR", "utf8", 1)})
+
+	if w.Merging() {
+		t.Error("--force merged instead of replacing")
+	}
+	got, err := ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(got) != 1 || got[0].SourceTable != "MARA" {
+		t.Fatalf("catalog = %+v, want only the forced run's row", got)
+	}
+}
+
+// A run that accounted for nothing leaves the catalog alone, merge or not.
+func TestUnstartedRunLeavesTheCatalogIntact(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "catalog.parquet")
+	writeCatalog(t, path, "1", false, []Row{col("A057", "DATBI", "int64", 1)})
+
+	w, err := NewWriter(path, "2", false)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	got, err := ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(got) != 1 || got[0].ToolVersion != "1" {
+		t.Fatalf("catalog = %+v, want the previous run untouched", got)
+	}
+}
+
+// A path holding something that is not a catalog fails when the writer opens,
+// before the run converts anything, rather than being silently replaced.
+func TestNonCatalogPathFailsEarly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notacatalog.parquet")
+	writeCommented(t, path)
+
+	_, err := NewWriter(path, "1", false)
+	if err == nil {
+		t.Fatal("NewWriter accepted a Parquet file that is not a catalog")
+	}
+	if !strings.Contains(err.Error(), "not a catalog") {
+		t.Errorf("error = %v, want it to say the file is not a catalog", err)
+	}
+
+	// The file is still there: nothing was written over it.
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("stat after refusal: %v", err)
+	}
+}
+
+// The rows a merge writes are ordered by table and ordinal, so a table's
+// columns stay together however many runs contributed them.
+func TestMergedCatalogIsOrdered(t *testing.T) {
+	rows := Merge(
+		[]Row{col("MARA", "MTART", "utf8", 2), col("A057", "KSCHL", "utf8", 2)},
+		[]Row{col("MARA", "MATNR", "utf8", 1), col("A057", "DATBI", "int64", 1)},
+	)
+	var got []string
+	for _, r := range rows {
+		got = append(got, r.SourceTable+"."+r.ColumnName)
+	}
+	want := []string{"A057.DATBI", "A057.KSCHL", "MARA.MATNR", "MARA.MTART"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("order = %v, want %v", got, want)
+	}
+}
+
+// Reading a catalog back has to preserve what a merge then writes out again,
+// including the null in symbols and the run timestamp.
+func TestRoundTripPreservesRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "catalog.parquet")
+	in := col("A057", "KBETR", "decimal(4, 2)", 3)
+	in.Comment = "Betrag"
+	in.QlikType = "MONEY"
+	in.Nullable = true
+	in.HasSymbols = false
+	in.SourceRows = 1234
+	in.ValueRange = "0.00..99.99"
+	in.Strategy = "decimal"
+	in.Note = "written as decimal(4, 2)"
+	w := writeCatalog(t, path, "1", false, []Row{in})
+
+	got, err := ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("read %d rows, want 1", len(got))
+	}
+	g := got[0]
+	if g.HasSymbols {
+		t.Error("symbols came back non-null, want the null that was written")
+	}
+	if g.RunAt.IsZero() || g.RunAt.Sub(w.RunAt()).Abs() > time.Second {
+		t.Errorf("run_at = %v, want the writer's %v", g.RunAt, w.RunAt())
+	}
+	g.RunAt, g.HasSymbols = in.RunAt, in.HasSymbols
+	want := in
+	want.ToolVersion = "1"
+	if g != want {
+		t.Errorf("round trip changed the row:\n got %+v\nwant %+v", g, want)
+	}
+}

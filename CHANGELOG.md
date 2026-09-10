@@ -13,6 +13,41 @@ restarts from it.
 
 ## [Unreleased]
 
+### Changed
+
+- `--catalog-out` merges into a catalog already at its path instead of refusing
+  it. A catalog describes tables and a run describes the tables it converted,
+  so the two were only ever the same thing for a job that reconverted
+  everything every night. A job that converts what changed had the choice
+  between failing on the existing file and passing `--force`, which replaced
+  the record of two hundred tables with the record of the one it touched.
+
+  Rows are keyed by `source_table` and `column_name`. A column the run
+  describes is updated in place, so a changed `parquet_type`, comment or note
+  replaces what was stored; a column the run produced for the first time is
+  added; a table the run did not touch keeps every row it had, with the
+  `run_at` of the run that wrote them.
+
+  Nothing is removed. A column a table no longer has stays in the catalog
+  carrying the `run_at` of the last run that saw it, which is what makes drift
+  queryable rather than silent -- a row older than the newest run for its table
+  is a column the latest conversion did not produce. `--force` still means
+  replace, for the run that wants to start the catalog over.
+
+  The existing catalog is read when the writer opens rather than at the end, so
+  a path holding a Parquet file that is not a catalog fails the run before it
+  converts a folder rather than after. The merged file is written to a
+  temporary and renamed, so the catalog on disk is intact until its replacement
+  is complete. A run that accounted for no input still writes nothing and
+  leaves the file alone.
+
+  `--catalog-scan` now fills `source_table` from the scanned file's own name,
+  which is what `--out-dir` named it for. It was empty, which as a merge key
+  would have collapsed a folder of two hundred tables into one nameless one.
+
+  The `--skip-up-to-date` manifest already behaved this way, keyed by output
+  file name within `--out-dir`.
+
 ### Fixed
 
 - A field that groups its digits without declaring the separator no longer

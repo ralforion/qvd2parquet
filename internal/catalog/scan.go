@@ -95,6 +95,7 @@ func ScanFile(path string) ([]Row, error) {
 		rows = append(rows, Row{
 			Source:       SourceParquet,
 			SourceFile:   path,
+			SourceTable:  tableName(path),
 			SourceRows:   rdr.NumRows(),
 			OutputFile:   path,
 			Ordinal:      int32(i + 1),
@@ -106,6 +107,19 @@ func ScanFile(path string) ([]Row, error) {
 		})
 	}
 	return rows, nil
+}
+
+// tableName is the table a scanned Parquet file describes. The QVD header is
+// long gone by the time a finished file is scanned, so the name it was written
+// under is the best available answer -- and it is the right one for a batch,
+// where --out-dir names each output for its table.
+//
+// It matters because a catalog merges on the table name. Left empty, every
+// scanned file would share the one key and a folder of two hundred tables
+// would collapse into a single nameless one.
+func tableName(path string) string {
+	base := filepath.Base(path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
 // lookup finds a key in Arrow's parallel metadata slices.

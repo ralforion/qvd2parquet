@@ -13,6 +13,8 @@ import (
 
 	"github.com/ralforion/qvd2parquet/internal/catalog"
 	"github.com/ralforion/qvd2parquet/internal/convert"
+	"github.com/ralforion/qvd2parquet/internal/qvd"
+	"github.com/ralforion/qvd2parquet/internal/qvdtest"
 )
 
 // buildCLI compiles the command once for the tests that need to run it as a
@@ -1499,4 +1501,66 @@ func TestDuplicateNamesEndToEnd(t *testing.T) {
 			t.Errorf("report has %d output columns, want 7: %v", len(names), names)
 		}
 	})
+}
+
+// TestCatalogAccumulatesAcrossRuns is the nightly job: each run converts the
+// tables that changed, and the catalog has to end up describing all of them.
+// Before it merged, the second run either failed on the existing file or, with
+// --force, replaced the record of every other table with its own.
+func TestCatalogAccumulatesAcrossRuns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+
+	// Two synthetic QVDs, each carrying its own table name in its header,
+	// since that is what the catalog keys on.
+	run := func(table string) []byte {
+		t.Helper()
+		src := filepath.Join(dir, table+".qvd")
+		if _, err := qvdtest.Build(src, qvdtest.Table{
+			Name: table,
+			Fields: []qvdtest.Field{{
+				Name: "Id", Type: "INTEGER",
+				Symbols: []qvd.Symbol{qvdtest.Int(1), qvdtest.Int(2)},
+				Rows:    []int{0, 1},
+			}},
+		}); err != nil {
+			t.Fatalf("build %s: %v", table, err)
+		}
+		cmd := exec.Command(bin, "--progress", "0",
+			"--out-dir", filepath.Join(dir, table),
+			"--catalog-out", catalogPath, src)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("convert %s: %v\n%s", table, err, out)
+		}
+		return out
+	}
+
+	first := run("A057")
+	if !strings.Contains(string(first), "wrote catalog to") {
+		t.Fatalf("first run did not write a catalog:\n%s", first)
+	}
+	second := run("MARA")
+	if !strings.Contains(string(second), "merged catalog into") {
+		t.Fatalf("second run did not merge into the catalog:\n%s", second)
+	}
+
+	rows, err := catalog.ReadFile(catalogPath)
+	if err != nil {
+		t.Fatalf("read catalog: %v", err)
+	}
+	tables := map[string]int{}
+	for _, r := range rows {
+		tables[r.SourceTable]++
+	}
+	if tables["A057"] == 0 {
+		t.Errorf("the run that converted MARA erased A057: %v", tables)
+	}
+	if tables["MARA"] == 0 {
+		t.Errorf("MARA is missing from the catalog: %v", tables)
+	}
 }
