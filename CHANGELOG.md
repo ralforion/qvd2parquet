@@ -25,23 +25,24 @@ restarts from it.
   report has been seen from Windows on a share during a network outage, 4308
   bytes claimed for a 4096-byte buffer.
 
-  Nothing downstream survives it. `bufio.Reader` adds the count to its write
-  index, so a buffer that claims more than it holds leaves the reader slicing
-  bytes that read never wrote: whatever the buffer held before, spliced into
-  the middle of the data. In an XML header that is a stray byte inside a tag,
-  from nowhere, in a file that reads correctly the next time.
+  Believed, the count crashes the process rather than corrupting the data.
+  `bufio.Reader` adds it to its write index, and the next slice of the buffer
+  panics: `slice bounds out of range [:4308] with capacity 4096`. The `ReadAt`
+  path panics too, inside `os.File.ReadAt`, which slices the caller's buffer by
+  the count it was given (`b = b[m:]`).
 
-  Whether that has ever happened here is unknown, and this is not a claim that
-  it has. It costs one comparison per read to refuse it rather than decode it.
+  So this is not protection against wrong data, and no version of it could be:
+  an impossible count is caught by the runtime either way. What it buys is
+  which of the two happens. A panic takes the whole run with it, and a batch
+  that has been converting for hours loses every file still in flight; an error
+  fails one file and lets the rest finish. That is the entire benefit, and it
+  is worth one comparison per read.
 
-  This applies to sequential reads, and only can: on the `ReadAt` path the
-  count is consumed inside `os.File.ReadAt`, which slices the caller's buffer
-  by it (`b = b[m:]`) before any wrapper regains control, so an over-count
-  there panics on the slice bounds rather than corrupting anything. That path
-  fails loudly on its own. The symbol tables are now read sequentially rather
-  than through an `io.SectionReader` so that the guard applies to them, with
+  It applies to the sequential reads, which are the ones a wrapper can see the
+  count on before anything slices by it. The symbol tables are now read
+  sequentially rather than through an `io.SectionReader` for that reason, with
   each column seeking to its own start so a short read in one cannot shift the
-  ones after it.
+  ones after it. Record chunks keep `ReadAt` and keep the panic.
 
 - `--quality-gate reread` checks that the QVD reads the same way twice. Every
   other mode validates the written Parquet against metrics collected from the
