@@ -13,6 +13,81 @@ restarts from it.
 
 ## [Unreleased]
 
+### Changed
+
+- `--catalog-out` merges into a catalog already at its path instead of refusing
+  it. A catalog describes tables and a run describes the tables it converted,
+  so the two were only ever the same thing for a job that reconverted
+  everything every night. A job that converts what changed had the choice
+  between failing on the existing file and passing `--force`, which replaced
+  the record of two hundred tables with the record of the one it touched.
+
+  Rows are keyed by `source_table` and `column_name`. A column the run
+  describes is updated in place, so a changed `parquet_type`, comment or note
+  replaces what was stored; a column the run produced for the first time is
+  added; a table the run did not touch keeps every row it had, with the
+  `run_at` of the run that wrote them.
+
+  Nothing is removed. A column a table no longer has stays in the catalog
+  carrying the `run_at` of the last run that saw it, which is what makes drift
+  queryable rather than silent -- a row older than the newest run for its table
+  is a column the latest conversion did not produce. `--force` still means
+  replace, for the run that wants to start the catalog over.
+
+  The existing catalog is read when the writer opens rather than at the end, so
+  a path holding a Parquet file that is not a catalog fails the run before it
+  converts a folder rather than after. That read opens the file itself rather
+  than through `file.OpenParquetFile`, which leaves the descriptor open when it
+  cannot read the footer -- a path that fails routinely here, since a
+  `--catalog-out` pointed at the wrong file is a setup mistake to report. On
+  Windows the leaked handle stopped the file being replaced or removed at all. The merged file is written to a
+  temporary and renamed, so the catalog on disk is intact until its replacement
+  is complete. A run that accounted for no input still writes nothing and
+  leaves the file alone.
+
+  `--catalog-scan` now fills `source_table` from the scanned file's own name,
+  which is what `--out-dir` named it for. It was empty, which as a merge key
+  would have collapsed a folder of two hundred tables into one nameless one.
+
+  A scan is reconciled against what the catalog already holds for the file it
+  read, matched on `output_file`. A scan sees a Parquet file and nothing else,
+  and merged as-is both of its blind spots cost something: a QVD whose header
+  names a different table than its file would arrive as two tables, one under
+  each name, and a `--skip-up-to-date` run over an unchanged folder would
+  replace every row's QVD side with the blanks a scan has for `qlik_type`,
+  `symbols`, `value_range`, `strategy` and `note`. The data did not change; the
+  record of it would. A scanned column of a file the catalog was written from
+  now adopts the table it was converted under and the QVD facts the scan cannot
+  see, while what the scan did observe -- the column's name, type, nullability,
+  comment, ordinal and the file's row count -- is taken from the scan, since
+  that is the file as it stands. A column the conversion never wrote joins the
+  table and stays a `source='parquet'` row.
+
+  `output_file` is now recorded canonically -- absolute, and through any
+  symlink -- rather than as the run happened to spell it. A row that says
+  `out/orders.parquet` means nothing outside the directory the run was launched
+  from, and a later run resolving it from somewhere else gets a path to a file
+  that was never there, which is indistinguishable from a path to a real,
+  different file. Recorded canonically, the path is evidence, and matching on
+  it is an equality test rather than a guess between spellings.
+
+  Nothing else counts as evidence. A scan whose path does not match a stored
+  conversion is filed under its own name, because `original/orders.parquet` and
+  `other/orders.parquet` are two files and a shared name says nothing about
+  which table wrote which. The cost of declining is a second table in the
+  catalog; the cost of guessing would be one file's description written into
+  another table's row. Rows written before this carry whatever spelling they
+  were given: they still match a run launched from the same directory, and
+  where they do not, the run records the table again rather than claiming the
+  wrong one.
+
+  Where an output has belonged to more than one table, which it can because
+  nothing is ever removed, the scan refreshes the one the most recent
+  conversion of that file wrote rather than whichever row sorts last.
+
+  The `--skip-up-to-date` manifest already behaved this way, keyed by output
+  file name within `--out-dir`.
+
 ### Fixed
 
 - A field that groups its digits without declaring the separator no longer

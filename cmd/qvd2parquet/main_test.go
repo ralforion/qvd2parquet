@@ -7,12 +7,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ralforion/qvd2parquet/internal/catalog"
 	"github.com/ralforion/qvd2parquet/internal/convert"
+	"github.com/ralforion/qvd2parquet/internal/qvd"
+	"github.com/ralforion/qvd2parquet/internal/qvdtest"
 )
 
 // buildCLI compiles the command once for the tests that need to run it as a
@@ -1499,4 +1502,318 @@ func TestDuplicateNamesEndToEnd(t *testing.T) {
 			t.Errorf("report has %d output columns, want 7: %v", len(names), names)
 		}
 	})
+}
+
+// TestCatalogAccumulatesAcrossRuns is the nightly job: each run converts the
+// tables that changed, and the catalog has to end up describing all of them.
+// Before it merged, the second run either failed on the existing file or, with
+// --force, replaced the record of every other table with its own.
+func TestCatalogAccumulatesAcrossRuns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+
+	// Two synthetic QVDs, each carrying its own table name in its header,
+	// since that is what the catalog keys on.
+	run := func(table string) []byte {
+		t.Helper()
+		src := filepath.Join(dir, table+".qvd")
+		if _, err := qvdtest.Build(src, qvdtest.Table{
+			Name: table,
+			Fields: []qvdtest.Field{{
+				Name: "Id", Type: "INTEGER",
+				Symbols: []qvd.Symbol{qvdtest.Int(1), qvdtest.Int(2)},
+				Rows:    []int{0, 1},
+			}},
+		}); err != nil {
+			t.Fatalf("build %s: %v", table, err)
+		}
+		cmd := exec.Command(bin, "--progress", "0",
+			"--out-dir", filepath.Join(dir, table),
+			"--catalog-out", catalogPath, src)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("convert %s: %v\n%s", table, err, out)
+		}
+		return out
+	}
+
+	first := run("A057")
+	if !strings.Contains(string(first), "wrote catalog to") {
+		t.Fatalf("first run did not write a catalog:\n%s", first)
+	}
+	second := run("MARA")
+	if !strings.Contains(string(second), "merged catalog into") {
+		t.Fatalf("second run did not merge into the catalog:\n%s", second)
+	}
+
+	rows, err := catalog.ReadFile(catalogPath)
+	if err != nil {
+		t.Fatalf("read catalog: %v", err)
+	}
+	tables := map[string]int{}
+	for _, r := range rows {
+		tables[r.SourceTable]++
+	}
+	if tables["A057"] == 0 {
+		t.Errorf("the run that converted MARA erased A057: %v", tables)
+	}
+	if tables["MARA"] == 0 {
+		t.Errorf("MARA is missing from the catalog: %v", tables)
+	}
+}
+
+// buildQVD writes a synthetic QVD whose header table name is given separately
+// from its file name, which is what tells the two identities apart.
+func buildQVD(t *testing.T, path, table string) {
+	t.Helper()
+	if _, err := qvdtest.Build(path, qvdtest.Table{
+		Name: table,
+		Fields: []qvdtest.Field{{
+			Name: "Id", Type: "INTEGER",
+			Symbols: []qvd.Symbol{qvdtest.Int(1), qvdtest.Int(2)},
+			Rows:    []int{0, 1},
+		}},
+	}); err != nil {
+		t.Fatalf("build %s: %v", path, err)
+	}
+}
+
+// readCatalog is the catalog as rows, for asserting on what a run left.
+func readCatalog(t *testing.T, path string) []catalog.Row {
+	t.Helper()
+	rows, err := catalog.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read catalog: %v", err)
+	}
+	return rows
+}
+
+// TestSkippedFileKeepsItsQVDSideInTheCatalog is the second night of an
+// unchanged folder. --skip-up-to-date converts nothing and scans the outputs
+// instead, and a scan cannot see qlik_type, symbols, value_range, strategy or
+// note. Merged as-is those blanks replaced the facts the first run recorded,
+// so a folder that did not change lost the record of it.
+func TestSkippedFileKeepsItsQVDSideInTheCatalog(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "orders.qvd")
+	buildQVD(t, src, "ORDERS")
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	outDir := filepath.Join(dir, "out")
+
+	run := func() []byte {
+		t.Helper()
+		cmd := exec.Command(bin, "--progress", "0", "--out-dir", outDir,
+			"--skip-up-to-date", "--catalog-out", catalogPath, dir)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("run: %v\n%s", err, out)
+		}
+		return out
+	}
+	run()
+	before := readCatalog(t, catalogPath)
+	if len(before) == 0 {
+		t.Fatal("first run wrote no catalog rows")
+	}
+
+	second := run()
+	if !strings.Contains(string(second), "up to date") {
+		t.Fatalf("second run did not skip:\n%s", second)
+	}
+	after := readCatalog(t, catalogPath)
+	if len(after) != len(before) {
+		t.Fatalf("catalog went from %d rows to %d", len(before), len(after))
+	}
+	for i, got := range after {
+		want := before[i]
+		if got.QlikType != want.QlikType || got.Strategy != want.Strategy ||
+			got.ValueRange != want.ValueRange || got.Note != want.Note ||
+			got.HasSymbols != want.HasSymbols || got.Symbols != want.Symbols ||
+			got.Source != want.Source {
+			t.Errorf("skipping %s.%s lost its QVD side:\n got %+v\nwant %+v",
+				got.SourceTable, got.ColumnName, got, want)
+		}
+	}
+}
+
+// TestScanDoesNotDuplicateAConvertedTable is the after-the-fact scan of a
+// folder already catalogued. A conversion keys its rows by the table name in
+// the QVD header and a scan has only the file name, so a QVD whose header
+// names something else arrived in the catalog as two tables.
+func TestScanDoesNotDuplicateAConvertedTable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "orders.qvd")
+	buildQVD(t, src, "HeaderOrders")
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	outDir := filepath.Join(dir, "out")
+
+	convert := exec.Command(bin, "--progress", "0", "--out-dir", outDir,
+		"--catalog-out", catalogPath, src)
+	if out, err := convert.CombinedOutput(); err != nil {
+		t.Fatalf("convert: %v\n%s", err, out)
+	}
+	converted := readCatalog(t, catalogPath)
+
+	scan := exec.Command(bin, "--progress", "0", "--catalog-scan",
+		"--catalog-out", catalogPath, outDir)
+	if out, err := scan.CombinedOutput(); err != nil {
+		t.Fatalf("scan: %v\n%s", err, out)
+	}
+	after := readCatalog(t, catalogPath)
+
+	if len(after) != len(converted) {
+		var got []string
+		for _, r := range after {
+			got = append(got, r.SourceTable+"."+r.ColumnName)
+		}
+		t.Fatalf("scanning a converted folder added rows: %d became %d (%v)",
+			len(converted), len(after), got)
+	}
+	for _, r := range after {
+		if r.SourceTable != "HeaderOrders" {
+			t.Errorf("column %s is under table %q, want the header's name",
+				r.ColumnName, r.SourceTable)
+		}
+		if r.QlikType == "" {
+			t.Errorf("column %s lost its qlik_type to the scan", r.ColumnName)
+		}
+	}
+}
+
+// TestScanByAbsolutePathDoesNotDuplicate is the same duplicate as
+// TestScanDoesNotDuplicateAConvertedTable, reached by spelling the directory
+// differently. The conversion stores the relative --out-dir it was given and
+// the scan names the same directory absolutely, which filepath.Clean leaves as
+// two files.
+func TestScanByAbsolutePathDoesNotDuplicate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "orders.qvd")
+	buildQVD(t, src, "HeaderOrders")
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+
+	// Run the conversion from inside dir so "out" is genuinely relative.
+	convert := exec.Command(bin, "--progress", "0", "--out-dir", "out",
+		"--catalog-out", catalogPath, "orders.qvd")
+	convert.Dir = dir
+	if out, err := convert.CombinedOutput(); err != nil {
+		t.Fatalf("convert: %v\n%s", err, out)
+	}
+	converted := readCatalog(t, catalogPath)
+
+	scan := exec.Command(bin, "--progress", "0", "--catalog-scan",
+		"--catalog-out", catalogPath, filepath.Join(dir, "out"))
+	if out, err := scan.CombinedOutput(); err != nil {
+		t.Fatalf("scan: %v\n%s", err, out)
+	}
+	after := readCatalog(t, catalogPath)
+
+	if len(after) != len(converted) {
+		var got []string
+		for _, r := range after {
+			got = append(got, r.SourceTable+"."+r.ColumnName+" ("+r.OutputFile+")")
+		}
+		t.Fatalf("a scan by absolute path added rows: %d became %d (%v)",
+			len(converted), len(after), got)
+	}
+	for _, r := range after {
+		if r.SourceTable != "HeaderOrders" {
+			t.Errorf("column %s is under table %q, want the header's name",
+				r.ColumnName, r.SourceTable)
+		}
+	}
+}
+
+// TestScanOfAnUnrelatedFileDoesNotClaimAConvertedTable is the dangerous
+// direction of the base-name fallback. Two folders each hold an orders.parquet
+// and they are different files. Scanning the one the catalog knows nothing
+// about must not adopt the other's table, which would replace a converted
+// row's QVD side with a scan's blanks.
+func TestScanOfAnUnrelatedFileDoesNotClaimAConvertedTable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+
+	// Both inputs are named orders.qvd, so both outputs are orders.parquet.
+	// That is what makes the file names collide while the files do not.
+	convert := func(srcDir, table, outDir string, catalogued bool) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, srcDir), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		src := filepath.Join(dir, srcDir, "orders.qvd")
+		buildQVD(t, src, table)
+		args := []string{"--progress", "0", "--out-dir", outDir}
+		if catalogued {
+			args = append(args, "--catalog-out", catalogPath)
+		}
+		cmd := exec.Command(bin, append(args, filepath.Join(srcDir, "orders.qvd"))...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("convert %s: %v\n%s", table, err, out)
+		}
+		_ = src
+	}
+
+	// Converted with a relative --out-dir, from the directory the scan will
+	// run in, so both paths resolve here and there is no ambiguity to hide
+	// behind: they are simply two different files of the same name.
+	convert("original-src", "HeaderOrders", "original", true)
+	before := readCatalog(t, catalogPath)
+	if len(before) == 0 {
+		t.Fatal("the conversion wrote no catalog rows")
+	}
+
+	// A different file of the same name, never catalogued.
+	convert("other-src", "Unrelated", "other", false)
+
+	// Scanned by a relative path, from the directory that holds both folders.
+	scan := exec.Command(bin, "--progress", "0", "--catalog-scan",
+		"--catalog-out", catalogPath, "other")
+	scan.Dir = dir
+	if out, err := scan.CombinedOutput(); err != nil {
+		t.Fatalf("scan: %v\n%s", err, out)
+	}
+	after := readCatalog(t, catalogPath)
+
+	idx := map[string]catalog.Row{}
+	for _, r := range after {
+		idx[r.SourceTable+"."+r.ColumnName] = r
+	}
+	for _, want := range before {
+		got, ok := idx[want.SourceTable+"."+want.ColumnName]
+		if !ok {
+			t.Fatalf("%s.%s vanished from the catalog", want.SourceTable, want.ColumnName)
+		}
+		if got.QlikType != want.QlikType || got.Strategy != want.Strategy || got.Source != want.Source {
+			t.Errorf("scanning an unrelated file overwrote %s.%s:\n got %+v\nwant %+v",
+				want.SourceTable, want.ColumnName, got, want)
+		}
+	}
+	if _, ok := idx["orders.Id"]; !ok {
+		var names []string
+		for k := range idx {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		t.Errorf("the scanned file was not filed under its own name: %v", names)
+	}
 }

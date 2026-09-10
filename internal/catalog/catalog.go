@@ -11,7 +11,9 @@
 package catalog
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -102,16 +104,65 @@ type Writer struct {
 	started bool
 	runAt   time.Time
 	version string
+
+	// stored is the catalog already at path, read once when the writer opens
+	// so a run cannot spend an hour converting and then discover the file it
+	// has to merge into is unreadable. merging says it was there to read.
+	stored  []Row
+	merging bool
+
+	// canon memoizes the canonical form of each output path a run records, so
+	// a batch of two hundred files at two hundred columns resolves two hundred
+	// paths rather than forty thousand.
+	canon map[string]string
 }
 
 // NewWriter prepares a catalog for one run. The timestamp is taken once here,
 // so every row of a batch shares it and a run is a single value to group by.
+//
+// A catalog already at the path is read and merged into, rather than refused.
+// A catalog describes tables, and a run describes the tables it converted:
+// refusing the second one would mean a nightly job over a subset either fails
+// or, with --force, replaces the record of two hundred tables with the record
+// of the one it touched. --force still means replace, for the run that wants
+// to start the catalog over.
+//
+// Reading here rather than at Close is deliberate. An unreadable catalog is a
+// setup mistake, and the run should learn about it before it converts a folder
+// rather than after.
 func NewWriter(path, toolVersion string, force bool) (*Writer, error) {
-	// Fail on an existing file now rather than after converting the folder.
-	if err := parquetwrite.CheckOutput(path, force); err != nil {
-		return nil, err
+	w := &Writer{path: path, force: force, runAt: time.Now().UTC(), version: toolVersion}
+	if force {
+		return w, nil
 	}
-	return &Writer{path: path, force: force, runAt: time.Now().UTC(), version: toolVersion}, nil
+	switch _, err := os.Stat(path); {
+	case err == nil:
+		stored, err := ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		w.stored, w.merging = stored, true
+	case !errors.Is(err, os.ErrNotExist):
+		return nil, fmt.Errorf("stat catalog %s: %w", path, err)
+	}
+	return w, nil
+}
+
+// Merging reports whether a catalog was already at the path and will be
+// merged into.
+func (w *Writer) Merging() bool {
+	if w == nil {
+		return false
+	}
+	return w.merging
+}
+
+// StoredLen is how many rows the catalog held before this run.
+func (w *Writer) StoredLen() int {
+	if w == nil {
+		return 0
+	}
+	return len(w.stored)
 }
 
 // Begin marks that an input has been accounted for, which is what licenses
@@ -178,8 +229,42 @@ func (w *Writer) Add(rows []Row) {
 	for _, r := range rows {
 		r.RunAt = w.runAt
 		r.ToolVersion = w.version
+		r.OutputFile = w.canonical(r.OutputFile)
 		w.rows = append(w.rows, r)
 	}
+}
+
+// canonical resolves an output path to the one spelling that identifies the
+// file from any working directory.
+//
+// It is stored that way, not merely compared that way, because comparing is
+// not enough. A row recorded as "out/orders.parquet" says nothing outside the
+// directory the run was launched from, and a later run resolving it from
+// somewhere else gets a path to a file that was never there -- indistinguishable
+// from a path to a real, different file. Two runs of the same job from
+// different directories would then either miss each other or, worse, be
+// reconciled on the strength of a shared file name, which is no evidence of
+// identity at all: original/orders.parquet and other/orders.parquet are two
+// files.
+//
+// Rows written before this carry whatever spelling they were given. They still
+// match a later run launched from the same directory, and where they do not
+// the run records the table again rather than claiming the wrong one.
+//
+// Called under the writer's lock, which is also what guards the memo.
+func (w *Writer) canonical(path string) string {
+	if path == "" {
+		return ""
+	}
+	if c, ok := w.canon[path]; ok {
+		return c
+	}
+	c := canonicalOutput(path)
+	if w.canon == nil {
+		w.canon = map[string]string{}
+	}
+	w.canon[path] = c
+	return c
 }
 
 // Len is how many rows have been recorded.
@@ -219,7 +304,14 @@ func (w *Writer) Close() error {
 		return nil
 	}
 
-	rec, err := buildRecord(w.rows)
+	// A run's rows win over the stored ones for the columns they describe, so
+	// a changed type is updated; every other stored row is carried across.
+	rows := w.rows
+	if w.merging {
+		rows = Merge(w.stored, w.rows)
+	}
+
+	rec, err := buildRecord(rows)
 	if err != nil {
 		return err
 	}
@@ -229,10 +321,14 @@ func (w *Writer) Close() error {
 	if err != nil {
 		return err
 	}
+	// The merged file replaces the one it was read from. That is not the
+	// overwrite --force guards: the existing rows are in the record about to
+	// be written, and the writer renames a temporary into place, so the
+	// catalog on disk is intact until the new one is complete.
 	pw, err := parquetwrite.Create(w.path, Schema, parquetwrite.Options{
 		Compression:  codec,
-		RowGroupRows: int64(len(w.rows)) + 1,
-	}, w.force)
+		RowGroupRows: int64(len(rows)) + 1,
+	}, w.force || w.merging)
 	if err != nil {
 		return err
 	}

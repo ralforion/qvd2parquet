@@ -671,6 +671,66 @@ which exist in the engine but not in the last conversion, which is schema drift
 arriving as a row rather than as a surprise. Point `--catalog-out` at a dated
 path under one directory and the runs accumulate into a history you can diff.
 
+### The catalog accumulates
+
+A catalog already at the path is merged into, not replaced. A run describes the
+tables it converted, and a nightly job converts the tables that changed, so a
+catalog that held only the last run would describe one table on Tuesday and a
+different one on Wednesday.
+
+Rows are keyed by `source_table` and `column_name`:
+
+- a table the run did not touch keeps every row it had, with the `run_at` of
+  the run that wrote them
+- a column the run describes is updated in place, so a changed `parquet_type`,
+  comment or note replaces what was there
+- a column the run produced for the first time is added
+- a column a table no longer has is kept, still carrying the `run_at` of the
+  last run that saw it
+
+Nothing is ever removed, which is what makes drift queryable rather than
+silent: a row whose `run_at` is older than the newest run for its table is a
+column the latest conversion did not produce.
+
+```sql
+select source_table, column_name, parquet_type, run_at
+from catalog c
+where run_at < (select max(run_at) from catalog where source_table = c.source_table)
+```
+
+A scan is reconciled with what the catalog already holds for the file it read.
+A scan sees a Parquet file and nothing else: it takes the table name from the
+file's own name, and it cannot recover `qlik_type`, `symbols`, `value_range`,
+`strategy` or `note`, which never reached the Parquet. Where the catalog holds
+a converted row for that file, matched on `output_file`, the scan adopts the
+table it was converted under and the column adopts the QVD side the scan cannot
+see. Without that, a QVD whose header names a different table than its file
+would arrive as two tables, and a `--skip-up-to-date` run over an unchanged
+folder would replace every row's QVD side with the blanks a scan has for it.
+A column of that file the conversion never wrote joins the table and stays a
+`source='parquet'` row, since nothing recorded a QVD side for it.
+
+Two details of that matching are worth knowing. Paths are resolved before they
+are compared, so a conversion given a relative `--out-dir` and a scan naming
+the same directory absolutely are one file rather than two; where a stored path
+is relative to a working directory the scan cannot reconstruct, the file's name
+stands in, but only when exactly one table in the catalog wrote a file of that
+name. A stored path that is absolute never falls back, however the scan was
+spelled: the scan has just read its file from the directory it is running in,
+so a path that does not match an absolute stored one is a different file. And where an output has belonged to more than one table over the life of
+a catalog, which it can because nothing is ever removed, the scan refreshes the
+table the most recent conversion of that file wrote.
+
+`--force` still means replace, for the run that wants to start the catalog
+over. The merge reads the existing file when the writer opens, before anything
+is converted, so a path holding a Parquet file that is not a catalog fails the
+run at the start rather than after the folder is done. The new catalog is
+written to a temporary file and renamed, so the one on disk stays intact until
+its replacement is complete.
+
+The `--skip-up-to-date` manifest already works this way, keyed by output file
+name within `--out-dir`.
+
 ### Cataloguing files you already converted
 
 A run that forgot `--catalog-out` is not lost, because the comments are in the
@@ -687,7 +747,9 @@ not cost the whole catalog; the run exits non-zero and the summary counts only
 the files it managed to read. A scan in which every file failed accounted for
 nothing, so no catalog is written and the run says so rather than naming one. What it cannot recover is
 the QVD side -- `qlik_type`, `symbols`, `value_range`, `strategy`, `note` --
-which never reached the Parquet. Those rows say `source='parquet'` rather than
+which never reached the Parquet. `source_table` is taken from the file's own
+name, which is what `--out-dir` named it for, so a scan merges into a catalog
+on the same key a conversion does. Those rows say `source='parquet'` rather than
 `source='qvd'` so a query can tell the difference instead of inferring it from
 which fields happen to be empty. A file written by something else scans fine
 and simply has no comment.

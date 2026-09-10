@@ -236,13 +236,25 @@ func TestFileWithNoColumnsStillWritesACatalog(t *testing.T) {
 
 // TestNewWriterRefusesAnExistingFile matches every other output the tool
 // writes: nothing is replaced without --force.
-func TestNewWriterRefusesAnExistingFile(t *testing.T) {
+func TestNewWriterRefusesAFileThatIsNotACatalog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "catalog.parquet")
 	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// An existing catalog is merged into. Something else at that path is a
+	// setup mistake, and is refused rather than read as an empty catalog and
+	// replaced.
 	if _, err := NewWriter(path, "test", false); err == nil {
-		t.Fatal("expected a refusal without --force")
+		t.Fatal("expected a refusal for a file that is not a catalog")
+	}
+	// Reading it must not leave the file open. Nothing on Unix notices, but on
+	// Windows an open handle stops the file being replaced or removed, which
+	// would strand every run pointed at that path.
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("the refused file is still held open: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := NewWriter(path, "test", true); err != nil {
 		t.Fatalf("--force should allow it: %v", err)

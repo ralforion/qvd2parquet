@@ -369,6 +369,13 @@ func openCatalog(path string, opts *convert.Options, logf convert.Logf) (func() 
 		if !cat.Started() {
 			return exitOK
 		}
+		// Merging is worth saying: the file now holds more than this run
+		// described, and a reader counting rows should know why.
+		if cat.Merging() {
+			logf("merged catalog into %s: %d column(s) from this run, %d already there",
+				cat.Path(), cat.Len(), cat.StoredLen())
+			return exitOK
+		}
 		logf("wrote catalog to %s: %d column(s)", cat.Path(), cat.Len())
 		return exitOK
 	}, nil
@@ -869,8 +876,13 @@ func runCatalogScan(paths []string, catalogPath, consolePath string, recursive, 
 	// anyway named a file that does not exist, which is the one thing a
 	// message about an output must not do.
 	if cat.Started() {
-		logf("wrote catalog to %s: %d column(s) from %d file(s)",
-			cat.Path(), cat.Len(), len(files)-failed)
+		if cat.Merging() {
+			logf("merged catalog into %s: %d column(s) from %d file(s), %d already there",
+				cat.Path(), cat.Len(), len(files)-failed, cat.StoredLen())
+		} else {
+			logf("wrote catalog to %s: %d column(s) from %d file(s)",
+				cat.Path(), cat.Len(), len(files)-failed)
+		}
 	}
 	if failed > 0 {
 		logf("note: %d of %d file(s) could not be read", failed, len(files))
