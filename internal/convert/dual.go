@@ -141,12 +141,35 @@ func textRendersNumber(text string, n float64, decSep, thouSep string) bool {
 			if !ok {
 				continue
 			}
-			if v, ok := parseLocalizedNumber(g, dec, ""); ok && numbersMatch(n, v) {
+			v, ok := parseLocalizedNumber(g, dec, "")
+			if !ok {
+				continue
+			}
+			// The grouping was inferred rather than declared, so the match has
+			// to be exact wherever exactness is meaningful. An integer
+			// rendering has nothing to round, and numbersMatch is relative: at
+			// two billion its tolerance spans whole integers, so it would
+			// accept "2.000.000.000" beside 2000000001 and drop a display
+			// string that really does say something else. A fractional value
+			// keeps the tolerance, which is there to absorb the rounding a
+			// display format applies.
+			if isIntegral(n) && isIntegral(v) {
+				if n == v {
+					return true
+				}
+				continue
+			}
+			if numbersMatch(n, v) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// isIntegral reports whether f is a whole number.
+func isIntegral(f float64) bool {
+	return !math.IsInf(f, 0) && !math.IsNaN(f) && f == math.Trunc(f)
 }
 
 // numbersMatch compares with a tolerance that absorbs the rounding a display
@@ -211,14 +234,26 @@ func ungroupDigits(text string, sep byte, decSep string) (string, bool) {
 		return "", false
 	}
 
+	plain := make([]byte, 0, len(digits))
+	for i := 0; i < len(digits); i++ {
+		if digits[i] != sep {
+			plain = append(plain, digits[i])
+		}
+	}
+	// The padding test the caller ran was defeated by the separator: the
+	// second character of "0.003.449" is punctuation, not a digit, so the
+	// string did not look padded. It is, and ungrouping is what reveals it --
+	// "0003449" is a zero-padded code whose width is part of the value, not a
+	// rendering of 3449. Tested here rather than by the caller because the
+	// sign and any accounting bracket are already off.
+	if isZeroPadded(string(plain)) {
+		return "", false
+	}
+
 	var b strings.Builder
 	b.Grow(len(text))
 	b.WriteString(head[:start])
-	for i := 0; i < len(digits); i++ {
-		if digits[i] != sep {
-			b.WriteByte(digits[i])
-		}
-	}
+	b.Write(plain)
 	b.WriteString(head[end:])
 	b.WriteString(tail)
 	return b.String(), true

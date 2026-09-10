@@ -31,13 +31,21 @@ restarts from it.
 
   The comparison now retries with the grouping removed when the field declares
   no thousands separator. It cannot turn a genuinely different string into a
-  rendering: the number to match is already known, so only a string that
-  ungroups to exactly that number is accepted, and the grouping must be exact,
-  the first group one to three digits and every later one three, so "1.5" is
-  never read as 15. A declared decimal separator is still believed -- with
-  `DecSep="."` the string "3.449" is 3.449 and stating it beside 3449 is
-  information. Zero padding still outranks grouping, so `0100002878` stays the
-  `utf8` code it was.
+  rendering: the number to match is already known, and an inferred grouping is
+  held to exact equality where exactness is meaningful, so a whole number must
+  match to the digit. The ordinary comparison is relative, and at two billion
+  its tolerance spans whole integers -- it would have taken "2.000.000.000"
+  beside 2000000001 for a rendering and dropped a string that says something
+  else. A fractional value keeps the tolerance, which is there to absorb the
+  rounding a display format applies.
+
+  The grouping itself must also be exact, the first group one to three digits
+  and every later one three, so "1.5" is never read as 15. A declared decimal
+  separator is still believed -- with `DecSep="."` the string "3.449" is 3.449
+  and stating it beside 3449 is information. Zero padding still outranks
+  grouping, and is re-tested once the separators are gone: the padding in
+  "0.003.449" is invisible to a test that looks at the second character, but
+  ungrouping reveals "0003449", a code whose width is part of the value.
 
   This changes what an affected file converts to on the defaults, by one
   column: the `__text` companion is no longer written. It is the same

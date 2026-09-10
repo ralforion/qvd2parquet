@@ -923,6 +923,29 @@ func TestUndeclaredThousandsSeparatorIsFormatting(t *testing.T) {
 			[]qvd.Symbol{qvdtest.DualInt(3449, "003.449")},
 			DualInformative,
 		},
+		{
+			// The separator hides the padding from the caller's test: the
+			// second character is punctuation, not a digit. Ungrouping is what
+			// reveals "0003449", a code whose width is part of the value.
+			"padding a group separator hides is still padding",
+			qvd.Column{QlikType: qvd.QlikInteger},
+			[]qvd.Symbol{qvdtest.DualInt(3449, "0.003.449")},
+			DualInformative,
+		},
+		{
+			// numbersMatch is relative, and at two billion its tolerance spans
+			// whole integers. An inferred grouping has to match exactly.
+			"a large integer that differs is not a rendering",
+			qvd.Column{QlikType: qvd.QlikInteger},
+			[]qvd.Symbol{qvdtest.DualInt(2000000001, "2.000.000.000")},
+			DualInformative,
+		},
+		{
+			"a large integer that matches still is",
+			qvd.Column{QlikType: qvd.QlikInteger},
+			[]qvd.Symbol{qvdtest.DualInt(2000000000, "2.000.000.000")},
+			DualFormatting,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -950,13 +973,15 @@ func TestUngroupDigits(t *testing.T) {
 		{"-1.234", '.', ",", "-1234", true},
 		{"(1.234)", '.', ",", "(1234)", true},
 		{"12,000", ',', ".", "12000", true},
-		{"1.5", '.', ",", "", false},      // group of one, not three
-		{"12.34", '.', ",", "", false},    // group of two
-		{"1.2345", '.', ",", "", false},   // group of four
-		{"3449", '.', ",", "", false},     // nothing to ungroup
-		{"1,23.456", '.', ",", "", false}, // separator after the decimal point
-		{"Open", '.', ",", "", false},     // not a number at all
-		{"A.BCD", '.', ",", "", false},    // digits only
+		{"0.003.449", '.', ",", "", false}, // padding the separator hid
+		{"01.234", '.', ",", "", false},    // a padded first group
+		{"1.5", '.', ",", "", false},       // group of one, not three
+		{"12.34", '.', ",", "", false},     // group of two
+		{"1.2345", '.', ",", "", false},    // group of four
+		{"3449", '.', ",", "", false},      // nothing to ungroup
+		{"1,23.456", '.', ",", "", false},  // separator after the decimal point
+		{"Open", '.', ",", "", false},      // not a number at all
+		{"A.BCD", '.', ",", "", false},     // digits only
 	}
 	for _, tt := range tests {
 		got, ok := ungroupDigits(tt.text, tt.sep, tt.decSep)
