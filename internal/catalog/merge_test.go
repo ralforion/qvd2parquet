@@ -238,9 +238,15 @@ func TestRoundTripPreservesRows(t *testing.T) {
 	if g.RunAt.IsZero() || g.RunAt.Sub(w.RunAt()).Abs() > time.Second {
 		t.Errorf("run_at = %v, want the writer's %v", g.RunAt, w.RunAt())
 	}
+	// The writer records the output path canonically, so that one field is
+	// expected to come back changed.
+	if g.OutputFile != canonicalOutput(in.OutputFile) {
+		t.Errorf("output_file = %q, want the canonical %q", g.OutputFile, canonicalOutput(in.OutputFile))
+	}
 	g.RunAt, g.HasSymbols = in.RunAt, in.HasSymbols
 	want := in
 	want.ToolVersion = "1"
+	want.OutputFile = canonicalOutput(in.OutputFile)
 	if g != want {
 		t.Errorf("round trip changed the row:\n got %+v\nwant %+v", g, want)
 	}
@@ -393,61 +399,55 @@ func TestScanAdoptsTheNewestTableForAReusedOutput(t *testing.T) {
 	}
 }
 
-// The base-name fallback covers a path recorded relative to a working
-// directory the scan cannot reconstruct, and declines everywhere else.
-func TestBaseNameFallbackIsNarrow(t *testing.T) {
-	relative := col("HeaderOrders", "Id", "int64", 1)
-	relative.OutputFile = "out/orders.parquet"
-	relative.QlikType = "INTEGER"
-	relative.ToolVersion = "converted"
+// A shared file name is not evidence of identity. Two folders each holding an
+// orders.parquet hold two files, and a scan of one must not claim the other's
+// table and overwrite its row. Nothing but the path decides it, which is why
+// the path is recorded canonically in the first place.
+func TestASharedFileNameIsNotIdentity(t *testing.T) {
+	stored := col("HeaderOrders", "Id", "int64", 1)
+	stored.QlikType = "INTEGER"
+	stored.ToolVersion = "converted"
 
-	absolute := relative
-	absolute.OutputFile = filepath.Join(string(filepath.Separator), "srv", "out", "orders.parquet")
-
-	other := col("OtherTable", "Id", "int64", 1)
-	other.OutputFile = "elsewhere/orders.parquet"
-	other.ToolVersion = "converted"
-
-	absScan := filepath.Join(string(filepath.Separator), "elsewhere", "entirely", "orders.parquet")
-	relScan := filepath.Join("other", "orders.parquet")
+	abs := func(parts ...string) string {
+		return filepath.Join(append([]string{string(filepath.Separator)}, parts...)...)
+	}
 
 	tests := []struct {
-		name      string
-		stored    []Row
-		scan      string
-		wantTable string
-		wantRows  int
+		name       string
+		storedPath string
+		scanPath   string
+		wantTable  string
+		wantRows   int
 	}{
 		{
-			// The stored path means nothing outside the directory it was
-			// written in, so the name is all there is, and it is unambiguous.
-			"a relative stored path falls back to the name",
-			[]Row{relative}, absScan, "HeaderOrders", 1,
+			// The case that made the fallback look reasonable, and the one
+			// that showed it was not: both paths resolve from here, to two
+			// different files.
+			"a relative stored path is not a licence to guess",
+			filepath.Join("original", "orders.parquet"),
+			filepath.Join("other", "orders.parquet"),
+			"orders", 2,
 		},
 		{
-			// An absolute stored path already means the same file everywhere,
-			// so a scan that does not match it is describing a different file.
-			"an absolute stored path does not",
-			[]Row{absolute}, absScan, "orders", 2,
+			"an absolute stored path, whatever the scan is spelled",
+			abs("srv", "original", "orders.parquet"),
+			filepath.Join("other", "orders.parquet"),
+			"orders", 2,
 		},
 		{
-			// And that holds however the scan was spelled. The scan has just
-			// read the file from the directory it is running in, so its path
-			// resolves correctly whether or not it was written absolute: a
-			// relative spelling is not doubt about which file it means.
-			"an absolute stored path does not, whatever the scan is spelled",
-			[]Row{absolute}, relScan, "orders", 2,
-		},
-		{
-			// Two tables wrote a file of this name. Guessing between them
-			// would hand the scan another table's metadata.
-			"two tables of the same name decline",
-			[]Row{relative, other}, absScan, "orders", 3,
+			// The positive control: the same file, and the scan refreshes the
+			// table it was converted under.
+			"the same path reconciles",
+			filepath.Join("original", "orders.parquet"),
+			filepath.Join("original", "orders.parquet"),
+			"HeaderOrders", 1,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Merge(tt.stored, []Row{scanRow(tt.scan, "Id", 1)})
+			row := stored
+			row.OutputFile = tt.storedPath
+			got := Merge([]Row{row}, []Row{scanRow(tt.scanPath, "Id", 1)})
 			if len(got) != tt.wantRows {
 				t.Errorf("merge produced %d rows, want %d: %+v", len(got), tt.wantRows, got)
 			}

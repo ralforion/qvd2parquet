@@ -113,41 +113,23 @@ func reconcileScans(stored, current []Row) []Row {
 	// last in the catalog. Ordering there is by table name, so taking the last
 	// would have picked the alphabetically greatest -- an obsolete ZOldTable
 	// over the ANewTable that actually wrote the file.
+	type ident struct {
+		table      string
+		sourceFile string
+		runAt      time.Time
+	}
 	files := map[string]ident{}
-	// A path recorded relative to a working directory cannot be resolved from
-	// another one, so the same file is also indexed by its base name, for the
-	// fallback below.
-	bases := map[string]ident{}
 	for _, r := range stored {
 		if r.Source != SourceQVD || r.OutputFile == "" || r.SourceTable == "" {
 			continue
 		}
-		id := ident{
-			table:      r.SourceTable,
-			sourceFile: r.SourceFile,
-			runAt:      r.RunAt,
-			absolute:   filepath.IsAbs(r.OutputFile),
-		}
+		p := pathOf(r.OutputFile)
 		// Strictly newer wins, so an exact tie keeps the first row seen and the
 		// result does not depend on map iteration.
-		p := pathOf(r.OutputFile)
-		if cur, ok := files[p]; !ok || r.RunAt.After(cur.runAt) {
-			files[p] = id
+		if cur, ok := files[p]; ok && !r.RunAt.After(cur.runAt) {
+			continue
 		}
-		base := filepath.Base(r.OutputFile)
-		switch cur, ok := bases[base]; {
-		case !ok:
-			bases[base] = id
-		case cur.table != r.SourceTable:
-			// Two tables wrote a file of this name, in directories that cannot
-			// be told apart from the name alone. Guessing between them would
-			// hand a scan another table's metadata, so the fallback declines.
-			cur.ambiguous = true
-			bases[base] = cur
-		case r.RunAt.After(cur.runAt):
-			id.ambiguous = cur.ambiguous
-			bases[base] = id
-		}
+		files[p] = ident{table: r.SourceTable, sourceFile: r.SourceFile, runAt: r.RunAt}
 	}
 	if len(files) == 0 {
 		return current
@@ -173,7 +155,12 @@ func reconcileScans(stored, current []Row) []Row {
 		if out[i].Source != SourceParquet || out[i].OutputFile == "" {
 			continue
 		}
-		id, known := resolveScanned(out[i].OutputFile, pathOf, files, bases)
+		// The path is the whole of the evidence. Where it does not match, the
+		// scan is describing a file this catalog has no conversion for, and it
+		// is filed under its own name -- a duplicate table at worst, where
+		// guessing on a shared file name would put a description of one file
+		// into another table's row.
+		id, known := files[pathOf(out[i].OutputFile)]
 		if !known {
 			continue
 		}
@@ -198,68 +185,21 @@ func reconcileScans(stored, current []Row) []Row {
 	return out
 }
 
-// ident is the table a stored conversion row says an output file belongs to.
-type ident struct {
-	table      string
-	sourceFile string
-	runAt      time.Time
-	// absolute says the path it came from was absolute, and so means the same
-	// file from any working directory.
-	absolute bool
-	// ambiguous says more than one table wrote a file of this base name, which
-	// disqualifies the base-name fallback.
-	ambiguous bool
-}
-
-// resolveScanned finds the table a scanned file was converted under.
-//
-// The paths usually match outright. They do not when one of the two runs
-// recorded a relative path and the other named the file from a different
-// working directory: "out/orders.parquet" cannot be resolved from anywhere but
-// the directory the conversion ran in, and resolving it from somewhere else
-// produces a path to a file that was never there.
-//
-// Only then does the base name stand in, and only when exactly one table in
-// the catalog wrote a file of that name. Both conditions matter. A stored path
-// that is absolute already means the same file everywhere, so a scan that does
-// not match it is describing a different file and gets no metadata from it;
-// and a name two tables both wrote says nothing about which one is meant.
-//
-// The doubt is entirely on the stored side. Whatever spelling the scan was
-// given resolves correctly, because the scan has just read that file from the
-// directory the process is running in, so a scanned path that does not match
-// an absolute stored one is conclusive however it was written. Asking that the
-// scanned path be absolute too would let "other/orders.parquet" claim the
-// identity and the metadata of an unrelated /srv/original/orders.parquet, and
-// replace its row.
-func resolveScanned(output string, pathOf func(string) string,
-	files, bases map[string]ident) (ident, bool) {
-
-	if id, ok := files[pathOf(output)]; ok {
-		return id, true
-	}
-	id, ok := bases[filepath.Base(output)]
-	if !ok || id.ambiguous || id.absolute {
-		return ident{}, false
-	}
-	return id, true
-}
-
 // canonicalOutput reduces the spellings of one output file to a single string,
-// so a path stored by one run matches the same file named by the next.
+// so a path recorded by one run names the same file to the next.
 //
-// filepath.Clean is not enough: a conversion given a relative --out-dir stores
-// "out/orders.parquet", and a scan of the same directory by absolute path
-// names "/srv/extracts/out/orders.parquet". Cleaned, those are two files, and
-// the scan would file a second copy of the table rather than refreshing the
-// one that is there.
+// filepath.Clean is not enough: a run given a relative --out-dir would record
+// "out/orders.parquet", which means nothing outside the directory it was
+// launched from. Rows are written through this rather than only compared
+// through it, so what the catalog holds is a path that identifies the file
+// from anywhere, and matching is an equality test on evidence rather than a
+// guess between spellings.
 //
 // This is the manifest's notion of path identity, which compares an input
 // across runs for the same reason (see canonicalInputPath). A path that cannot
-// be made absolute, or that no longer resolves because the output has since
-// been moved or deleted, falls back to what can be worked out. The cost of
-// falling back is a scan that does not reconcile, which is the behaviour
-// before any of this: a duplicate row, never a wrong one.
+// be made absolute, or that does not resolve because the output is not there,
+// falls back to what can be worked out; a run that then fails to match records
+// the table again rather than claiming the wrong one.
 func canonicalOutput(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {

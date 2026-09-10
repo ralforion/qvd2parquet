@@ -59,19 +59,26 @@ restarts from it.
   that is the file as it stands. A column the conversion never wrote joins the
   table and stays a `source='parquet'` row.
 
-  The match on `output_file` resolves the path first. `filepath.Clean` leaves
-  a relative `out/orders.parquet` different from the absolute path of the same
-  file, so a conversion given a relative `--out-dir` and a scan naming that
-  directory absolutely would still have arrived as two tables. Where a stored
-  path is relative to a working directory the scan cannot reconstruct, the
-  file's name stands in, and only then: an absolute stored path already means
-  the same file everywhere, so a scan that does not match it is describing a
-  different file, and a name two tables both wrote says nothing about which is
-  meant. The doubt is entirely on the stored side -- a scan has just read its
-  file from the directory the process is running in, so its path resolves
-  correctly whether or not it was written absolute, and a relative spelling is
-  not doubt about which file is meant. Where an output has belonged to more than one table, which it can
-  because nothing is ever removed, the scan refreshes the one the most recent
+  `output_file` is now recorded canonically -- absolute, and through any
+  symlink -- rather than as the run happened to spell it. A row that says
+  `out/orders.parquet` means nothing outside the directory the run was launched
+  from, and a later run resolving it from somewhere else gets a path to a file
+  that was never there, which is indistinguishable from a path to a real,
+  different file. Recorded canonically, the path is evidence, and matching on
+  it is an equality test rather than a guess between spellings.
+
+  Nothing else counts as evidence. A scan whose path does not match a stored
+  conversion is filed under its own name, because `original/orders.parquet` and
+  `other/orders.parquet` are two files and a shared name says nothing about
+  which table wrote which. The cost of declining is a second table in the
+  catalog; the cost of guessing would be one file's description written into
+  another table's row. Rows written before this carry whatever spelling they
+  were given: they still match a run launched from the same directory, and
+  where they do not, the run records the table again rather than claiming the
+  wrong one.
+
+  Where an output has belonged to more than one table, which it can because
+  nothing is ever removed, the scan refreshes the one the most recent
   conversion of that file wrote rather than whichever row sorts last.
 
   The `--skip-up-to-date` manifest already behaved this way, keyed by output

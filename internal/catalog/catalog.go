@@ -110,6 +110,11 @@ type Writer struct {
 	// has to merge into is unreadable. merging says it was there to read.
 	stored  []Row
 	merging bool
+
+	// canon memoizes the canonical form of each output path a run records, so
+	// a batch of two hundred files at two hundred columns resolves two hundred
+	// paths rather than forty thousand.
+	canon map[string]string
 }
 
 // NewWriter prepares a catalog for one run. The timestamp is taken once here,
@@ -224,8 +229,42 @@ func (w *Writer) Add(rows []Row) {
 	for _, r := range rows {
 		r.RunAt = w.runAt
 		r.ToolVersion = w.version
+		r.OutputFile = w.canonical(r.OutputFile)
 		w.rows = append(w.rows, r)
 	}
+}
+
+// canonical resolves an output path to the one spelling that identifies the
+// file from any working directory.
+//
+// It is stored that way, not merely compared that way, because comparing is
+// not enough. A row recorded as "out/orders.parquet" says nothing outside the
+// directory the run was launched from, and a later run resolving it from
+// somewhere else gets a path to a file that was never there -- indistinguishable
+// from a path to a real, different file. Two runs of the same job from
+// different directories would then either miss each other or, worse, be
+// reconciled on the strength of a shared file name, which is no evidence of
+// identity at all: original/orders.parquet and other/orders.parquet are two
+// files.
+//
+// Rows written before this carry whatever spelling they were given. They still
+// match a later run launched from the same directory, and where they do not
+// the run records the table again rather than claiming the wrong one.
+//
+// Called under the writer's lock, which is also what guards the memo.
+func (w *Writer) canonical(path string) string {
+	if path == "" {
+		return ""
+	}
+	if c, ok := w.canon[path]; ok {
+		return c
+	}
+	c := canonicalOutput(path)
+	if w.canon == nil {
+		w.canon = map[string]string{}
+	}
+	w.canon[path] = c
+	return c
 }
 
 // Len is how many rows have been recorded.

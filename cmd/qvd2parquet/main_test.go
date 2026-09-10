@@ -1761,18 +1761,21 @@ func TestScanOfAnUnrelatedFileDoesNotClaimAConvertedTable(t *testing.T) {
 		}
 		src := filepath.Join(dir, srcDir, "orders.qvd")
 		buildQVD(t, src, table)
-		args := []string{"--progress", "0", "--out-dir", filepath.Join(dir, outDir)}
+		args := []string{"--progress", "0", "--out-dir", outDir}
 		if catalogued {
 			args = append(args, "--catalog-out", catalogPath)
 		}
-		cmd := exec.Command(bin, append(args, src)...)
+		cmd := exec.Command(bin, append(args, filepath.Join(srcDir, "orders.qvd"))...)
+		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("convert %s: %v\n%s", table, err, out)
 		}
+		_ = src
 	}
 
-	// The catalogued one, converted with an absolute --out-dir so its stored
-	// output_file means the same file from anywhere.
+	// Converted with a relative --out-dir, from the directory the scan will
+	// run in, so both paths resolve here and there is no ambiguity to hide
+	// behind: they are simply two different files of the same name.
 	convert("original-src", "HeaderOrders", "original", true)
 	before := readCatalog(t, catalogPath)
 	if len(before) == 0 {
