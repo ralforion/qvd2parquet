@@ -1815,7 +1815,25 @@ go test -race ./...             # the parallel decoder is race-tested
 go vet ./...
 ./scripts/gen-notices.sh        # after a dependency change, see below
 ./scripts/check-action-pins.sh  # after editing a workflow, see below
+./scripts/bump-version.sh 2.8.0 # to prepare a release, see below
 ```
+
+### Releasing
+
+`./scripts/bump-version.sh <version>` writes the version to the three places a
+release records it -- `defaultVersion` in `cmd/qvd2parquet/main.go`, the two
+README banner lines a test pins to it, and a heading and compare links in
+`CHANGELOG.md` -- and leaves everything else to a person. It refuses a version
+that is not `MAJOR.MINOR.PATCH`, one already released, and an empty
+`Unreleased` section, since a release whose notes are empty is worse than no
+release at all.
+
+What it deliberately does not decide is the number. The compatibility promise
+at the top of `CHANGELOG.md` is what separates a patch from a minor from a
+major, and no script can read a changelog and work out which one the entries
+add up to. Nor does it commit, push, tag or publish: the change goes through a
+pull request like any other, and pushing the `v<version>` tag once that is
+merged is what builds the archives and publishes the release.
 
 `THIRD-PARTY-NOTICES.md` is generated from the module graph of
 `./cmd/qvd2parquet`, resolving a licence per linked package rather than per
