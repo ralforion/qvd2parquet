@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -19,7 +20,19 @@ import (
 // treating it as empty would replace whatever is there with this run alone,
 // which is the one outcome an additive catalog exists to prevent.
 func ReadFile(path string) ([]Row, error) {
-	rdr, err := file.OpenParquetFile(path, false)
+	// The file is opened here rather than by file.OpenParquetFile because that
+	// leaves the descriptor open when it fails to read the footer, and this is
+	// a path that fails routinely: --catalog-out pointed at something that is
+	// not a catalog is a setup mistake to report, not an exceptional event. On
+	// Windows an open handle blocks the file from being removed or replaced,
+	// which is how it surfaced -- a test could not clean up its own directory.
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("read catalog %s: %w", path, err)
+	}
+	defer f.Close()
+
+	rdr, err := file.NewParquetReader(f)
 	if err != nil {
 		return nil, fmt.Errorf("read catalog %s: %w", path, err)
 	}

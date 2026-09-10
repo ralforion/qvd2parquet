@@ -190,6 +190,11 @@ func TestNonCatalogPathFailsEarly(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("stat after refusal: %v", err)
 	}
+	// And it is not still open. On Windows a leaked handle would stop it being
+	// replaced, so the run could not recover even with --force.
+	if err := os.Remove(path); err != nil {
+		t.Errorf("the refused file is still held open: %v", err)
+	}
 }
 
 // The rows a merge writes are ordered by table and ordinal, so a table's

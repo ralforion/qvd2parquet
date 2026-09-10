@@ -36,7 +36,11 @@ restarts from it.
 
   The existing catalog is read when the writer opens rather than at the end, so
   a path holding a Parquet file that is not a catalog fails the run before it
-  converts a folder rather than after. The merged file is written to a
+  converts a folder rather than after. That read opens the file itself rather
+  than through `file.OpenParquetFile`, which leaves the descriptor open when it
+  cannot read the footer -- a path that fails routinely here, since a
+  `--catalog-out` pointed at the wrong file is a setup mistake to report. On
+  Windows the leaked handle stopped the file being replaced or removed at all. The merged file is written to a
   temporary and renamed, so the catalog on disk is intact until its replacement
   is complete. A run that accounted for no input still writes nothing and
   leaves the file alone.
