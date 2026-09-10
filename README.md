@@ -710,6 +710,15 @@ folder would replace every row's QVD side with the blanks a scan has for it.
 A column of that file the conversion never wrote joins the table and stays a
 `source='parquet'` row, since nothing recorded a QVD side for it.
 
+Two details of that matching are worth knowing. Paths are resolved before they
+are compared, so a conversion given a relative `--out-dir` and a scan naming
+the same directory absolutely are one file rather than two; where a stored path
+is relative to a working directory the scan cannot reconstruct, the file's name
+stands in, but only when exactly one table in the catalog wrote a file of that
+name. And where an output has belonged to more than one table over the life of
+a catalog, which it can because nothing is ever removed, the scan refreshes the
+table the most recent conversion of that file wrote.
+
 `--force` still means replace, for the run that wants to start the catalog
 over. The merge reads the existing file when the writer opens, before anything
 is converted, so a path holding a Parquet file that is not a catalog fails the

@@ -59,6 +59,18 @@ restarts from it.
   that is the file as it stands. A column the conversion never wrote joins the
   table and stays a `source='parquet'` row.
 
+  The match on `output_file` resolves the path first. `filepath.Clean` leaves
+  a relative `out/orders.parquet` different from the absolute path of the same
+  file, so a conversion given a relative `--out-dir` and a scan naming that
+  directory absolutely would still have arrived as two tables. Where a stored
+  path is relative to a working directory the scan cannot reconstruct, the
+  file's name stands in, and only then: an absolute stored path already means
+  the same file everywhere, so a scan that does not match it is describing a
+  different file, and a name two tables both wrote says nothing about which is
+  meant. Where an output has belonged to more than one table, which it can
+  because nothing is ever removed, the scan refreshes the one the most recent
+  conversion of that file wrote rather than whichever row sorts last.
+
   The `--skip-up-to-date` manifest already behaved this way, keyed by output
   file name within `--out-dir`.
 

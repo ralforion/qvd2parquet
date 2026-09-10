@@ -1690,3 +1690,50 @@ func TestScanDoesNotDuplicateAConvertedTable(t *testing.T) {
 		}
 	}
 }
+
+// TestScanByAbsolutePathDoesNotDuplicate is the same duplicate as
+// TestScanDoesNotDuplicateAConvertedTable, reached by spelling the directory
+// differently. The conversion stores the relative --out-dir it was given and
+// the scan names the same directory absolutely, which filepath.Clean leaves as
+// two files.
+func TestScanByAbsolutePathDoesNotDuplicate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "orders.qvd")
+	buildQVD(t, src, "HeaderOrders")
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+
+	// Run the conversion from inside dir so "out" is genuinely relative.
+	convert := exec.Command(bin, "--progress", "0", "--out-dir", "out",
+		"--catalog-out", catalogPath, "orders.qvd")
+	convert.Dir = dir
+	if out, err := convert.CombinedOutput(); err != nil {
+		t.Fatalf("convert: %v\n%s", err, out)
+	}
+	converted := readCatalog(t, catalogPath)
+
+	scan := exec.Command(bin, "--progress", "0", "--catalog-scan",
+		"--catalog-out", catalogPath, filepath.Join(dir, "out"))
+	if out, err := scan.CombinedOutput(); err != nil {
+		t.Fatalf("scan: %v\n%s", err, out)
+	}
+	after := readCatalog(t, catalogPath)
+
+	if len(after) != len(converted) {
+		var got []string
+		for _, r := range after {
+			got = append(got, r.SourceTable+"."+r.ColumnName+" ("+r.OutputFile+")")
+		}
+		t.Fatalf("a scan by absolute path added rows: %d became %d (%v)",
+			len(converted), len(after), got)
+	}
+	for _, r := range after {
+		if r.SourceTable != "HeaderOrders" {
+			t.Errorf("column %s is under table %q, want the header's name",
+				r.ColumnName, r.SourceTable)
+		}
+	}
+}

@@ -326,3 +326,124 @@ func TestScanOfAnUnknownFileKeepsItsFileName(t *testing.T) {
 		t.Errorf("scan of an uncatalogued file did not keep its own name: %+v", got)
 	}
 }
+
+// landedOn is the table the scanned row ended up under. The stored rows
+// survive a misfiled scan, so asserting that a table is present proves
+// nothing: what matters is which row the scan refreshed.
+func landedOn(t *testing.T, rows []Row) string {
+	t.Helper()
+	var found []string
+	for _, r := range rows {
+		if r.ToolVersion == "scan" {
+			found = append(found, r.SourceTable)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("expected the scan to land on exactly one row, landed on %v of %+v", found, rows)
+	}
+	return found[0]
+}
+
+// scanRow is a scanned row marked so the assertions can find it.
+func scanRow(output, name string, ordinal int32) Row {
+	r := scanned(output, name, ordinal)
+	r.ToolVersion = "scan"
+	return r
+}
+
+// An output path can have belonged to more than one table, because a catalog
+// never removes anything. A scan describes the file as it is now, so it has to
+// refresh the table the most recent conversion of that file wrote -- not
+// whichever row sorts last, which is what taking the last stored row did.
+func TestScanAdoptsTheNewestTableForAReusedOutput(t *testing.T) {
+	old := col("ZOldTable", "Id", "int64", 1)
+	old.OutputFile = "out/orders.parquet"
+	old.QlikType = "TEXT"
+	old.Strategy = "utf8"
+	old.ToolVersion = "old"
+	old.RunAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	current := col("ANewTable", "Id", "int64", 1)
+	current.OutputFile = "out/orders.parquet"
+	current.QlikType = "INTEGER"
+	current.Strategy = "int64"
+	current.ToolVersion = "new"
+	current.RunAt = time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+
+	// Sorted as the catalog stores them, so ZOldTable is the last row.
+	stored := []Row{current, old}
+	sortRows(stored)
+
+	got := Merge(stored, []Row{scanRow("out/orders.parquet", "Id", 1)})
+	if len(got) != 2 {
+		t.Fatalf("merge produced %d rows, want 2: %+v", len(got), got)
+	}
+	if table := landedOn(t, got); table != "ANewTable" {
+		t.Errorf("the scan refreshed %q, want the table that last wrote the file", table)
+	}
+	idx := byKey(got)
+	if r := idx[key{"ANewTable", "Id"}]; r.QlikType != "INTEGER" || r.Strategy != "int64" {
+		t.Errorf("facts came from the obsolete table: qlik_type=%q strategy=%q", r.QlikType, r.Strategy)
+	}
+	// The obsolete table is still there and untouched: nothing is removed, and
+	// its run_at is what marks it stale.
+	z := idx[key{"ZOldTable", "Id"}]
+	if z.ToolVersion != "old" || z.QlikType != "TEXT" {
+		t.Errorf("the obsolete row was rewritten: %+v", z)
+	}
+}
+
+// The base-name fallback covers a path recorded relative to a working
+// directory the scan cannot reconstruct, and declines everywhere else.
+func TestBaseNameFallbackIsNarrow(t *testing.T) {
+	relative := col("HeaderOrders", "Id", "int64", 1)
+	relative.OutputFile = "out/orders.parquet"
+	relative.QlikType = "INTEGER"
+	relative.ToolVersion = "converted"
+
+	absolute := relative
+	absolute.OutputFile = filepath.Join(string(filepath.Separator), "srv", "out", "orders.parquet")
+
+	other := col("OtherTable", "Id", "int64", 1)
+	other.OutputFile = "elsewhere/orders.parquet"
+	other.ToolVersion = "converted"
+
+	scanPath := filepath.Join(string(filepath.Separator), "elsewhere", "entirely", "orders.parquet")
+
+	tests := []struct {
+		name      string
+		stored    []Row
+		wantTable string
+		wantRows  int
+	}{
+		{
+			// The stored path means nothing outside the directory it was
+			// written in, so the name is all there is, and it is unambiguous.
+			"a relative stored path falls back to the name",
+			[]Row{relative}, "HeaderOrders", 1,
+		},
+		{
+			// An absolute stored path already means the same file everywhere,
+			// so a scan that does not match it is describing a different file.
+			"an absolute stored path does not",
+			[]Row{absolute}, "orders", 2,
+		},
+		{
+			// Two tables wrote a file of this name. Guessing between them
+			// would hand the scan another table's metadata.
+			"two tables of the same name decline",
+			[]Row{relative, other}, "orders", 3,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Merge(tt.stored, []Row{scanRow(scanPath, "Id", 1)})
+			if len(got) != tt.wantRows {
+				t.Errorf("merge produced %d rows, want %d: %+v", len(got), tt.wantRows, got)
+			}
+			if table := landedOn(t, got); table != tt.wantTable {
+				t.Errorf("the scan landed on %q, want %q", table, tt.wantTable)
+			}
+		})
+	}
+}
