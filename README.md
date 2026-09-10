@@ -1177,6 +1177,14 @@ schema: Status: INTEGER with 3 integer symbols, written as int64; 3 of 3 display
 A single odd value is enough to keep the column: `auto` errs towards preserving
 data, and reports how many strings drove the decision.
 
+A number is compared against the string under the field's declared separators,
+and where a field declares none the comparison also tries reading the string as
+grouped digits: `3.449` beside `3449` is a rendering, not information, even
+when nothing in the header says `.` groups thousands. The grouping has to be
+exact — first group one to three digits, every later one three — so `1.5`
+beside `15` is still kept, and a declared decimal separator is believed, which
+makes `3.449` beside `3449` informative when the field states `DecSep=.`.
+
 Whether a rendered date counts as redundant depends on the type it sits beside.
 `11/20/2010` next to a `date32` column adds nothing, but next to a bare
 `float64` serial it is the only human-readable form, so it is kept.
