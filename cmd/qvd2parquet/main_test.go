@@ -1564,3 +1564,129 @@ func TestCatalogAccumulatesAcrossRuns(t *testing.T) {
 		t.Errorf("MARA is missing from the catalog: %v", tables)
 	}
 }
+
+// buildQVD writes a synthetic QVD whose header table name is given separately
+// from its file name, which is what tells the two identities apart.
+func buildQVD(t *testing.T, path, table string) {
+	t.Helper()
+	if _, err := qvdtest.Build(path, qvdtest.Table{
+		Name: table,
+		Fields: []qvdtest.Field{{
+			Name: "Id", Type: "INTEGER",
+			Symbols: []qvd.Symbol{qvdtest.Int(1), qvdtest.Int(2)},
+			Rows:    []int{0, 1},
+		}},
+	}); err != nil {
+		t.Fatalf("build %s: %v", path, err)
+	}
+}
+
+// readCatalog is the catalog as rows, for asserting on what a run left.
+func readCatalog(t *testing.T, path string) []catalog.Row {
+	t.Helper()
+	rows, err := catalog.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read catalog: %v", err)
+	}
+	return rows
+}
+
+// TestSkippedFileKeepsItsQVDSideInTheCatalog is the second night of an
+// unchanged folder. --skip-up-to-date converts nothing and scans the outputs
+// instead, and a scan cannot see qlik_type, symbols, value_range, strategy or
+// note. Merged as-is those blanks replaced the facts the first run recorded,
+// so a folder that did not change lost the record of it.
+func TestSkippedFileKeepsItsQVDSideInTheCatalog(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "orders.qvd")
+	buildQVD(t, src, "ORDERS")
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	outDir := filepath.Join(dir, "out")
+
+	run := func() []byte {
+		t.Helper()
+		cmd := exec.Command(bin, "--progress", "0", "--out-dir", outDir,
+			"--skip-up-to-date", "--catalog-out", catalogPath, dir)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("run: %v\n%s", err, out)
+		}
+		return out
+	}
+	run()
+	before := readCatalog(t, catalogPath)
+	if len(before) == 0 {
+		t.Fatal("first run wrote no catalog rows")
+	}
+
+	second := run()
+	if !strings.Contains(string(second), "up to date") {
+		t.Fatalf("second run did not skip:\n%s", second)
+	}
+	after := readCatalog(t, catalogPath)
+	if len(after) != len(before) {
+		t.Fatalf("catalog went from %d rows to %d", len(before), len(after))
+	}
+	for i, got := range after {
+		want := before[i]
+		if got.QlikType != want.QlikType || got.Strategy != want.Strategy ||
+			got.ValueRange != want.ValueRange || got.Note != want.Note ||
+			got.HasSymbols != want.HasSymbols || got.Symbols != want.Symbols ||
+			got.Source != want.Source {
+			t.Errorf("skipping %s.%s lost its QVD side:\n got %+v\nwant %+v",
+				got.SourceTable, got.ColumnName, got, want)
+		}
+	}
+}
+
+// TestScanDoesNotDuplicateAConvertedTable is the after-the-fact scan of a
+// folder already catalogued. A conversion keys its rows by the table name in
+// the QVD header and a scan has only the file name, so a QVD whose header
+// names something else arrived in the catalog as two tables.
+func TestScanDoesNotDuplicateAConvertedTable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "orders.qvd")
+	buildQVD(t, src, "HeaderOrders")
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	outDir := filepath.Join(dir, "out")
+
+	convert := exec.Command(bin, "--progress", "0", "--out-dir", outDir,
+		"--catalog-out", catalogPath, src)
+	if out, err := convert.CombinedOutput(); err != nil {
+		t.Fatalf("convert: %v\n%s", err, out)
+	}
+	converted := readCatalog(t, catalogPath)
+
+	scan := exec.Command(bin, "--progress", "0", "--catalog-scan",
+		"--catalog-out", catalogPath, outDir)
+	if out, err := scan.CombinedOutput(); err != nil {
+		t.Fatalf("scan: %v\n%s", err, out)
+	}
+	after := readCatalog(t, catalogPath)
+
+	if len(after) != len(converted) {
+		var got []string
+		for _, r := range after {
+			got = append(got, r.SourceTable+"."+r.ColumnName)
+		}
+		t.Fatalf("scanning a converted folder added rows: %d became %d (%v)",
+			len(converted), len(after), got)
+	}
+	for _, r := range after {
+		if r.SourceTable != "HeaderOrders" {
+			t.Errorf("column %s is under table %q, want the header's name",
+				r.ColumnName, r.SourceTable)
+		}
+		if r.QlikType == "" {
+			t.Errorf("column %s lost its qlik_type to the scan", r.ColumnName)
+		}
+	}
+}

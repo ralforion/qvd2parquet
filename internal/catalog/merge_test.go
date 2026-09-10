@@ -245,3 +245,84 @@ func TestRoundTripPreservesRows(t *testing.T) {
 		t.Errorf("round trip changed the row:\n got %+v\nwant %+v", g, want)
 	}
 }
+
+// scanned is a row as ScanFile produces one: it knows the file it read and
+// what is in its schema, and nothing about the QVD behind it.
+func scanned(output, name string, ordinal int32) Row {
+	return Row{
+		Source:       SourceParquet,
+		SourceFile:   output,
+		SourceTable:  strings.TrimSuffix(filepath.Base(output), filepath.Ext(output)),
+		OutputFile:   output,
+		Ordinal:      ordinal,
+		ColumnName:   name,
+		SourceColumn: name,
+		ParquetType:  "int64",
+	}
+}
+
+// A scan of a file the catalog was written from adopts the table it was
+// converted under, rather than filing a second copy under the file's name.
+func TestScanAdoptsTheConvertedTableIdentity(t *testing.T) {
+	stored := col("HeaderOrders", "Id", "int64", 1)
+	stored.OutputFile = "out/orders.parquet"
+	stored.SourceFile = "orders.qvd"
+	stored.QlikType = "INTEGER"
+	stored.Strategy = "int64"
+	stored.ValueRange = "1..2"
+	stored.Note = "2 integer symbols"
+
+	got := Merge([]Row{stored}, []Row{scanned("out/orders.parquet", "Id", 1)})
+	if len(got) != 1 {
+		t.Fatalf("merge produced %d rows, want 1: %+v", len(got), got)
+	}
+	if got[0].SourceTable != "HeaderOrders" {
+		t.Errorf("source_table = %q, want the converted identity", got[0].SourceTable)
+	}
+	// The QVD side is what the scan cannot see, so it comes from the stored row.
+	for _, f := range []struct{ name, got, want string }{
+		{"qlik_type", got[0].QlikType, "INTEGER"},
+		{"strategy", got[0].Strategy, "int64"},
+		{"value_range", got[0].ValueRange, "1..2"},
+		{"note", got[0].Note, "2 integer symbols"},
+		{"source", got[0].Source, SourceQVD},
+		{"source_file", got[0].SourceFile, "orders.qvd"},
+	} {
+		if f.got != f.want {
+			t.Errorf("%s = %q, want %q", f.name, f.got, f.want)
+		}
+	}
+}
+
+// A column the conversion never wrote has no QVD side to adopt. It joins the
+// table its file belongs to and stays honestly a parquet row.
+func TestScanOfAnUnknownColumnStaysAParquetRow(t *testing.T) {
+	stored := col("HeaderOrders", "Id", "int64", 1)
+	stored.OutputFile = "out/orders.parquet"
+	stored.QlikType = "INTEGER"
+
+	got := Merge([]Row{stored}, []Row{scanned("out/orders.parquet", "Added", 2)})
+	idx := byKey(got)
+	r, ok := idx[key{"HeaderOrders", "Added"}]
+	if !ok {
+		t.Fatalf("the new column did not join its file's table: %+v", got)
+	}
+	if r.Source != SourceParquet {
+		t.Errorf("source = %q, want %q for a column no conversion recorded", r.Source, SourceParquet)
+	}
+	if r.QlikType != "" {
+		t.Errorf("qlik_type = %q, want empty: nothing recorded one", r.QlikType)
+	}
+}
+
+// A scan of a file the catalog knows nothing about keeps the file's own name,
+// which is all there is to go on.
+func TestScanOfAnUnknownFileKeepsItsFileName(t *testing.T) {
+	got := Merge(
+		[]Row{col("HeaderOrders", "Id", "int64", 1)},
+		[]Row{scanned("out/other.parquet", "Id", 1)},
+	)
+	if _, ok := byKey(got)[key{"other", "Id"}]; !ok {
+		t.Errorf("scan of an uncatalogued file did not keep its own name: %+v", got)
+	}
+}

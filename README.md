@@ -698,6 +698,18 @@ from catalog c
 where run_at < (select max(run_at) from catalog where source_table = c.source_table)
 ```
 
+A scan is reconciled with what the catalog already holds for the file it read.
+A scan sees a Parquet file and nothing else: it takes the table name from the
+file's own name, and it cannot recover `qlik_type`, `symbols`, `value_range`,
+`strategy` or `note`, which never reached the Parquet. Where the catalog holds
+a converted row for that file, matched on `output_file`, the scan adopts the
+table it was converted under and the column adopts the QVD side the scan cannot
+see. Without that, a QVD whose header names a different table than its file
+would arrive as two tables, and a `--skip-up-to-date` run over an unchanged
+folder would replace every row's QVD side with the blanks a scan has for it.
+A column of that file the conversion never wrote joins the table and stays a
+`source='parquet'` row, since nothing recorded a QVD side for it.
+
 `--force` still means replace, for the run that wants to start the catalog
 over. The merge reads the existing file when the writer opens, before anything
 is converted, so a path holding a Parquet file that is not a catalog fails the

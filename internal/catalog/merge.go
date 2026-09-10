@@ -1,6 +1,9 @@
 package catalog
 
-import "sort"
+import (
+	"path/filepath"
+	"sort"
+)
 
 // key identifies a column across runs: the QVD's own table name and the
 // column as written.
@@ -29,6 +32,8 @@ func keyOf(r Row) key { return key{table: r.SourceTable, column: r.ColumnName} }
 // it findable: a row older than the newest run for its table is a column the
 // latest conversion no longer produced.
 func Merge(stored, current []Row) []Row {
+	current = reconcileScans(stored, current)
+
 	fresh := make(map[key]bool, len(current))
 	for _, r := range current {
 		fresh[keyOf(r)] = true
@@ -59,4 +64,84 @@ func sortRows(rows []Row) {
 		}
 		return a.ColumnName < b.ColumnName
 	})
+}
+
+// reconcileScans resolves rows read back out of a finished Parquet file
+// against what the catalog already stores about that file.
+//
+// A scan sees a Parquet file and nothing else. It cannot know the table name
+// the QVD header carried, so it uses the file's own name, and it cannot
+// recover qlik_type, symbols, value_range, strategy or note, which never
+// reached the Parquet. Merged as-is, both gaps cost something real:
+//
+//   - A QVD whose header names a different table than its file duplicates.
+//     Converting orders.qvd whose header says HeaderOrders stores rows under
+//     HeaderOrders; scanning orders.parquet into the same catalog would store
+//     a second set under orders, one table arriving as two.
+//
+//   - --skip-up-to-date scans the outputs it did not reconvert, so a second
+//     run of an unchanged folder would replace every row's QVD side with the
+//     blanks a scan has for it. The data did not change; the record of it
+//     would.
+//
+// Both are answered by output_file, which is the one thing a scan and the
+// conversion that wrote the file agree on. Where the catalog already holds a
+// converted row for the file a scan is describing, the scan adopts its table
+// identity, and a column of that file adopts the QVD-side facts the scan
+// cannot see. What the scan did observe -- the column's name, type,
+// nullability, comment, ordinal and the file's row count -- is what the scan
+// says, since that is the file as it stands now.
+func reconcileScans(stored, current []Row) []Row {
+	type ident struct{ table, sourceFile string }
+	var (
+		files   map[string]ident
+		columns map[key]int
+	)
+	for i, r := range stored {
+		if r.Source != SourceQVD || r.OutputFile == "" {
+			continue
+		}
+		if files == nil {
+			files, columns = map[string]ident{}, map[key]int{}
+		}
+		out := filepath.Clean(r.OutputFile)
+		if r.SourceTable != "" {
+			files[out] = ident{table: r.SourceTable, sourceFile: r.SourceFile}
+		}
+		columns[key{table: out, column: r.ColumnName}] = i
+	}
+	if files == nil {
+		return current
+	}
+
+	out := make([]Row, len(current))
+	copy(out, current)
+	for i := range out {
+		if out[i].Source != SourceParquet || out[i].OutputFile == "" {
+			continue
+		}
+		path := filepath.Clean(out[i].OutputFile)
+		id, known := files[path]
+		if !known {
+			continue
+		}
+		// The whole file belongs to the table that produced it, including a
+		// column the conversion never wrote. That column has no QVD side to
+		// adopt, so it stays a parquet row -- honestly empty rather than
+		// claiming facts nothing recorded.
+		out[i].SourceTable = id.table
+		j, ok := columns[key{table: path, column: out[i].ColumnName}]
+		if !ok {
+			continue
+		}
+		s := stored[j]
+		out[i].Source = s.Source
+		out[i].SourceFile = s.SourceFile
+		out[i].QlikType = s.QlikType
+		out[i].Symbols, out[i].HasSymbols = s.Symbols, s.HasSymbols
+		out[i].ValueRange = s.ValueRange
+		out[i].Strategy = s.Strategy
+		out[i].Note = s.Note
+	}
+	return out
 }

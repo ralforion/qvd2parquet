@@ -45,6 +45,20 @@ restarts from it.
   which is what `--out-dir` named it for. It was empty, which as a merge key
   would have collapsed a folder of two hundred tables into one nameless one.
 
+  A scan is reconciled against what the catalog already holds for the file it
+  read, matched on `output_file`. A scan sees a Parquet file and nothing else,
+  and merged as-is both of its blind spots cost something: a QVD whose header
+  names a different table than its file would arrive as two tables, one under
+  each name, and a `--skip-up-to-date` run over an unchanged folder would
+  replace every row's QVD side with the blanks a scan has for `qlik_type`,
+  `symbols`, `value_range`, `strategy` and `note`. The data did not change; the
+  record of it would. A scanned column of a file the catalog was written from
+  now adopts the table it was converted under and the QVD facts the scan cannot
+  see, while what the scan did observe -- the column's name, type, nullability,
+  comment, ordinal and the file's row count -- is taken from the scan, since
+  that is the file as it stands. A column the conversion never wrote joins the
+  table and stays a `source='parquet'` row.
+
   The `--skip-up-to-date` manifest already behaved this way, keyed by output
   file name within `--out-dir`.
 
