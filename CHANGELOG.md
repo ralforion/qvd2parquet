@@ -13,6 +13,8 @@ restarts from it.
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-09-14
+
 ### Changed
 
 - Whether a column gets a dictionary is now decided from the QVD's symbol
@@ -46,6 +48,9 @@ restarts from it.
 
   The output of an existing conversion changes in bytes only: values, types
   and row order are as they were, and a smaller file is the whole of it.
+
+- Dependencies updated, apache/arrow-go 18.7.0 to 18.8.0 among them, and
+  `THIRD-PARTY-NOTICES.md` regenerated for the bumped modules.
 
 ## [2.8.0] - 2026-09-10
 
@@ -1203,7 +1208,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.8.0...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.9.0...HEAD
+[2.9.0]: https://github.com/ralforion/qvd2parquet/compare/v2.8.0...v2.9.0
 [2.8.0]: https://github.com/ralforion/qvd2parquet/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/ralforion/qvd2parquet/compare/v2.6.1...v2.7.0
 [2.6.1]: https://github.com/ralforion/qvd2parquet/compare/v2.6.0...v2.6.1
