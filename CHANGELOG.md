@@ -15,13 +15,37 @@ restarts from it.
 
 ### Changed
 
-- Dependencies updated, apache/arrow-go 18.7.0 to 18.8.0 among them. The new
-  writer keeps a dictionary on a compressed column even when the dictionary
-  is not paying for itself, so a column of nearly distinct values, a composite
-  key for one, would have been stored as a dictionary page, its indices, and
-  then plain for the rest. qvd2parquet asks the writer for the old check on
-  every column, so the output stays the same bytes it was and `--encoding
-  auto` keeps measuring against it.
+- Whether a column gets a dictionary is now decided from the QVD's symbol
+  table where the symbol table can settle it, rather than by the Parquet
+  writer from its first rows. A column so nearly distinct that no row order
+  could make a dictionary pay is written plain from the start. A column whose
+  dictionary fits the page and pays whatever the row order keeps it, under
+  `--compression uncompressed` too, where the writer would otherwise still
+  have made its own first-batch call. In between, where only the row order
+  could tell, the writer's default stands and `--encoding auto` measures.
+
+  Until now the writer decided from its first batch, when nearly every value
+  was still new, and discarded dictionaries that would have paid. Measured at
+  the default row group size with snappy, a column of twenty thousand distinct
+  twelve-character codes over half a million rows was written plain at
+  2.39 MB where its dictionary takes 1.75 MB, and twenty thousand distinct
+  integers 2.57 MB against 1.98 MB. Those columns, the ordinary ones a QVD is
+  full of, now come out that much smaller.
+
+  A column of distinct values is unchanged: plain, as before. apache/arrow-go
+  18.8.0, which this release moves to, would otherwise have written such a
+  column as a full dictionary page, its indices, and plain for the rest, in
+  every row group, about 14% on top at the default row group size. The
+  symbol table is read before a row is, so the writer is told plain up front
+  instead. The text of every symbol is counted, so one long value among short
+  ones does not cost a column its dictionary.
+
+  `--encoding auto` measures against what the run would write, so its
+  baseline for a candidate is plain and its recommendations keep their
+  meaning. An explicit rule still wins, `KEY=dictionary` included.
+
+  The output of an existing conversion changes in bytes only: values, types
+  and row order are as they were, and a smaller file is the whole of it.
 
 ## [2.8.0] - 2026-09-10
 

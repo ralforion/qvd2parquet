@@ -208,15 +208,21 @@ type ColumnProfile struct {
 	EmptyText  int64 `json:"emptyText"`
 	// EmptyStrings counts symbols that are nothing but an empty string. Unlike
 	// EmptyText it excludes duals, whose numeric side is still a value.
-	EmptyStrings int64   `json:"emptyStrings"`
-	MaxTextLen   int     `json:"maxTextLen"`
-	MinInt       int64   `json:"minInt"`
-	MaxInt       int64   `json:"maxInt"`
-	MinFloat     float64 `json:"minFloat"`
-	MaxFloat     float64 `json:"maxFloat"`
+	EmptyStrings int64 `json:"emptyStrings"`
+	MaxTextLen   int   `json:"maxTextLen"`
+	// TextBytes is the length of every text symbol added up, which is what
+	// a dictionary of the column would hold. MinTextLen is the shortest
+	// text symbol, an empty string included.
+	TextBytes  int64   `json:"textBytes"`
+	MinTextLen int     `json:"minTextLen"`
+	MinInt     int64   `json:"minInt"`
+	MaxInt     int64   `json:"maxInt"`
+	MinFloat   float64 `json:"minFloat"`
+	MaxFloat   float64 `json:"maxFloat"`
 
 	hasInt   bool
 	hasFloat bool
+	hasText  bool
 }
 
 // TextIsLosslessForMixed reports whether a column mixing text and numbers can
@@ -268,6 +274,10 @@ func (p *ColumnProfile) Observe(s Symbol) {
 		if len(s.Text) > p.MaxTextLen {
 			p.MaxTextLen = len(s.Text)
 		}
+		if !p.hasText || len(s.Text) < p.MinTextLen {
+			p.MinTextLen, p.hasText = len(s.Text), true
+		}
+		p.TextBytes += int64(len(s.Text))
 	}
 	switch s.Kind {
 	case SymbolInt, SymbolDualIntString:

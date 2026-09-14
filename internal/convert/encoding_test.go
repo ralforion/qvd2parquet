@@ -13,6 +13,7 @@ import (
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
+	"github.com/ralforion/qvd2parquet/internal/qvdtest"
 )
 
 func TestParseEncodingRules(t *testing.T) {
@@ -339,4 +340,290 @@ func hasEncoding(encs []parquet.Encoding, want parquet.Encoding) bool {
 		}
 	}
 	return false
+}
+
+// The QVD header states every field's symbol count, so a column whose symbols
+// cannot fit the dictionary page is written plain from the first row, and a
+// column that fits keeps its dictionary. The writer's own fallback reaches
+// plain too, but only after a full dictionary page and indices per row group.
+func TestDictionaryIsDecidedFromTheSymbolTable(t *testing.T) {
+	in := buildFixture(t, keyTable(30000, true))
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	encodings := columnEncodings(t, out)
+	key := encodings["%CE10500_PKEY"]
+	if hasEncoding(key, parquet.Encodings.RLEDict) || !hasEncoding(key, parquet.Encodings.Plain) {
+		t.Errorf("30000 distinct 39-character values should be plain from the start, got %v", key)
+	}
+	if amount := encodings["Amount"]; !hasEncoding(amount, parquet.Encodings.RLEDict) {
+		t.Errorf("a five symbol column should keep its dictionary, got %v", amount)
+	}
+
+	// A rule naming the dictionary wins over the symbol table.
+	pinned := testOptions()
+	pinned.Encodings, _ = ParseEncodingSpec("%*_PKEY=dictionary")
+	out2 := filepath.Join(t.TempDir(), "pinned.parquet")
+	if _, _, err := Run(context.Background(), in, out2, &pinned, nil); err != nil {
+		t.Fatal(err)
+	}
+	if key := columnEncodings(t, out2)["%CE10500_PKEY"]; !hasEncoding(key, parquet.Encodings.RLEDict) {
+		t.Errorf("KEY=dictionary should keep the dictionary, got %v", key)
+	}
+}
+
+// skewedTable holds a column of twenty thousand short codes and one long
+// outlier, repeated over ten times as many rows. Charged at its longest
+// value the dictionary would be 1.3 MB and ruled out; counted, it is 180 KB.
+func skewedTable(rows int) qvdtest.Table {
+	const distinct = 20_000
+	syms := make([]qvd.Symbol, distinct)
+	for i := range syms {
+		syms[i] = qvdtest.Str(fmt.Sprintf("%05d", i))
+	}
+	syms[distinct-1] = qvdtest.Str(strings.Repeat("x", 60))
+	idx := make([]int, rows)
+	for i := range idx {
+		idx[i] = i % distinct
+	}
+	return qvdtest.Table{Name: "SKEW", Fields: []qvdtest.Field{
+		{Name: "Code", Type: "ASCII", Rows: idx, Symbols: syms},
+	}}
+}
+
+// The dictionary is sized from the symbols' actual text, not from every
+// symbol at the column's longest, and a column that keeps it does so under
+// every compression: without a codec the writer would otherwise still judge
+// from its first rows, when nearly every value is new, and drop it.
+func TestDictionaryIsKeptWhereItPays(t *testing.T) {
+	in := buildFixture(t, skewedTable(200_000))
+	for _, compression := range []string{"snappy", "uncompressed"} {
+		out := filepath.Join(t.TempDir(), compression+".parquet")
+		opts := testOptions()
+		opts.Compression = compression
+		if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+			t.Fatal(err)
+		}
+		if code := columnEncodings(t, out)["Code"]; !hasEncoding(code, parquet.Encodings.RLEDict) {
+			t.Errorf("%s: 20,000 short codes over 200,000 rows should keep their dictionary, got %v", compression, code)
+		}
+	}
+}
+
+// clusteredTable repeats each of a hundred thousand keys five times in a
+// row. The symbol count exceeds the rows of a row group, so a rule reading
+// only the count would write it plain, yet each row group holds a fifth of
+// its rows in dictionary and the dictionary wins by more than three to one
+// without compression. Only the row order could tell, so the symbol table
+// must leave the writer's default in place.
+func clusteredTable() qvdtest.Table {
+	const distinct, repeat = 100_000, 5
+	syms := make([]qvd.Symbol, distinct)
+	for i := range syms {
+		syms[i] = qvdtest.Str(fmt.Sprintf("K%011d", i))
+	}
+	idx := make([]int, distinct*repeat)
+	for i := range idx {
+		idx[i] = i / repeat
+	}
+	return qvdtest.Table{Name: "CLUSTER", Fields: []qvdtest.Field{
+		{Name: "Key", Type: "ASCII", Rows: idx, Symbols: syms},
+	}}
+}
+
+func TestUnsettledColumnKeepsTheWriterDefault(t *testing.T) {
+	in := buildFixture(t, clusteredTable())
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Compression = "uncompressed"
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if key := columnEncodings(t, out)["Key"]; !hasEncoding(key, parquet.Encodings.RLEDict) {
+		t.Errorf("clustered repeats should keep the writer's dictionary, got %v", key)
+	}
+}
+
+// nearlyDistinctTable holds two hundred thousand integer symbols over two
+// hundred and seventy-five thousand sorted rows, so most values appear once
+// and a row group holds about forty-eight thousand distinct ones. Priced at
+// the width the global count needs, eighteen bits an index, the best case
+// for a dictionary comes out no better than plain; priced at the sixteen
+// bits a row group needs, it comes out ahead, and only the row order can
+// tell, so the writer's default must stand.
+func nearlyDistinctTable() qvdtest.Table {
+	const symbols, rows = 200_000, 275_000
+	syms := make([]qvd.Symbol, symbols)
+	for i := range syms {
+		syms[i] = qvdtest.Int(int64(i))
+	}
+	idx := make([]int, rows)
+	for i := range idx {
+		idx[i] = i * symbols / rows
+	}
+	return qvdtest.Table{Name: "NEARLY", Fields: []qvdtest.Field{
+		{Name: "Key", Type: "INTEGER", Rows: idx, Symbols: syms},
+	}}
+}
+
+func TestIndexWidthIsPricedPerRowGroup(t *testing.T) {
+	in := buildFixture(t, nearlyDistinctTable())
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Compression = "uncompressed"
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if key := columnEncodings(t, out)["Key"]; !hasEncoding(key, parquet.Encodings.RLEDict) {
+		t.Errorf("sorted nearly distinct integers should keep the writer's dictionary, got %v", key)
+	}
+}
+
+// shortRepeatsTable holds 49,999 ten-character values once each and then
+// the empty string for the rest of one row group. Every symbol is in the
+// group, and every repeat is the shortest value the column has, so the
+// dictionary pays its indices for almost nothing: 800 KB against 700 KB
+// plain. Priced at the average width the dictionary would look safe. It is
+// not, and the symbol table must leave the choice to the writer.
+func shortRepeatsTable() qvdtest.Table {
+	const distinct, rows = 49_999, 65_536
+	syms := make([]qvd.Symbol, distinct+1)
+	for i := 0; i < distinct; i++ {
+		syms[i] = qvdtest.Str(fmt.Sprintf("V%09d", i))
+	}
+	syms[distinct] = qvdtest.Str("")
+	idx := make([]int, rows)
+	for i := range idx {
+		if i < distinct {
+			idx[i] = i
+		} else {
+			idx[i] = distinct
+		}
+	}
+	return qvdtest.Table{Name: "SHORT", Fields: []qvdtest.Field{
+		{Name: "Key", Type: "ASCII", Rows: idx, Symbols: syms},
+	}}
+}
+
+func TestShortRepeatsAreNotForcedToDictionary(t *testing.T) {
+	in := buildFixture(t, shortRepeatsTable())
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Compression = "uncompressed"
+	opts.EmptyStringAsNull = false
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Left to the writer, which judges from its first rows that a dictionary
+	// of distinct values does not pay and writes plain.
+	if key := columnEncodings(t, out)["Key"]; hasEncoding(key, parquet.Encodings.RLEDict) {
+		t.Errorf("short repeats among distinct values should not be forced to a dictionary, got %v", key)
+	}
+}
+
+// dateTable holds 48,000 distinct dates in one row group of 65,536 rows.
+// A date is four bytes on the page, so the 17,536 repeats can save at most
+// 70 KB written plain while the dictionary's indices cost 131 KB: plain
+// wins whatever the order. Priced at eight bytes the dictionary looked
+// worth forcing, and came out 10% larger than plain.
+func dateTable() qvdtest.Table {
+	const distinct, rows = 48_000, 65_536
+	syms := make([]qvd.Symbol, distinct)
+	for i := range syms {
+		syms[i] = qvdtest.Int(int64(40_000 + i))
+	}
+	idx := make([]int, rows)
+	for i := range idx {
+		idx[i] = i % distinct
+	}
+	return qvdtest.Table{Name: "DATES", Fields: []qvdtest.Field{
+		{Name: "Day", Type: "DATE", Rows: idx, Symbols: syms},
+	}}
+}
+
+func TestFourByteTypesArePricedAtFourBytes(t *testing.T) {
+	in := buildFixture(t, dateTable())
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Compression = "uncompressed"
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if day := columnEncodings(t, out)["Day"]; hasEncoding(day, parquet.Encodings.RLEDict) {
+		t.Errorf("48,000 distinct dates over 65,536 rows should not be forced to a dictionary, got %v", day)
+	}
+}
+
+// moneyTable holds 48,000 distinct whole amounts in one row group of 65,536
+// rows. A five digit decimal is three bytes on the page, so the repeats can
+// save at most 53 KB written plain while the dictionary's indices cost
+// 131 KB. Priced at the sixteen bytes a decimal takes in memory the
+// dictionary looked worth forcing, and came out 40% larger than plain.
+func moneyTable() qvdtest.Table {
+	const distinct, rows = 48_000, 65_536
+	syms := make([]qvd.Symbol, distinct)
+	for i := range syms {
+		syms[i] = qvdtest.Int(int64(10_000 + i))
+	}
+	idx := make([]int, rows)
+	for i := range idx {
+		idx[i] = i % distinct
+	}
+	return qvdtest.Table{Name: "MONEY", Fields: []qvdtest.Field{
+		{Name: "Amount", Type: "MONEY", NDec: 0, Rows: idx, Symbols: syms},
+	}}
+}
+
+func TestDecimalsArePricedAtTheirPageWidth(t *testing.T) {
+	in := buildFixture(t, moneyTable())
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Compression = "uncompressed"
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if amount := columnEncodings(t, out)["Amount"]; hasEncoding(amount, parquet.Encodings.RLEDict) {
+		t.Errorf("48,000 distinct amounts over 65,536 rows should not be forced to a dictionary, got %v", amount)
+	}
+}
+
+// clusteredDateTable holds 200,000 distinct dates over 375,000 rows, with
+// every repeat on one date and all of them together at the start. Shared
+// out evenly the repeats could not pay for the indices, and a rule that
+// assumed so wrote plain; sitting together they fill row groups a
+// dictionary stores as one entry and zero-bit indices, and the dictionary
+// wins by a fifth. Only the row order can tell, so the writer's default
+// must stand, and the writer, seeing one value in its first rows, keeps it.
+func clusteredDateTable() qvdtest.Table {
+	const distinct, rows = 200_000, 375_000
+	syms := make([]qvd.Symbol, distinct)
+	for i := range syms {
+		syms[i] = qvdtest.Int(int64(30_000 + i))
+	}
+	idx := make([]int, rows)
+	for i := range idx {
+		if i < rows-distinct {
+			idx[i] = 0
+		} else {
+			idx[i] = i - (rows - distinct)
+		}
+	}
+	return qvdtest.Table{Name: "CLDATES", Fields: []qvdtest.Field{
+		{Name: "Day", Type: "DATE", Rows: idx, Symbols: syms},
+	}}
+}
+
+func TestClusteredRepeatsAreNotSettledPlain(t *testing.T) {
+	in := buildFixture(t, clusteredDateTable())
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Compression = "uncompressed"
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if day := columnEncodings(t, out)["Day"]; !hasEncoding(day, parquet.Encodings.RLEDict) {
+		t.Errorf("repeats clustered on one date should keep the writer's dictionary, got %v", day)
+	}
 }

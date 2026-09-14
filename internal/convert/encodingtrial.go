@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/bits"
 	"sort"
 	"time"
 
@@ -36,8 +37,8 @@ const (
 	// it is inside the error a sample carries.
 	trialThreshold = 0.8
 	// dictionaryOverflowBytes is the writer's dictionary page size limit. A
-	// column whose values would exceed it falls back to plain, and only such
-	// a column has anything to gain here.
+	// dictionary that cannot fit it is never kept whole, so such a column is
+	// either settled plain or worth measuring.
 	dictionaryOverflowBytes = 1024 * 1024
 	// trialGroupColumns bounds how many columns are held in memory at once.
 	// A wide SAP extract can have dozens of candidates, and sampling them all
@@ -94,7 +95,7 @@ func TrialEncodings(ctx context.Context, f *qvd.File, rs *ResolvedSchema, opts *
 	if err != nil {
 		return nil, err
 	}
-	candidates := encodingCandidates(rs, f, pinned.ByColumn)
+	candidates := encodingCandidates(rs, f, int64(opts.RowGroupRows), opts.EmptyStringAsNull, pinned.ByColumn)
 	if len(candidates) == 0 || f.NoOfRecords == 0 {
 		return nil, nil
 	}
@@ -147,7 +148,7 @@ func trialGroup(ctx context.Context, f *qvd.File, rs *ResolvedSchema, opts *Opti
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("%w while measuring encodings", ErrCanceled)
 		}
-		trial, err := measureColumn(sub, records, i, f, base, sampled)
+		trial, err := measureColumn(sub, records, i, f, base, opts.EmptyStringAsNull, sampled)
 		if err != nil {
 			return nil, err
 		}
@@ -161,7 +162,7 @@ func trialGroup(ctx context.Context, f *qvd.File, rs *ResolvedSchema, opts *Opti
 // measureColumn measures one column's candidates against the way it would be
 // written today, and returns the best of them.
 func measureColumn(sub *ResolvedSchema, records []arrow.Record, i int, f *qvd.File,
-	base parquetwrite.Options, sampled int64) (EncodingTrial, error) {
+	base parquetwrite.Options, emptyAsNull bool, sampled int64) (EncodingTrial, error) {
 
 	c := &sub.Columns[i]
 	colRecords, schema := sliceColumn(sub, records, i)
@@ -173,7 +174,12 @@ func measureColumn(sub *ResolvedSchema, records []arrow.Record, i int, f *qvd.Fi
 		}
 	}()
 
-	baseline, err := measure(schema, colRecords, base)
+	// The baseline is the column as a conversion would write it: plain where
+	// the symbol table ruled the dictionary out, the writer's default where
+	// it could not.
+	baseOpts := base
+	baseOpts.ColumnEncodings = writerEncodings(sub, f, base.RowGroupRows, emptyAsNull, nil)
+	baseline, err := measure(schema, colRecords, baseOpts)
 	if err != nil {
 		return EncodingTrial{}, err
 	}
@@ -204,38 +210,187 @@ func WorthwhileTrials(trials []EncodingTrial) []EncodingTrial {
 	return out
 }
 
-// encodingCandidates picks the columns worth measuring: those whose values
-// would overflow the dictionary page, since a column that fits its dictionary
-// is already encoded about as well as it can be.
-func encodingCandidates(rs *ResolvedSchema, f *qvd.File, pinned map[string]parquetwrite.Encoding) []int {
+// encodingCandidates picks the columns worth measuring: those the symbol
+// table writes plain, and those it could not settle whose dictionary would
+// not fit the page, since a column that keeps its whole dictionary is
+// already encoded about as well as it can be.
+func encodingCandidates(rs *ResolvedSchema, f *qvd.File, rowGroupRows int64, emptyAsNull bool, pinned map[string]parquetwrite.Encoding) []int {
 	var out []int
 	for i := range rs.Columns {
 		c := &rs.Columns[i]
 		if _, decided := pinned[c.Name]; decided {
 			continue
 		}
-		if c.SourceIndex < 0 || c.SourceIndex >= len(f.Profiles) {
+		if len(candidateEncodings(c.ArrowType)) == 0 {
 			continue
 		}
-		p := f.Profiles[c.SourceIndex]
-		if p == nil || p.Symbols == 0 {
-			continue
-		}
-		var estimate int64
-		switch {
-		case isByteArrayType(c.ArrowType):
-			// An upper bound: every symbol at its column's longest. The trial
-			// itself is the real evidence, so an estimate that lets one extra
-			// column through costs a measurement, not a wrong answer.
-			estimate = p.Symbols * int64(p.MaxTextLen+4)
-		case isIntegerBackedType(c.ArrowType):
-			estimate = p.Symbols * 8
-		default:
-			continue
-		}
-		if estimate > dictionaryOverflowBytes {
+		enc, settled := dictionaryChoice(c, f, rowGroupRows, emptyAsNull)
+		dictBytes, _, ok := dictionarySize(c, f)
+		if (settled && enc == parquetwrite.EncodingPlain) || (!settled && ok && dictBytes > dictionaryOverflowBytes) {
 			out = append(out, i)
 		}
+	}
+	return out
+}
+
+// dictionarySize is what a column's dictionary would hold if every symbol
+// appeared: the page the writer would build, in bytes, and the bytes one
+// value takes written plain. It reports false for a column it cannot judge.
+func dictionarySize(c *ResolvedColumn, f *qvd.File) (dictBytes, perValue int64, ok bool) {
+	if c.SourceIndex < 0 || c.SourceIndex >= len(f.Profiles) {
+		return 0, 0, false
+	}
+	p := f.Profiles[c.SourceIndex]
+	if p == nil || p.Symbols == 0 {
+		return 0, 0, false
+	}
+	switch {
+	case isByteArrayType(c.ArrowType):
+		// Exact: every symbol's text once, each behind a four byte length.
+		// A text column whose symbols carry no text, numbers rendered under
+		// --mixed=text, has nothing to add up and is bounded at the twenty
+		// characters a rendered number can reach.
+		text := p.TextBytes
+		if text == 0 {
+			text = 20 * p.Symbols
+		}
+		dictBytes = text + 4*p.Symbols
+		return dictBytes, dictBytes / p.Symbols, true
+	}
+	if w := physicalWidth(c.ArrowType); w > 0 {
+		return w * p.Symbols, w, true
+	}
+	return 0, 0, false
+}
+
+// physicalWidth is the bytes one value of a fixed-width type takes on a
+// Parquet page, which is what a dictionary entry and a plain value both
+// cost, or zero for a type this does not size. A decimal is written as a
+// fixed-length byte array just wide enough for its precision, three bytes
+// for a five digit amount, not the sixteen it takes in memory.
+func physicalWidth(t arrow.DataType) int64 {
+	switch t.ID() {
+	case arrow.INT32, arrow.DATE32, arrow.TIME32:
+		return 4
+	case arrow.INT64, arrow.TIME64, arrow.TIMESTAMP, arrow.FLOAT64:
+		return 8
+	case arrow.DECIMAL128:
+		return int64(pqarrow.DecimalSize(t.(*arrow.Decimal128Type).Precision))
+	}
+	return 0
+}
+
+// dictionaryChoice decides from the symbol table whether a column keeps its
+// dictionary, where the symbol table can settle it, and reports false where
+// only the row order could.
+//
+// A dictionary is built per row group, and what it saves depends on which
+// values each row group repeats, which the symbol table cannot see: a
+// hundred thousand keys each repeated five times cost a row group a fifth
+// of its rows in dictionary if the repeats sit together and nearly all of
+// them if they are spread, and a repeat of a short value saves less than a
+// repeat of a long one. So the choice is made only where it comes out the
+// same either way. A column keeps its dictionary, and is named so the writer
+// does not judge otherwise from its first rows, when the dictionary fits the
+// page and beats plain even at its worst: every symbol in every row group,
+// and every repeat the shortest value the column has. A column is written
+// plain when a dictionary cannot pay even at its best: every repeat in a row
+// group of nothing but repeats, where it costs no index and saves the
+// longest value, which is the composite key. In between, the writer's
+// default stands, a dictionary that falls back to plain where it overflows,
+// and --encoding auto is the measurement.
+//
+// A column that can hold nulls, an empty string written as null included,
+// is never settled on a dictionary. A null row costs plain nothing and a
+// dictionary nothing, so a row group of distinct values padded with nulls
+// pays the indices for no saving at all.
+func dictionaryChoice(c *ResolvedColumn, f *qvd.File, rowGroupRows int64, emptyAsNull bool) (parquetwrite.Encoding, bool) {
+	dictBytes, perValue, ok := dictionarySize(c, f)
+	if !ok {
+		return "", false
+	}
+	p := f.Profiles[c.SourceIndex]
+	if emptyAsNull {
+		p = p.WithEmptyStringsAsNulls()
+	}
+	symbols := p.Symbols
+	rows := f.NoOfRecords
+	if rows <= 0 {
+		return "", false
+	}
+	rowsPerGroup := rows
+	if rowGroupRows > 0 && rowGroupRows < rows {
+		rowsPerGroup = rowGroupRows
+	}
+	// What a repeated row saves written plain: the value it repeats, at the
+	// column's shortest and at its longest. Fixed-width types have one width.
+	shortest, longest := perValue, perValue
+	if isByteArrayType(c.ArrowType) {
+		shortest, longest = int64(4+p.MinTextLen), int64(4+p.MaxTextLen)
+		if p.TextBytes == 0 {
+			// Numbers rendered as text: one to twenty characters.
+			shortest, longest = 5, 24
+		}
+	}
+	// Indices are per row group too, bit-packed at the width the group's
+	// distinct count needs.
+	indexBits := func(distinct int64) int64 {
+		if distinct < 1 {
+			return 0
+		}
+		return int64(bits.Len64(uint64(distinct - 1)))
+	}
+	indexBytes := func(distinct int64) int64 {
+		return rowsPerGroup * indexBits(distinct) / 8
+	}
+
+	// The dictionary at its worst: every symbol in every row group, capped
+	// at the rows the group has, and every repeated row the shortest value.
+	worstDistinct := symbols
+	if worstDistinct > rowsPerGroup {
+		worstDistinct = rowsPerGroup
+	}
+	if p.Nulls == 0 && dictBytes <= dictionaryOverflowBytes &&
+		indexBytes(worstDistinct) < (rowsPerGroup-worstDistinct)*shortest {
+		return parquetwrite.EncodingDictionary, true
+	}
+	// The dictionary at its best. The symbol table cannot see which values
+	// repeat or how often, so the bound assumes the arrangement that suits a
+	// dictionary most: every repeat in a row group of nothing but repeats,
+	// where the indices are zero bits wide and each repeat saves the longest
+	// value; and every distinct row in a group of distinct rows, where the
+	// row groups being a fixed size, each pays an index at the width a full
+	// group needs and only the tail group gets a narrower one. Mixing the
+	// two costs a dictionary more, since the repeats then pay indices too.
+	repeats := rows - symbols
+	if repeats < 0 {
+		repeats = 0
+	}
+	full, tail := symbols/rowsPerGroup, symbols%rowsPerGroup
+	distinctIndex := (full*rowsPerGroup*indexBits(rowsPerGroup) + tail*indexBits(tail)) / 8
+	if repeats*longest <= distinctIndex {
+		return parquetwrite.EncodingPlain, true
+	}
+	return "", false
+}
+
+// writerEncodings is what the writer is told per column: the symbol table's
+// choice of dictionary or plain for every column it can settle, and whatever
+// a rule or a measurement pinned, which wins. Naming the dictionary rather
+// than leaving the default matters too: on an uncompressed column the writer
+// would otherwise still make its own first-batch judgement and drop it. A
+// column the symbol table cannot settle is not named, and the writer's
+// default stands.
+func writerEncodings(rs *ResolvedSchema, f *qvd.File, rowGroupRows int64, emptyAsNull bool, pinned map[string]parquetwrite.Encoding) map[string]parquetwrite.Encoding {
+	out := make(map[string]parquetwrite.Encoding, len(rs.Columns))
+	for i := range rs.Columns {
+		c := &rs.Columns[i]
+		if enc, ok := dictionaryChoice(c, f, rowGroupRows, emptyAsNull); ok {
+			out[c.Name] = enc
+		}
+	}
+	for name, enc := range pinned {
+		out[name] = enc
 	}
 	return out
 }
@@ -355,7 +510,7 @@ func sliceColumn(sub *ResolvedSchema, records []arrow.Record, col int) ([]arrow.
 // column chunk, which is the number the choice turns on.
 func measure(schema *arrow.Schema, records []arrow.Record, opts parquetwrite.Options) (int64, error) {
 	var buf bytes.Buffer
-	fw, err := pqarrow.NewFileWriter(schema, &buf, parquetwrite.Properties(schema, opts),
+	fw, err := pqarrow.NewFileWriter(schema, &buf, parquetwrite.Properties(opts),
 		pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema()))
 	if err != nil {
 		return 0, fmt.Errorf("encoding trial: create writer: %w", err)
