@@ -445,3 +445,38 @@ func TestUnsettledColumnKeepsTheWriterDefault(t *testing.T) {
 		t.Errorf("clustered repeats should keep the writer's dictionary, got %v", key)
 	}
 }
+
+// nearlyDistinctTable holds two hundred thousand integer symbols over two
+// hundred and seventy-five thousand sorted rows, so most values appear once
+// and a row group holds about forty-eight thousand distinct ones. Priced at
+// the width the global count needs, eighteen bits an index, the best case
+// for a dictionary comes out no better than plain; priced at the sixteen
+// bits a row group needs, it comes out ahead, and only the row order can
+// tell, so the writer's default must stand.
+func nearlyDistinctTable() qvdtest.Table {
+	const symbols, rows = 200_000, 275_000
+	syms := make([]qvd.Symbol, symbols)
+	for i := range syms {
+		syms[i] = qvdtest.Int(int64(i))
+	}
+	idx := make([]int, rows)
+	for i := range idx {
+		idx[i] = i * symbols / rows
+	}
+	return qvdtest.Table{Name: "NEARLY", Fields: []qvdtest.Field{
+		{Name: "Key", Type: "INTEGER", Rows: idx, Symbols: syms},
+	}}
+}
+
+func TestIndexWidthIsPricedPerRowGroup(t *testing.T) {
+	in := buildFixture(t, nearlyDistinctTable())
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Compression = "uncompressed"
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if key := columnEncodings(t, out)["Key"]; !hasEncoding(key, parquet.Encodings.RLEDict) {
+		t.Errorf("sorted nearly distinct integers should keep the writer's dictionary, got %v", key)
+	}
+}

@@ -295,22 +295,34 @@ func dictionaryChoice(c *ResolvedColumn, f *qvd.File, rowGroupRows int64) (parqu
 		rowsPerGroup = rowGroupRows
 	}
 	raw := rowsPerGroup * perValue
-	// Indices are bit-packed at the width the symbol count needs.
-	indexBytes := rowsPerGroup * int64(bits.Len64(uint64(symbols-1))) / 8
+	// A dictionary and its indices are per row group, so both are priced at
+	// the distinct values a row group holds, not the file: the indices are
+	// bit-packed at the width that local count needs.
+	indexBytes := func(distinct int64) int64 {
+		return rowsPerGroup * int64(bits.Len64(uint64(distinct-1))) / 8
+	}
 
 	// The dictionary at its worst: every symbol in every row group, capped
-	// at the values themselves.
+	// at the rows the group has.
+	worstDistinct := symbols
+	if worstDistinct > rowsPerGroup {
+		worstDistinct = rowsPerGroup
+	}
 	worst := dictBytes
 	if worst > raw {
 		worst = raw
 	}
-	if dictBytes <= dictionaryOverflowBytes && worst+indexBytes < raw {
+	if dictBytes <= dictionaryOverflowBytes && worst+indexBytes(worstDistinct) < raw {
 		return parquetwrite.EncodingDictionary, true
 	}
 	// The dictionary at its best: every repeat of a value sits in the same
 	// row group, so each group holds its share of the symbols and no more.
-	best := rowsPerGroup * perValue * symbols / rows
-	if best+indexBytes >= raw {
+	bestDistinct := rowsPerGroup * symbols / rows
+	if bestDistinct < 1 {
+		bestDistinct = 1
+	}
+	best := bestDistinct * perValue
+	if best+indexBytes(bestDistinct) >= raw {
 		return parquetwrite.EncodingPlain, true
 	}
 	return "", false
