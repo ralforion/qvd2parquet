@@ -265,7 +265,9 @@ func dictionarySize(c *ResolvedColumn, f *qvd.File) (dictBytes, perValue int64, 
 
 // physicalWidth is the bytes one value of a fixed-width type takes on a
 // Parquet page, which is what a dictionary entry and a plain value both
-// cost, or zero for a type this does not size.
+// cost, or zero for a type this does not size. A decimal is written as a
+// fixed-length byte array just wide enough for its precision, three bytes
+// for a five digit amount, not the sixteen it takes in memory.
 func physicalWidth(t arrow.DataType) int64 {
 	switch t.ID() {
 	case arrow.INT32, arrow.DATE32, arrow.TIME32:
@@ -273,7 +275,7 @@ func physicalWidth(t arrow.DataType) int64 {
 	case arrow.INT64, arrow.TIME64, arrow.TIMESTAMP, arrow.FLOAT64:
 		return 8
 	case arrow.DECIMAL128:
-		return 16
+		return int64(pqarrow.DecimalSize(t.(*arrow.Decimal128Type).Precision))
 	}
 	return 0
 }

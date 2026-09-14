@@ -555,3 +555,36 @@ func TestFourByteTypesArePricedAtFourBytes(t *testing.T) {
 		t.Errorf("48,000 distinct dates over 65,536 rows should not be forced to a dictionary, got %v", day)
 	}
 }
+
+// moneyTable holds 48,000 distinct whole amounts in one row group of 65,536
+// rows. A five digit decimal is three bytes on the page, so the repeats can
+// save at most 53 KB written plain while the dictionary's indices cost
+// 131 KB. Priced at the sixteen bytes a decimal takes in memory the
+// dictionary looked worth forcing, and came out 40% larger than plain.
+func moneyTable() qvdtest.Table {
+	const distinct, rows = 48_000, 65_536
+	syms := make([]qvd.Symbol, distinct)
+	for i := range syms {
+		syms[i] = qvdtest.Int(int64(10_000 + i))
+	}
+	idx := make([]int, rows)
+	for i := range idx {
+		idx[i] = i % distinct
+	}
+	return qvdtest.Table{Name: "MONEY", Fields: []qvdtest.Field{
+		{Name: "Amount", Type: "MONEY", NDec: 0, Rows: idx, Symbols: syms},
+	}}
+}
+
+func TestDecimalsArePricedAtTheirPageWidth(t *testing.T) {
+	in := buildFixture(t, moneyTable())
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Compression = "uncompressed"
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if amount := columnEncodings(t, out)["Amount"]; hasEncoding(amount, parquet.Encodings.RLEDict) {
+		t.Errorf("48,000 distinct amounts over 65,536 rows should not be forced to a dictionary, got %v", amount)
+	}
+}
