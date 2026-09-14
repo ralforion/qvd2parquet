@@ -256,12 +256,26 @@ func dictionarySize(c *ResolvedColumn, f *qvd.File) (dictBytes, perValue int64, 
 		}
 		dictBytes = text + 4*p.Symbols
 		return dictBytes, dictBytes / p.Symbols, true
-	case c.ArrowType.ID() == arrow.DECIMAL128:
-		return 16 * p.Symbols, 16, true
-	case isIntegerBackedType(c.ArrowType), c.ArrowType.ID() == arrow.FLOAT64:
-		return 8 * p.Symbols, 8, true
+	}
+	if w := physicalWidth(c.ArrowType); w > 0 {
+		return w * p.Symbols, w, true
 	}
 	return 0, 0, false
+}
+
+// physicalWidth is the bytes one value of a fixed-width type takes on a
+// Parquet page, which is what a dictionary entry and a plain value both
+// cost, or zero for a type this does not size.
+func physicalWidth(t arrow.DataType) int64 {
+	switch t.ID() {
+	case arrow.INT32, arrow.DATE32, arrow.TIME32:
+		return 4
+	case arrow.INT64, arrow.TIME64, arrow.TIMESTAMP, arrow.FLOAT64:
+		return 8
+	case arrow.DECIMAL128:
+		return 16
+	}
+	return 0
 }
 
 // dictionaryChoice decides from the symbol table whether a column keeps its

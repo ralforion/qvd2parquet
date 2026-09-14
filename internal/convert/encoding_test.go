@@ -522,3 +522,36 @@ func TestShortRepeatsAreNotForcedToDictionary(t *testing.T) {
 		t.Errorf("short repeats among distinct values should not be forced to a dictionary, got %v", key)
 	}
 }
+
+// dateTable holds 48,000 distinct dates in one row group of 65,536 rows.
+// A date is four bytes on the page, so the 17,536 repeats can save at most
+// 70 KB written plain while the dictionary's indices cost 131 KB: plain
+// wins whatever the order. Priced at eight bytes the dictionary looked
+// worth forcing, and came out 10% larger than plain.
+func dateTable() qvdtest.Table {
+	const distinct, rows = 48_000, 65_536
+	syms := make([]qvd.Symbol, distinct)
+	for i := range syms {
+		syms[i] = qvdtest.Int(int64(40_000 + i))
+	}
+	idx := make([]int, rows)
+	for i := range idx {
+		idx[i] = i % distinct
+	}
+	return qvdtest.Table{Name: "DATES", Fields: []qvdtest.Field{
+		{Name: "Day", Type: "DATE", Rows: idx, Symbols: syms},
+	}}
+}
+
+func TestFourByteTypesArePricedAtFourBytes(t *testing.T) {
+	in := buildFixture(t, dateTable())
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Compression = "uncompressed"
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if day := columnEncodings(t, out)["Day"]; hasEncoding(day, parquet.Encodings.RLEDict) {
+		t.Errorf("48,000 distinct dates over 65,536 rows should not be forced to a dictionary, got %v", day)
+	}
+}
