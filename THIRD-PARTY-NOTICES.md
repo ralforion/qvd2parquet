@@ -15,29 +15,29 @@ dependency; CI fails when it is out of date.
 
 | Module | Version |
 | --- | --- |
-| `github.com/andybalholm/brotli` | v1.2.2 |
-| `github.com/apache/arrow-go/v18` | v18.7.0 |
+| `github.com/andybalholm/brotli` | v1.2.3 |
+| `github.com/apache/arrow-go/v18` | v18.8.0 |
 | `github.com/apache/thrift` | v0.24.0 |
 | `github.com/cespare/xxhash/v2` | v2.3.0 |
 | `github.com/goccy/go-json` | v0.10.6 |
 | `github.com/google/flatbuffers` | v25.12.19+incompatible |
 | `github.com/google/uuid` | v1.6.0 |
-| `github.com/klauspost/compress` | v1.19.0 |
+| `github.com/klauspost/compress` | v1.19.2 |
 | `github.com/klauspost/cpuid/v2` | v2.4.0 |
-| `github.com/pierrec/lz4/v4` | v4.1.27 |
+| `github.com/pierrec/lz4/v4` | v4.1.29 |
 | `github.com/zeebo/xxh3` | v1.1.0 |
 | `golang.org/x/exp` | v0.0.0-20260112195511-716be5621a96 |
-| `golang.org/x/net` | v0.55.0 |
+| `golang.org/x/net` | v0.58.0 |
 | `golang.org/x/sync` | v0.22.0 |
 | `golang.org/x/sys` | v0.47.0 |
-| `golang.org/x/text` | v0.37.0 |
-| `google.golang.org/genproto/googleapis/rpc` | v0.0.0-20260414002931-afd174a4e478 |
-| `google.golang.org/grpc` | v1.82.0 |
-| `google.golang.org/protobuf` | v1.36.11 |
+| `golang.org/x/text` | v0.41.0 |
+| `google.golang.org/genproto/googleapis/rpc` | v0.0.0-20260526163538-3dc84a4a5aaa |
+| `google.golang.org/grpc` | v1.83.2 |
+| `google.golang.org/protobuf` | v1.36.12 |
 
 ## github.com/andybalholm/brotli
 
-- `github.com/andybalholm/brotli` v1.2.2
+- `github.com/andybalholm/brotli` v1.2.3
 
 ```text
 --- LICENSE ---
@@ -62,41 +62,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
---- flate/LICENSE ---
-
-Copyright (c) 2009 The Go Authors. All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-   * Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-   * Redistributions in binary form must reproduce the above
-copyright notice, this list of conditions and the following disclaimer
-in the documentation and/or other materials provided with the
-distribution.
-   * Neither the name of Google Inc. nor the names of its
-contributors may be used to endorse or promote products derived from
-this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
 ```
 
 ## github.com/apache/arrow-go/v18
 
-- `github.com/apache/arrow-go/v18` v18.7.0
+- `github.com/apache/arrow-go/v18` v18.8.0
 
 ```text
 --- LICENSE.txt ---
@@ -770,7 +740,7 @@ SOFTWARE.
 The following modules share this licence text.
 
 - `github.com/google/flatbuffers` v25.12.19+incompatible
-- `google.golang.org/genproto/googleapis/rpc` v0.0.0-20260414002931-afd174a4e478
+- `google.golang.org/genproto/googleapis/rpc` v0.0.0-20260526163538-3dc84a4a5aaa
 
 ```text
 --- LICENSE ---
@@ -1019,7 +989,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## github.com/klauspost/compress
 
-- `github.com/klauspost/compress` v1.19.0
+- `github.com/klauspost/compress` v1.19.2
 
 ```text
 --- LICENSE ---
@@ -1481,7 +1451,7 @@ SOFTWARE.
 
 ## github.com/pierrec/lz4/v4
 
-- `github.com/pierrec/lz4/v4` v4.1.27
+- `github.com/pierrec/lz4/v4` v4.1.29
 
 ```text
 --- LICENSE ---
@@ -1560,10 +1530,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 The following modules share this licence text.
 
 - `golang.org/x/exp` v0.0.0-20260112195511-716be5621a96
-- `golang.org/x/net` v0.55.0
+- `golang.org/x/net` v0.58.0
 - `golang.org/x/sync` v0.22.0
 - `golang.org/x/sys` v0.47.0
-- `golang.org/x/text` v0.37.0
+- `golang.org/x/text` v0.41.0
 
 ```text
 --- LICENSE ---
@@ -1625,7 +1595,7 @@ shall terminate as of the date such litigation is filed.
 
 ## google.golang.org/grpc
 
-- `google.golang.org/grpc` v1.82.0
+- `google.golang.org/grpc` v1.83.2
 
 ```text
 --- LICENSE ---
@@ -1853,7 +1823,7 @@ limitations under the License.
 
 ## google.golang.org/protobuf
 
-- `google.golang.org/protobuf` v1.36.11
+- `google.golang.org/protobuf` v1.36.12
 
 ```text
 --- LICENSE ---
