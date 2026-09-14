@@ -36,8 +36,8 @@ const (
 	// it is inside the error a sample carries.
 	trialThreshold = 0.8
 	// dictionaryOverflowBytes is the writer's dictionary page size limit. A
-	// column whose values would exceed it falls back to plain, and only such
-	// a column has anything to gain here.
+	// column whose symbols would exceed it is written plain from the start,
+	// and only such a column has anything to gain here.
 	dictionaryOverflowBytes = 1024 * 1024
 	// trialGroupColumns bounds how many columns are held in memory at once.
 	// A wide SAP extract can have dozens of candidates, and sampling them all
@@ -173,7 +173,11 @@ func measureColumn(sub *ResolvedSchema, records []arrow.Record, i int, f *qvd.Fi
 		}
 	}()
 
-	baseline, err := measure(schema, colRecords, base)
+	// The baseline is the column as a conversion would write it, which for
+	// a candidate is plain: its symbols cannot fit the dictionary page.
+	baseOpts := base
+	baseOpts.ColumnEncodings = writerEncodings(sub, f, nil)
+	baseline, err := measure(schema, colRecords, baseOpts)
 	if err != nil {
 		return EncodingTrial{}, err
 	}
@@ -204,9 +208,9 @@ func WorthwhileTrials(trials []EncodingTrial) []EncodingTrial {
 	return out
 }
 
-// encodingCandidates picks the columns worth measuring: those whose values
-// would overflow the dictionary page, since a column that fits its dictionary
-// is already encoded about as well as it can be.
+// encodingCandidates picks the columns worth measuring: those written plain
+// because their symbols cannot fit the dictionary page, since a column that
+// keeps its dictionary is already encoded about as well as it can be.
 func encodingCandidates(rs *ResolvedSchema, f *qvd.File, pinned map[string]parquetwrite.Encoding) []int {
 	var out []int
 	for i := range rs.Columns {
@@ -214,28 +218,67 @@ func encodingCandidates(rs *ResolvedSchema, f *qvd.File, pinned map[string]parqu
 		if _, decided := pinned[c.Name]; decided {
 			continue
 		}
-		if c.SourceIndex < 0 || c.SourceIndex >= len(f.Profiles) {
-			continue
-		}
-		p := f.Profiles[c.SourceIndex]
-		if p == nil || p.Symbols == 0 {
-			continue
-		}
-		var estimate int64
-		switch {
-		case isByteArrayType(c.ArrowType):
-			// An upper bound: every symbol at its column's longest. The trial
-			// itself is the real evidence, so an estimate that lets one extra
-			// column through costs a measurement, not a wrong answer.
-			estimate = p.Symbols * int64(p.MaxTextLen+4)
-		case isIntegerBackedType(c.ArrowType):
-			estimate = p.Symbols * 8
-		default:
-			continue
-		}
-		if estimate > dictionaryOverflowBytes {
+		if dictionaryOverflows(c, f) && len(candidateEncodings(c.ArrowType)) > 0 {
 			out = append(out, i)
 		}
+	}
+	return out
+}
+
+// dictionaryOverflows reports whether a column's symbols cannot fit the
+// writer's dictionary page. The QVD header states the symbol count, so this
+// is known before a row is read, which is what lets the writer be told plain
+// up front instead of building a dictionary it then has to abandon.
+//
+// It is an upper bound: every text symbol at its column's longest, and every
+// numeric one at eight bytes. The saving being protected is the dictionary
+// page plus its indices per row group, so a column let through by a few
+// bytes loses at most the dictionary it would barely have fitted.
+func dictionaryOverflows(c *ResolvedColumn, f *qvd.File) bool {
+	if c.SourceIndex < 0 || c.SourceIndex >= len(f.Profiles) {
+		return false
+	}
+	p := f.Profiles[c.SourceIndex]
+	if p == nil || p.Symbols == 0 {
+		return false
+	}
+	var perSymbol int64
+	switch {
+	case isByteArrayType(c.ArrowType):
+		perSymbol = int64(p.MaxTextLen + 4)
+	case c.ArrowType.ID() == arrow.DECIMAL128:
+		perSymbol = 16
+	case isIntegerBackedType(c.ArrowType), c.ArrowType.ID() == arrow.FLOAT64:
+		perSymbol = 8
+	default:
+		return false
+	}
+	return p.Symbols*perSymbol > dictionaryOverflowBytes
+}
+
+// writerEncodings is what the writer is told per column: plain for a column
+// whose symbols cannot fit the dictionary page, and whatever a rule or a
+// measurement pinned, which wins. The writer's own fallback would reach plain
+// too, but only after writing a full dictionary page and indices for the rows
+// it covered, in every row group. On a distinct key that is about 14% on top
+// of the plain chunk at the default row group size, for nothing.
+//
+// A column that fits keeps its dictionary. Up to arrow-go 18.7.0 the writer
+// itself decided that from its first batch of rows, when nearly every value
+// was still new, and discarded dictionaries that would have paid: a column of
+// twenty thousand distinct codes over half a million rows came out a third
+// larger than it needed to. The symbol table knows better, so the decision is
+// made here from it.
+func writerEncodings(rs *ResolvedSchema, f *qvd.File, pinned map[string]parquetwrite.Encoding) map[string]parquetwrite.Encoding {
+	out := make(map[string]parquetwrite.Encoding, len(pinned))
+	for i := range rs.Columns {
+		c := &rs.Columns[i]
+		if dictionaryOverflows(c, f) {
+			out[c.Name] = parquetwrite.EncodingPlain
+		}
+	}
+	for name, enc := range pinned {
+		out[name] = enc
 	}
 	return out
 }
@@ -355,7 +398,7 @@ func sliceColumn(sub *ResolvedSchema, records []arrow.Record, col int) ([]arrow.
 // column chunk, which is the number the choice turns on.
 func measure(schema *arrow.Schema, records []arrow.Record, opts parquetwrite.Options) (int64, error) {
 	var buf bytes.Buffer
-	fw, err := pqarrow.NewFileWriter(schema, &buf, parquetwrite.Properties(schema, opts),
+	fw, err := pqarrow.NewFileWriter(schema, &buf, parquetwrite.Properties(opts),
 		pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema()))
 	if err != nil {
 		return 0, fmt.Errorf("encoding trial: create writer: %w", err)

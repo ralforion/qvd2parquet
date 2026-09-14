@@ -94,17 +94,18 @@ type Options struct {
 	// RowGroupRows caps how many rows go into one row group.
 	RowGroupRows int64
 	// ColumnEncodings pins named output columns to an encoding. A column not
-	// named here keeps the writer's default. A dictionary is worth little on a
-	// column whose values are nearly all distinct: the dictionary page
-	// overflows, the writer falls back to plain, and the column is stored as
-	// raw bytes with only the compressor working on it.
+	// named here keeps the writer's default, a dictionary. The caller names
+	// plain for a column whose symbols cannot fit the dictionary page, since
+	// the writer would otherwise build a dictionary it then has to abandon:
+	// a full dictionary page, indices for the rows it covered, and plain for
+	// the rest, in every row group.
 	ColumnEncodings map[string]Encoding
 }
 
-// Properties builds the writer properties for these options and this schema.
-// It is exported so a measurement can write a sample exactly as the real
-// conversion would, rather than approximating it.
-func Properties(schema *arrow.Schema, opts Options) *parquet.WriterProperties {
+// Properties builds the writer properties for these options. It is exported so
+// a measurement can write a sample exactly as the real conversion would,
+// rather than approximating it.
+func Properties(opts Options) *parquet.WriterProperties {
 	props := []parquet.WriterProperty{
 		parquet.WithCompression(opts.Compression),
 		parquet.WithDictionaryDefault(true),
@@ -113,19 +114,6 @@ func Properties(schema *arrow.Schema, opts Options) *parquet.WriterProperties {
 	}
 	if opts.RowGroupRows > 0 {
 		props = append(props, parquet.WithMaxRowGroupLength(opts.RowGroupRows))
-	}
-	// A dictionary that is not paying for itself is dropped before the first
-	// data page is cut, so a column of nearly distinct values is stored plain
-	// from the start rather than as a full dictionary page, its indices, and
-	// then plain for the rest. arrow-go did this for every column up to
-	// 18.7.0; from 18.8.0 it only does so for uncompressed columns unless
-	// asked per column, on the reasoning that dictionary indices can beat
-	// pages that compress well. That is not how a distinct key column
-	// behaves: its dictionary compresses no better than the plain pages
-	// would, and the indices are pure overhead. Asking for the check keeps
-	// the output the same bytes it was.
-	for _, f := range schema.Fields() {
-		props = append(props, parquet.WithDictionaryCostFallbackFor(f.Name, true))
 	}
 	// Sorted, so two runs with the same options build the same properties.
 	names := make([]string, 0, len(opts.ColumnEncodings))
@@ -193,7 +181,7 @@ func Create(finalPath string, schema *arrow.Schema, opts Options, force bool) (*
 		return nil, fmt.Errorf("%w: create %s: %v", ErrOutput, tmpPath, err)
 	}
 
-	wp := Properties(schema, opts)
+	wp := Properties(opts)
 	// StoreSchema writes the Arrow schema into the Parquet footer so readers
 	// round-trip types such as time32[ms] faithfully.
 	ap := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema())

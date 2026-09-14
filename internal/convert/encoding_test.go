@@ -340,3 +340,35 @@ func hasEncoding(encs []parquet.Encoding, want parquet.Encoding) bool {
 	}
 	return false
 }
+
+// The QVD header states every field's symbol count, so a column whose symbols
+// cannot fit the dictionary page is written plain from the first row, and a
+// column that fits keeps its dictionary. The writer's own fallback reaches
+// plain too, but only after a full dictionary page and indices per row group.
+func TestDictionaryIsDecidedFromTheSymbolTable(t *testing.T) {
+	in := buildFixture(t, keyTable(30000, true))
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	encodings := columnEncodings(t, out)
+	key := encodings["%CE10500_PKEY"]
+	if hasEncoding(key, parquet.Encodings.RLEDict) || !hasEncoding(key, parquet.Encodings.Plain) {
+		t.Errorf("30000 distinct 39-character values should be plain from the start, got %v", key)
+	}
+	if amount := encodings["Amount"]; !hasEncoding(amount, parquet.Encodings.RLEDict) {
+		t.Errorf("a five symbol column should keep its dictionary, got %v", amount)
+	}
+
+	// A rule naming the dictionary wins over the symbol table.
+	pinned := testOptions()
+	pinned.Encodings, _ = ParseEncodingSpec("%*_PKEY=dictionary")
+	out2 := filepath.Join(t.TempDir(), "pinned.parquet")
+	if _, _, err := Run(context.Background(), in, out2, &pinned, nil); err != nil {
+		t.Fatal(err)
+	}
+	if key := columnEncodings(t, out2)["%CE10500_PKEY"]; !hasEncoding(key, parquet.Encodings.RLEDict) {
+		t.Errorf("KEY=dictionary should keep the dictionary, got %v", key)
+	}
+}
