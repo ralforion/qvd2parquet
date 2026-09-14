@@ -355,7 +355,7 @@ func sliceColumn(sub *ResolvedSchema, records []arrow.Record, col int) ([]arrow.
 // column chunk, which is the number the choice turns on.
 func measure(schema *arrow.Schema, records []arrow.Record, opts parquetwrite.Options) (int64, error) {
 	var buf bytes.Buffer
-	fw, err := pqarrow.NewFileWriter(schema, &buf, parquetwrite.Properties(opts),
+	fw, err := pqarrow.NewFileWriter(schema, &buf, parquetwrite.Properties(schema, opts),
 		pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema()))
 	if err != nil {
 		return 0, fmt.Errorf("encoding trial: create writer: %w", err)

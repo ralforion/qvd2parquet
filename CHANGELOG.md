@@ -13,6 +13,16 @@ restarts from it.
 
 ## [Unreleased]
 
+### Changed
+
+- Dependencies updated, apache/arrow-go 18.7.0 to 18.8.0 among them. The new
+  writer keeps a dictionary on a compressed column even when the dictionary
+  is not paying for itself, so a column of nearly distinct values, a composite
+  key for one, would have been stored as a dictionary page, its indices, and
+  then plain for the rest. qvd2parquet asks the writer for the old check on
+  every column, so the output stays the same bytes it was and `--encoding
+  auto` keeps measuring against it.
+
 ## [2.8.0] - 2026-09-10
 
 ### Changed

@@ -101,10 +101,10 @@ type Options struct {
 	ColumnEncodings map[string]Encoding
 }
 
-// Properties builds the writer properties for these options. It is exported so
-// a measurement can write a sample exactly as the real conversion would,
-// rather than approximating it.
-func Properties(opts Options) *parquet.WriterProperties {
+// Properties builds the writer properties for these options and this schema.
+// It is exported so a measurement can write a sample exactly as the real
+// conversion would, rather than approximating it.
+func Properties(schema *arrow.Schema, opts Options) *parquet.WriterProperties {
 	props := []parquet.WriterProperty{
 		parquet.WithCompression(opts.Compression),
 		parquet.WithDictionaryDefault(true),
@@ -113,6 +113,19 @@ func Properties(opts Options) *parquet.WriterProperties {
 	}
 	if opts.RowGroupRows > 0 {
 		props = append(props, parquet.WithMaxRowGroupLength(opts.RowGroupRows))
+	}
+	// A dictionary that is not paying for itself is dropped before the first
+	// data page is cut, so a column of nearly distinct values is stored plain
+	// from the start rather than as a full dictionary page, its indices, and
+	// then plain for the rest. arrow-go did this for every column up to
+	// 18.7.0; from 18.8.0 it only does so for uncompressed columns unless
+	// asked per column, on the reasoning that dictionary indices can beat
+	// pages that compress well. That is not how a distinct key column
+	// behaves: its dictionary compresses no better than the plain pages
+	// would, and the indices are pure overhead. Asking for the check keeps
+	// the output the same bytes it was.
+	for _, f := range schema.Fields() {
+		props = append(props, parquet.WithDictionaryCostFallbackFor(f.Name, true))
 	}
 	// Sorted, so two runs with the same options build the same properties.
 	names := make([]string, 0, len(opts.ColumnEncodings))
@@ -180,7 +193,7 @@ func Create(finalPath string, schema *arrow.Schema, opts Options, force bool) (*
 		return nil, fmt.Errorf("%w: create %s: %v", ErrOutput, tmpPath, err)
 	}
 
-	wp := Properties(opts)
+	wp := Properties(schema, opts)
 	// StoreSchema writes the Arrow schema into the Parquet footer so readers
 	// round-trip types such as time32[ms] faithfully.
 	ap := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema())
