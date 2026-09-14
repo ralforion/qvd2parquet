@@ -244,7 +244,7 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	w, err := parquetwrite.Create(outputPath, rs.Arrow, parquetwrite.Options{
 		Compression:     codec,
 		RowGroupRows:    int64(opts.RowGroupRows),
-		ColumnEncodings: writerEncodings(rs, f, enc.ByColumn),
+		ColumnEncodings: writerEncodings(rs, f, int64(opts.RowGroupRows), enc.ByColumn),
 	}, opts.Force)
 	if err != nil {
 		return nil, nil, err

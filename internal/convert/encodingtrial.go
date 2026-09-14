@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/bits"
 	"sort"
 	"time"
 
@@ -36,8 +37,7 @@ const (
 	// it is inside the error a sample carries.
 	trialThreshold = 0.8
 	// dictionaryOverflowBytes is the writer's dictionary page size limit. A
-	// column whose symbols would exceed it is written plain from the start,
-	// and only such a column has anything to gain here.
+	// column whose symbols would exceed it is written plain from the start.
 	dictionaryOverflowBytes = 1024 * 1024
 	// trialGroupColumns bounds how many columns are held in memory at once.
 	// A wide SAP extract can have dozens of candidates, and sampling them all
@@ -94,7 +94,7 @@ func TrialEncodings(ctx context.Context, f *qvd.File, rs *ResolvedSchema, opts *
 	if err != nil {
 		return nil, err
 	}
-	candidates := encodingCandidates(rs, f, pinned.ByColumn)
+	candidates := encodingCandidates(rs, f, int64(opts.RowGroupRows), pinned.ByColumn)
 	if len(candidates) == 0 || f.NoOfRecords == 0 {
 		return nil, nil
 	}
@@ -174,9 +174,9 @@ func measureColumn(sub *ResolvedSchema, records []arrow.Record, i int, f *qvd.Fi
 	}()
 
 	// The baseline is the column as a conversion would write it, which for
-	// a candidate is plain: its symbols cannot fit the dictionary page.
+	// a candidate is plain: the symbol table ruled its dictionary out.
 	baseOpts := base
-	baseOpts.ColumnEncodings = writerEncodings(sub, f, nil)
+	baseOpts.ColumnEncodings = writerEncodings(sub, f, base.RowGroupRows, nil)
 	baseline, err := measure(schema, colRecords, baseOpts)
 	if err != nil {
 		return EncodingTrial{}, err
@@ -208,73 +208,102 @@ func WorthwhileTrials(trials []EncodingTrial) []EncodingTrial {
 	return out
 }
 
-// encodingCandidates picks the columns worth measuring: those written plain
-// because their symbols cannot fit the dictionary page, since a column that
-// keeps its dictionary is already encoded about as well as it can be.
-func encodingCandidates(rs *ResolvedSchema, f *qvd.File, pinned map[string]parquetwrite.Encoding) []int {
+// encodingCandidates picks the columns worth measuring: those the symbol
+// table writes plain, since a column that keeps its dictionary is already
+// encoded about as well as it can be.
+func encodingCandidates(rs *ResolvedSchema, f *qvd.File, rowGroupRows int64, pinned map[string]parquetwrite.Encoding) []int {
 	var out []int
 	for i := range rs.Columns {
 		c := &rs.Columns[i]
 		if _, decided := pinned[c.Name]; decided {
 			continue
 		}
-		if dictionaryOverflows(c, f) && len(candidateEncodings(c.ArrowType)) > 0 {
+		enc, ok := dictionaryChoice(c, f, rowGroupRows)
+		if ok && enc == parquetwrite.EncodingPlain && len(candidateEncodings(c.ArrowType)) > 0 {
 			out = append(out, i)
 		}
 	}
 	return out
 }
 
-// dictionaryOverflows reports whether a column's symbols cannot fit the
-// writer's dictionary page. The QVD header states the symbol count, so this
-// is known before a row is read, which is what lets the writer be told plain
-// up front instead of building a dictionary it then has to abandon.
+// dictionaryChoice decides from the symbol table whether a column keeps its
+// dictionary, and reports false for a column it knows nothing about.
 //
-// It is an upper bound: every text symbol at its column's longest, and every
-// numeric one at eight bytes. The saving being protected is the dictionary
-// page plus its indices per row group, so a column let through by a few
-// bytes loses at most the dictionary it would barely have fitted.
-func dictionaryOverflows(c *ResolvedColumn, f *qvd.File) bool {
+// Two things rule a dictionary out. The dictionary page has a size limit, so
+// symbols that cannot fit it are written plain rather than as a page that
+// fills, indices for the rows it covered, and plain for the rest in every
+// row group. And a dictionary is only worth its indices where values repeat
+// within a row group: with about as many symbols as rows in one, the
+// dictionary is the column over again and the indices come on top. The
+// Parquet writer used to make that second call from its first batch of rows,
+// where nearly every value is still new, and threw away dictionaries that
+// would have paid; here it is made from the whole file.
+//
+// What the symbol table cannot see is skew: seventy thousand symbols over a
+// row group of sixty-five thousand rows may still be a handful of values
+// repeated, where a dictionary would have won. Plain pages compress repeats
+// well, so that error costs little, whereas a dictionary on a column of
+// distinct values costs its page and its indices for nothing.
+func dictionaryChoice(c *ResolvedColumn, f *qvd.File, rowGroupRows int64) (parquetwrite.Encoding, bool) {
 	if c.SourceIndex < 0 || c.SourceIndex >= len(f.Profiles) {
-		return false
+		return "", false
 	}
 	p := f.Profiles[c.SourceIndex]
 	if p == nil || p.Symbols == 0 {
-		return false
+		return "", false
 	}
-	var perSymbol int64
+	var dictBytes, perValue int64
 	switch {
 	case isByteArrayType(c.ArrowType):
-		perSymbol = int64(p.MaxTextLen + 4)
+		// Exact: every symbol's text once, each behind a four byte length.
+		// A text column whose symbols carry no text, numbers rendered under
+		// --mixed=text, has nothing to add up and is bounded at the twenty
+		// characters a rendered number can reach.
+		text := p.TextBytes
+		if text == 0 {
+			text = 20 * p.Symbols
+		}
+		dictBytes = text + 4*p.Symbols
+		perValue = dictBytes / p.Symbols
 	case c.ArrowType.ID() == arrow.DECIMAL128:
-		perSymbol = 16
+		dictBytes, perValue = 16*p.Symbols, 16
 	case isIntegerBackedType(c.ArrowType), c.ArrowType.ID() == arrow.FLOAT64:
-		perSymbol = 8
+		dictBytes, perValue = 8*p.Symbols, 8
 	default:
-		return false
+		return "", false
 	}
-	return p.Symbols*perSymbol > dictionaryOverflowBytes
+	if dictBytes > dictionaryOverflowBytes {
+		return parquetwrite.EncodingPlain, true
+	}
+	rows := f.NoOfRecords
+	if rowGroupRows > 0 && rowGroupRows < rows {
+		rows = rowGroupRows
+	}
+	if rows <= 0 {
+		return "", false
+	}
+	if p.Symbols >= rows {
+		return parquetwrite.EncodingPlain, true
+	}
+	// Indices are bit-packed at the width the symbol count needs.
+	indexBytes := rows * int64(bits.Len64(uint64(p.Symbols-1))) / 8
+	if dictBytes+indexBytes >= rows*perValue {
+		return parquetwrite.EncodingPlain, true
+	}
+	return parquetwrite.EncodingDictionary, true
 }
 
-// writerEncodings is what the writer is told per column: plain for a column
-// whose symbols cannot fit the dictionary page, and whatever a rule or a
-// measurement pinned, which wins. The writer's own fallback would reach plain
-// too, but only after writing a full dictionary page and indices for the rows
-// it covered, in every row group. On a distinct key that is about 14% on top
-// of the plain chunk at the default row group size, for nothing.
-//
-// A column that fits keeps its dictionary. Up to arrow-go 18.7.0 the writer
-// itself decided that from its first batch of rows, when nearly every value
-// was still new, and discarded dictionaries that would have paid: a column of
-// twenty thousand distinct codes over half a million rows came out a third
-// larger than it needed to. The symbol table knows better, so the decision is
-// made here from it.
-func writerEncodings(rs *ResolvedSchema, f *qvd.File, pinned map[string]parquetwrite.Encoding) map[string]parquetwrite.Encoding {
-	out := make(map[string]parquetwrite.Encoding, len(pinned))
+// writerEncodings is what the writer is told per column: the symbol table's
+// choice of dictionary or plain for every column it can judge, and whatever
+// a rule or a measurement pinned, which wins. Naming the dictionary rather
+// than leaving the default matters too: on an uncompressed column the writer
+// would otherwise still make its own first-batch judgement and drop it.
+func writerEncodings(rs *ResolvedSchema, f *qvd.File, rowGroupRows int64, pinned map[string]parquetwrite.Encoding) map[string]parquetwrite.Encoding {
+	out := make(map[string]parquetwrite.Encoding, len(rs.Columns))
 	for i := range rs.Columns {
 		c := &rs.Columns[i]
-		if dictionaryOverflows(c, f) {
-			out[c.Name] = parquetwrite.EncodingPlain
+		if enc, ok := dictionaryChoice(c, f, rowGroupRows); ok {
+			out[c.Name] = enc
 		}
 	}
 	for name, enc := range pinned {

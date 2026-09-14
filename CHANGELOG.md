@@ -17,8 +17,10 @@ restarts from it.
 
 - Whether a column gets a dictionary is now decided from the QVD's symbol
   table rather than by the Parquet writer from its first rows. A column whose
-  symbols cannot fit the dictionary page is written plain from the start; every
-  other column keeps its dictionary.
+  symbols cannot fit the dictionary page, or that has about as many distinct
+  values as a row group has rows, is written plain from the start; every other
+  column keeps its dictionary, under `--compression uncompressed` too, where
+  the writer would otherwise still have made its own first-batch call.
 
   Until now the writer decided from its first batch, when nearly every value
   was still new, and discarded dictionaries that would have paid. Measured at
@@ -32,8 +34,9 @@ restarts from it.
   18.8.0, which this release moves to, would otherwise have written such a
   column as a full dictionary page, its indices, and plain for the rest, in
   every row group, about 14% on top at the default row group size. The
-  symbol count is known before a row is read, so the writer is told plain
-  up front instead.
+  symbol table is read before a row is, so the writer is told plain up front
+  instead. The text of every symbol is counted, so one long value among short
+  ones does not cost a column its dictionary.
 
   `--encoding auto` measures against what the run would write, so its
   baseline for a candidate is plain and its recommendations keep their

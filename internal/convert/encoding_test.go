@@ -13,6 +13,7 @@ import (
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
+	"github.com/ralforion/qvd2parquet/internal/qvdtest"
 )
 
 func TestParseEncodingRules(t *testing.T) {
@@ -370,5 +371,43 @@ func TestDictionaryIsDecidedFromTheSymbolTable(t *testing.T) {
 	}
 	if key := columnEncodings(t, out2)["%CE10500_PKEY"]; !hasEncoding(key, parquet.Encodings.RLEDict) {
 		t.Errorf("KEY=dictionary should keep the dictionary, got %v", key)
+	}
+}
+
+// skewedTable holds a column of twenty thousand short codes and one long
+// outlier, repeated over ten times as many rows. Charged at its longest
+// value the dictionary would be 1.3 MB and ruled out; counted, it is 180 KB.
+func skewedTable(rows int) qvdtest.Table {
+	const distinct = 20_000
+	syms := make([]qvd.Symbol, distinct)
+	for i := range syms {
+		syms[i] = qvdtest.Str(fmt.Sprintf("%05d", i))
+	}
+	syms[distinct-1] = qvdtest.Str(strings.Repeat("x", 60))
+	idx := make([]int, rows)
+	for i := range idx {
+		idx[i] = i % distinct
+	}
+	return qvdtest.Table{Name: "SKEW", Fields: []qvdtest.Field{
+		{Name: "Code", Type: "ASCII", Rows: idx, Symbols: syms},
+	}}
+}
+
+// The dictionary is sized from the symbols' actual text, not from every
+// symbol at the column's longest, and a column that keeps it does so under
+// every compression: without a codec the writer would otherwise still judge
+// from its first rows, when nearly every value is new, and drop it.
+func TestDictionaryIsKeptWhereItPays(t *testing.T) {
+	in := buildFixture(t, skewedTable(200_000))
+	for _, compression := range []string{"snappy", "uncompressed"} {
+		out := filepath.Join(t.TempDir(), compression+".parquet")
+		opts := testOptions()
+		opts.Compression = compression
+		if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+			t.Fatal(err)
+		}
+		if code := columnEncodings(t, out)["Code"]; !hasEncoding(code, parquet.Encodings.RLEDict) {
+			t.Errorf("%s: 20,000 short codes over 200,000 rows should keep their dictionary, got %v", compression, code)
+		}
 	}
 }

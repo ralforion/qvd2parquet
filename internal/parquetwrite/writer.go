@@ -93,12 +93,12 @@ type Options struct {
 	Compression compress.Compression
 	// RowGroupRows caps how many rows go into one row group.
 	RowGroupRows int64
-	// ColumnEncodings pins named output columns to an encoding. A column not
-	// named here keeps the writer's default, a dictionary. The caller names
-	// plain for a column whose symbols cannot fit the dictionary page, since
-	// the writer would otherwise build a dictionary it then has to abandon:
-	// a full dictionary page, indices for the rows it covered, and plain for
-	// the rest, in every row group.
+	// ColumnEncodings names an encoding per output column. A column not
+	// named here keeps the writer's default: a dictionary, which the writer
+	// itself may drop from its first rows. The caller decides dictionary or
+	// plain for every column it can judge from the QVD symbol table, so the
+	// writer neither builds a dictionary it then has to abandon nor drops one
+	// that would have paid.
 	ColumnEncodings map[string]Encoding
 }
 
@@ -123,7 +123,18 @@ func Properties(opts Options) *parquet.WriterProperties {
 	sort.Strings(names)
 	for _, name := range names {
 		enc := opts.ColumnEncodings[name]
-		if enc == EncodingDictionary || enc == EncodingDefault {
+		if enc == EncodingDefault {
+			continue
+		}
+		if enc == EncodingDictionary {
+			// A named dictionary is kept. The writer would otherwise judge
+			// from its first batch of rows whether the dictionary pays, on a
+			// column written without compression, and drop it while nearly
+			// every value is still new. That judgement has already been made
+			// from the whole symbol table.
+			props = append(props,
+				parquet.WithDictionaryFor(name, true),
+				parquet.WithDictionaryCostFallbackFor(name, false))
 			continue
 		}
 		pe, ok := enc.parquetEncoding()
