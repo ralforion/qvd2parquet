@@ -480,3 +480,45 @@ func TestIndexWidthIsPricedPerRowGroup(t *testing.T) {
 		t.Errorf("sorted nearly distinct integers should keep the writer's dictionary, got %v", key)
 	}
 }
+
+// shortRepeatsTable holds 49,999 ten-character values once each and then
+// the empty string for the rest of one row group. Every symbol is in the
+// group, and every repeat is the shortest value the column has, so the
+// dictionary pays its indices for almost nothing: 800 KB against 700 KB
+// plain. Priced at the average width the dictionary would look safe. It is
+// not, and the symbol table must leave the choice to the writer.
+func shortRepeatsTable() qvdtest.Table {
+	const distinct, rows = 49_999, 65_536
+	syms := make([]qvd.Symbol, distinct+1)
+	for i := 0; i < distinct; i++ {
+		syms[i] = qvdtest.Str(fmt.Sprintf("V%09d", i))
+	}
+	syms[distinct] = qvdtest.Str("")
+	idx := make([]int, rows)
+	for i := range idx {
+		if i < distinct {
+			idx[i] = i
+		} else {
+			idx[i] = distinct
+		}
+	}
+	return qvdtest.Table{Name: "SHORT", Fields: []qvdtest.Field{
+		{Name: "Key", Type: "ASCII", Rows: idx, Symbols: syms},
+	}}
+}
+
+func TestShortRepeatsAreNotForcedToDictionary(t *testing.T) {
+	in := buildFixture(t, shortRepeatsTable())
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Compression = "uncompressed"
+	opts.EmptyStringAsNull = false
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Left to the writer, which judges from its first rows that a dictionary
+	// of distinct values does not pay and writes plain.
+	if key := columnEncodings(t, out)["Key"]; hasEncoding(key, parquet.Encodings.RLEDict) {
+		t.Errorf("short repeats among distinct values should not be forced to a dictionary, got %v", key)
+	}
+}

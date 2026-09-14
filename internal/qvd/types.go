@@ -211,15 +211,18 @@ type ColumnProfile struct {
 	EmptyStrings int64 `json:"emptyStrings"`
 	MaxTextLen   int   `json:"maxTextLen"`
 	// TextBytes is the length of every text symbol added up, which is what
-	// a dictionary of the column would hold.
-	TextBytes int64   `json:"textBytes"`
-	MinInt    int64   `json:"minInt"`
-	MaxInt    int64   `json:"maxInt"`
-	MinFloat  float64 `json:"minFloat"`
-	MaxFloat  float64 `json:"maxFloat"`
+	// a dictionary of the column would hold. MinTextLen is the shortest
+	// text symbol, an empty string included.
+	TextBytes  int64   `json:"textBytes"`
+	MinTextLen int     `json:"minTextLen"`
+	MinInt     int64   `json:"minInt"`
+	MaxInt     int64   `json:"maxInt"`
+	MinFloat   float64 `json:"minFloat"`
+	MaxFloat   float64 `json:"maxFloat"`
 
 	hasInt   bool
 	hasFloat bool
+	hasText  bool
 }
 
 // TextIsLosslessForMixed reports whether a column mixing text and numbers can
@@ -270,6 +273,9 @@ func (p *ColumnProfile) Observe(s Symbol) {
 		}
 		if len(s.Text) > p.MaxTextLen {
 			p.MaxTextLen = len(s.Text)
+		}
+		if !p.hasText || len(s.Text) < p.MinTextLen {
+			p.MinTextLen, p.hasText = len(s.Text), true
 		}
 		p.TextBytes += int64(len(s.Text))
 	}
