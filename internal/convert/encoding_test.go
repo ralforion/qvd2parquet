@@ -588,3 +588,42 @@ func TestDecimalsArePricedAtTheirPageWidth(t *testing.T) {
 		t.Errorf("48,000 distinct amounts over 65,536 rows should not be forced to a dictionary, got %v", amount)
 	}
 }
+
+// clusteredDateTable holds 200,000 distinct dates over 375,000 rows, with
+// every repeat on one date and all of them together at the start. Shared
+// out evenly the repeats could not pay for the indices, and a rule that
+// assumed so wrote plain; sitting together they fill row groups a
+// dictionary stores as one entry and zero-bit indices, and the dictionary
+// wins by a fifth. Only the row order can tell, so the writer's default
+// must stand, and the writer, seeing one value in its first rows, keeps it.
+func clusteredDateTable() qvdtest.Table {
+	const distinct, rows = 200_000, 375_000
+	syms := make([]qvd.Symbol, distinct)
+	for i := range syms {
+		syms[i] = qvdtest.Int(int64(30_000 + i))
+	}
+	idx := make([]int, rows)
+	for i := range idx {
+		if i < rows-distinct {
+			idx[i] = 0
+		} else {
+			idx[i] = i - (rows - distinct)
+		}
+	}
+	return qvdtest.Table{Name: "CLDATES", Fields: []qvdtest.Field{
+		{Name: "Day", Type: "DATE", Rows: idx, Symbols: syms},
+	}}
+}
+
+func TestClusteredRepeatsAreNotSettledPlain(t *testing.T) {
+	in := buildFixture(t, clusteredDateTable())
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Compression = "uncompressed"
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if day := columnEncodings(t, out)["Day"]; !hasEncoding(day, parquet.Encodings.RLEDict) {
+		t.Errorf("repeats clustered on one date should keep the writer's dictionary, got %v", day)
+	}
+}

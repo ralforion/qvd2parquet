@@ -294,11 +294,11 @@ func physicalWidth(t arrow.DataType) int64 {
 // does not judge otherwise from its first rows, when the dictionary fits the
 // page and beats plain even at its worst: every symbol in every row group,
 // and every repeat the shortest value the column has. A column is written
-// plain when a dictionary cannot pay even at its best: every repeat of a
-// value in the same row group, and every repeat the longest value, which is
-// the composite key. In between, the writer's default stands, a dictionary
-// that falls back to plain where it overflows, and --encoding auto is the
-// measurement.
+// plain when a dictionary cannot pay even at its best: every repeat in a row
+// group of nothing but repeats, where it costs no index and saves the
+// longest value, which is the composite key. In between, the writer's
+// default stands, a dictionary that falls back to plain where it overflows,
+// and --encoding auto is the measurement.
 //
 // A column that can hold nulls, an empty string written as null included,
 // is never settled on a dictionary. A null row costs plain nothing and a
@@ -334,8 +334,14 @@ func dictionaryChoice(c *ResolvedColumn, f *qvd.File, rowGroupRows int64, emptyA
 	}
 	// Indices are per row group too, bit-packed at the width the group's
 	// distinct count needs.
+	indexBits := func(distinct int64) int64 {
+		if distinct < 1 {
+			return 0
+		}
+		return int64(bits.Len64(uint64(distinct - 1)))
+	}
 	indexBytes := func(distinct int64) int64 {
-		return rowsPerGroup * int64(bits.Len64(uint64(distinct-1))) / 8
+		return rowsPerGroup * indexBits(distinct) / 8
 	}
 
 	// The dictionary at its worst: every symbol in every row group, capped
@@ -348,14 +354,21 @@ func dictionaryChoice(c *ResolvedColumn, f *qvd.File, rowGroupRows int64, emptyA
 		indexBytes(worstDistinct) < (rowsPerGroup-worstDistinct)*shortest {
 		return parquetwrite.EncodingDictionary, true
 	}
-	// The dictionary at its best: every repeat of a value sits in the same
-	// row group, so each group holds its share of the symbols and no more,
-	// and every repeated row is the longest value.
-	bestDistinct := rowsPerGroup * symbols / rows
-	if bestDistinct < 1 {
-		bestDistinct = 1
+	// The dictionary at its best. The symbol table cannot see which values
+	// repeat or how often, so the bound assumes the arrangement that suits a
+	// dictionary most: every repeat in a row group of nothing but repeats,
+	// where the indices are zero bits wide and each repeat saves the longest
+	// value; and every distinct row in a group of distinct rows, where the
+	// row groups being a fixed size, each pays an index at the width a full
+	// group needs and only the tail group gets a narrower one. Mixing the
+	// two costs a dictionary more, since the repeats then pay indices too.
+	repeats := rows - symbols
+	if repeats < 0 {
+		repeats = 0
 	}
-	if (rowsPerGroup-bestDistinct)*longest <= indexBytes(bestDistinct) {
+	full, tail := symbols/rowsPerGroup, symbols%rowsPerGroup
+	distinctIndex := (full*rowsPerGroup*indexBits(rowsPerGroup) + tail*indexBits(tail)) / 8
+	if repeats*longest <= distinctIndex {
 		return parquetwrite.EncodingPlain, true
 	}
 	return "", false
