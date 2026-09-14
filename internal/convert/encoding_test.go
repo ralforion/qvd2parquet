@@ -411,3 +411,37 @@ func TestDictionaryIsKeptWhereItPays(t *testing.T) {
 		}
 	}
 }
+
+// clusteredTable repeats each of a hundred thousand keys five times in a
+// row. The symbol count exceeds the rows of a row group, so a rule reading
+// only the count would write it plain, yet each row group holds a fifth of
+// its rows in dictionary and the dictionary wins by more than three to one
+// without compression. Only the row order could tell, so the symbol table
+// must leave the writer's default in place.
+func clusteredTable() qvdtest.Table {
+	const distinct, repeat = 100_000, 5
+	syms := make([]qvd.Symbol, distinct)
+	for i := range syms {
+		syms[i] = qvdtest.Str(fmt.Sprintf("K%011d", i))
+	}
+	idx := make([]int, distinct*repeat)
+	for i := range idx {
+		idx[i] = i / repeat
+	}
+	return qvdtest.Table{Name: "CLUSTER", Fields: []qvdtest.Field{
+		{Name: "Key", Type: "ASCII", Rows: idx, Symbols: syms},
+	}}
+}
+
+func TestUnsettledColumnKeepsTheWriterDefault(t *testing.T) {
+	in := buildFixture(t, clusteredTable())
+	out := filepath.Join(t.TempDir(), "out.parquet")
+	opts := testOptions()
+	opts.Compression = "uncompressed"
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if key := columnEncodings(t, out)["Key"]; !hasEncoding(key, parquet.Encodings.RLEDict) {
+		t.Errorf("clustered repeats should keep the writer's dictionary, got %v", key)
+	}
+}

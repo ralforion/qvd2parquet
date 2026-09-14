@@ -16,11 +16,13 @@ restarts from it.
 ### Changed
 
 - Whether a column gets a dictionary is now decided from the QVD's symbol
-  table rather than by the Parquet writer from its first rows. A column whose
-  symbols cannot fit the dictionary page, or that has about as many distinct
-  values as a row group has rows, is written plain from the start; every other
-  column keeps its dictionary, under `--compression uncompressed` too, where
-  the writer would otherwise still have made its own first-batch call.
+  table where the symbol table can settle it, rather than by the Parquet
+  writer from its first rows. A column so nearly distinct that no row order
+  could make a dictionary pay is written plain from the start. A column whose
+  dictionary fits the page and pays whatever the row order keeps it, under
+  `--compression uncompressed` too, where the writer would otherwise still
+  have made its own first-batch call. In between, where only the row order
+  could tell, the writer's default stands and `--encoding auto` measures.
 
   Until now the writer decided from its first batch, when nearly every value
   was still new, and discarded dictionaries that would have paid. Measured at

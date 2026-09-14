@@ -867,13 +867,15 @@ columns a QVD is usually full of: a field with twenty-seven thousand distinct
 values across twenty million rows costs almost nothing that way.
 
 It is worth nothing on a column whose values are nearly all distinct, and the
-symbol table says so before a row is read. A column whose symbols cannot fit
-the dictionary page, or that has about as many distinct values as a row group
-has rows, is written `PLAIN` from the start, raw bytes with only the
-compressor working on it, rather than as a dictionary page that fills up,
-indices for the rows it covered, and plain for the rest in every row group. A
-Qlik composite primary key is exactly that column: one distinct value per row.
-Every other column keeps its dictionary, whatever the compression.
+symbol table says so before a row is read. A column so nearly distinct that no
+row order could make a dictionary pay is written `PLAIN` from the start, raw
+bytes with only the compressor working on it, rather than as a dictionary page
+that fills up, indices for the rows it covered, and plain for the rest in
+every row group. A Qlik composite primary key is exactly that column: one
+distinct value per row. A column whose dictionary fits the page and pays
+whatever the row order keeps it, under every compression. In between, where
+only the row order could tell, the writer's default stands and
+`--encoding auto` is the measurement.
 
 `--encoding` pins such a column to something better:
 
