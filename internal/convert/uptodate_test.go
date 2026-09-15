@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -488,5 +489,75 @@ func TestManifestRoundTrip(t *testing.T) {
 	}
 	if got := LoadManifest(dir); len(got.Entries) != 0 {
 		t.Errorf("a manifest from a later format was read as %v", got.Entries)
+	}
+}
+
+func TestManifestStaleNamesTheCheckThatFailed(t *testing.T) {
+	dir, in, out, m := manifestFixture(t)
+
+	if got := m.Stale(in, out, "fp"); got != "" {
+		t.Fatalf("a file this run just recorded is stale: %q", got)
+	}
+	if got := (*Manifest)(nil).Stale(in, out, "fp"); got != "no manifest" {
+		t.Errorf("nil manifest: %q", got)
+	}
+	if got := m.Stale(in, filepath.Join(dir, "b.parquet"), "fp"); got != "not in the manifest" {
+		t.Errorf("unknown output: %q", got)
+	}
+	if got := m.Stale(in, out, "other"); got != "options changed since it was converted" {
+		t.Errorf("changed fingerprint: %q", got)
+	}
+
+	// The same output name produced from a different folder.
+	other := filepath.Join(t.TempDir(), "a.qvd")
+	if err := os.WriteFile(other, []byte("input"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := m.Stale(other, out, "fp"), "output was converted from "+canonicalInputPath(in); got != want {
+		t.Errorf("different input: %q, want %q", got, want)
+	}
+
+	// A re-extracted input at the same size, then one that grew.
+	later := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(in, later, later); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Stale(in, out, "fp"); !strings.HasPrefix(got, "input modified since, ") {
+		t.Errorf("re-extracted input: %q", got)
+	}
+	if err := os.WriteFile(in, []byte("input, longer"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Stale(in, out, "fp"); got != "input size changed from 5 to 13 bytes" {
+		t.Errorf("grown input: %q", got)
+	}
+	m.Record(in, out, "fp", 10, "Sales")
+
+	// An output re-stamped by something else, then one replaced outright.
+	if err := os.Chtimes(out, later, later); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Stale(in, out, "fp"); !strings.HasPrefix(got, "output modified since, ") {
+		t.Errorf("re-stamped output: %q", got)
+	}
+	if err := os.WriteFile(out, []byte("tampered!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Stale(in, out, "fp"); got != "output size changed from 6 to 9 bytes" {
+		t.Errorf("replaced output: %q", got)
+	}
+	m.Record(in, out, "fp", 10, "Sales")
+
+	if err := os.Remove(out); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Stale(in, out, "fp"); !strings.HasPrefix(got, "output cannot be read: ") {
+		t.Errorf("deleted output: %q", got)
+	}
+	if err := os.Remove(in); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Stale(in, out, "fp"); !strings.HasPrefix(got, "input cannot be read: ") {
+		t.Errorf("deleted input: %q", got)
 	}
 }

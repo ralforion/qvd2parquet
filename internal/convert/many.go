@@ -492,7 +492,9 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			break
 		}
 
-		if out := OutputPathFor(in, many.OutDir); live.UpToDate(in, out) {
+		out := OutputPathFor(in, many.OutDir)
+		stale, reason := live.Stale(in, out)
+		if !stale {
 			// A manifest written before entries carried the table name has
 			// none to give, and the file would skip forever without ever
 			// filling it in, so read the header this once and keep it. A
@@ -536,6 +538,13 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			safeLogf("skip %s (up to date)", DisplayPath(in))
 			logResult(results[i])
 			continue
+		}
+		if reason != "" {
+			// Only with --skip-up-to-date, and before the conversion rather
+			// than folded into its "ok" line: a large file is a quarter of
+			// an hour away from that line, and the question this answers is
+			// why it started at all.
+			safeLogf("stale %s (%s)", DisplayPath(in), reason)
 		}
 
 		wg.Add(1)

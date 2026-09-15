@@ -153,11 +153,17 @@ func newLiveManifest(m *Manifest, outDir, fingerprint string, logf Logf) *liveMa
 	return &liveManifest{m: m, outDir: outDir, fingerprint: fingerprint, logf: logf}
 }
 
-// UpToDate answers for the run's fingerprint.
-func (l *liveManifest) UpToDate(input, output string) bool {
+// Stale answers for the run's fingerprint. Without a manifest every file is
+// stale and there is no reason to give: the run was not asked to skip
+// anything, and a line per file saying so would only be noise.
+func (l *liveManifest) Stale(input, output string) (stale bool, reason string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.m.UpToDate(input, output, l.fingerprint)
+	if l.m == nil {
+		return true, ""
+	}
+	reason = l.m.Stale(input, output, l.fingerprint)
+	return reason != "", reason
 }
 
 // TableFor is the table name recorded for an output.
@@ -226,32 +232,59 @@ func (l *liveManifest) save() error {
 // be the ones it was produced with, and the output itself has to be untouched
 // since. Anything else, including a stat that fails, converts.
 func (m *Manifest) UpToDate(input, output, fingerprint string) bool {
+	return m.Stale(input, output, fingerprint) == ""
+}
+
+// Stale says why the output cannot be left alone, or nothing when it can. The
+// checks run in the order UpToDate lists them, and the first to fail is the
+// answer: an entry the options no longer match is reported as that even if
+// the input changed too, since the reconversion would happen either way.
+//
+// The reason exists for the operator, not the code. A folder that converts
+// itself every night despite the flag can only be diagnosed from the check
+// that fails, and without this line the run gave nothing to go on but the
+// manifest and a stat.
+func (m *Manifest) Stale(input, output, fingerprint string) string {
 	if m == nil {
-		return false
+		return "no manifest"
 	}
 	e, ok := m.Entries[filepath.Base(output)]
-	if !ok || e.Fingerprint != fingerprint {
-		return false
+	if !ok {
+		return "not in the manifest"
+	}
+	if e.Fingerprint != fingerprint {
+		return "options changed since it was converted"
+	}
+	// Stat before the path: an input that is gone cannot be resolved either,
+	// and "cannot be read" is the answer, not a path that differs.
+	in, err := os.Stat(input)
+	if err != nil {
+		return "input cannot be read: " + err.Error()
 	}
 	// Compared exactly. A folder that moved, or a path spelled with different
 	// capitals on a filesystem that does not care, converts once more than it
 	// had to; the alternative is folding two paths together and skipping a
 	// file this run has never seen.
 	if e.Input != canonicalInputPath(input) {
-		return false
+		return "output was converted from " + e.Input
 	}
-	in, err := os.Stat(input)
-	if err != nil {
-		return false
+	if e.InputSize != in.Size() {
+		return fmt.Sprintf("input size changed from %d to %d bytes", e.InputSize, in.Size())
 	}
-	if e.InputSize != in.Size() || e.InputModTime != stamp(in.ModTime()) {
-		return false
+	if e.InputModTime != stamp(in.ModTime()) {
+		return fmt.Sprintf("input modified since, %s, was %s", stamp(in.ModTime()), e.InputModTime)
 	}
 	out, err := os.Stat(output)
 	if err != nil {
-		return false
+		return "output cannot be read: " + err.Error()
 	}
-	return e.OutputSize == out.Size() && e.OutputModTime == stamp(out.ModTime())
+	if e.OutputSize != out.Size() {
+		return fmt.Sprintf("output size changed from %d to %d bytes", e.OutputSize, out.Size())
+	}
+	if e.OutputModTime != stamp(out.ModTime()) {
+		return fmt.Sprintf("output modified since, %s, was %s", stamp(out.ModTime()), e.OutputModTime)
+	}
+	return ""
 }
 
 // Record notes a file this run converted. A file it could not stat afterwards
