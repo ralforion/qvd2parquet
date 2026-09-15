@@ -13,6 +13,17 @@ restarts from it.
 
 ## [Unreleased]
 
+### Added
+
+- A file that `--skip-up-to-date` does not skip now says why, on a `stale`
+  line before it starts converting: `not in the manifest`, `options changed
+  since it was converted`, `output was converted from <other path>`, an input
+  or output whose size or timestamp changed, with both values, or one that
+  cannot be read. Until now a folder that reconverted itself every night
+  despite the flag gave nothing to go on but the manifest and a `stat`, and
+  the check that failed had to be found by hand. Nothing is printed without
+  the flag, and nothing about what is skipped or written has changed.
+
 ## [2.9.0] - 2026-09-14
 
 ### Changed

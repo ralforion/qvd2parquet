@@ -381,9 +381,18 @@ qvd2parquet --out-dir ./parquet --force --skip-up-to-date ./qvds
 ```text
 qvd2parquet: skip qvds/A057.qvd (up to date)
 qvd2parquet: skip qvds/BSEG.qvd (up to date)
+qvd2parquet: stale qvds/CE10500.qvd (input modified since, 2026-09-15T02:10:44.51Z, was 2026-09-14T02:09:58.07Z)
 qvd2parquet: ok   qvds/CE10500.qvd -> parquet/CE10500.parquet (20,589,661 rows, 213 columns, 1.8 GiB)
 converted 1/3 file(s) in 14m22s: 20,589,661 rows, 1.8 GiB; 2 skipped
 ```
+
+A file that is not skipped says which check failed before it starts, so a
+folder that converts itself every night despite the flag can be diagnosed from
+the run's own output. The reasons are `not in the manifest`, `options changed
+since it was converted`, `output was converted from <other path>`, `input
+modified since` or `input size changed`, `output modified since` or `output
+size changed`, and `input cannot be read` or `output cannot be read`. The line
+appears only with `--skip-up-to-date`.
 
 **It is not a timestamp comparison.** "Is the `.parquet` newer than the `.qvd`"
 answers the wrong question, in three ways that all end in a stale output nobody

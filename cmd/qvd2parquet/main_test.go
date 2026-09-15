@@ -1817,3 +1817,53 @@ func TestScanOfAnUnrelatedFileDoesNotClaimAConvertedTable(t *testing.T) {
 		t.Errorf("the scanned file was not filed under its own name: %v", names)
 	}
 }
+
+func TestStaleFileSaysWhyItConverts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "orders.qvd")
+	buildQVD(t, src, "ORDERS")
+	outDir := filepath.Join(dir, "out")
+
+	run := func(flags ...string) string {
+		t.Helper()
+		args := append([]string{"--progress", "0", "--out-dir", outDir, "--force"}, flags...)
+		cmd := exec.Command(bin, append(args, dir)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("run: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+
+	// A folder with no manifest yet says so for every file; a run that did
+	// not ask to skip anything says nothing.
+	if out := run("--skip-up-to-date"); !strings.Contains(out, "orders.qvd (not in the manifest)") {
+		t.Fatalf("first run gave no reason:\n%s", out)
+	}
+	if out := run(); strings.Contains(out, "stale ") {
+		t.Fatalf("a run without --skip-up-to-date explained itself:\n%s", out)
+	}
+
+	// The output was just overwritten by that run, and the next one names
+	// that rather than the input.
+	if out := run("--skip-up-to-date"); !strings.Contains(out, "orders.qvd (output modified since, ") &&
+		!strings.Contains(out, "orders.qvd (output size changed") {
+		t.Fatalf("replaced output was not the reason:\n%s", out)
+	}
+	if out := run("--skip-up-to-date"); !strings.Contains(out, "orders.qvd (up to date)") || strings.Contains(out, "stale ") {
+		t.Fatalf("unchanged folder did not skip cleanly:\n%s", out)
+	}
+
+	// A re-extracted input, the nightly case.
+	later := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(src, later, later); err != nil {
+		t.Fatal(err)
+	}
+	if out := run("--skip-up-to-date"); !strings.Contains(out, "orders.qvd (input modified since, ") {
+		t.Fatalf("re-extracted input was not the reason:\n%s", out)
+	}
+}
