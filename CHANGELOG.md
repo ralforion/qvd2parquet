@@ -30,9 +30,18 @@ restarts from it.
   Files that fit are written exactly as before, and that is nearly all of
   them: 140 columns stay at 65536 rows per row group up to 24 million rows. The
   flag and its default are unchanged, so `--skip-up-to-date` does not reconvert
-  a folder over this. That cuts both ways: an output already written with an
-  oversized footer still counts as up to date, so delete it once to have it
-  converted again.
+  a folder over this.
+
+- `--skip-up-to-date` no longer skips an output whose footer is over 16 MiB
+  when it was converted by an earlier version. Nothing else would ever catch
+  it, since the options and both files are exactly as the manifest recorded
+  them, and the outputs affected would otherwise have to be found and deleted
+  by hand. The next run converts them again and says why, `stale
+  PRCD_ELEMENTS.qvd (output footer is 26.9 MiB, over the 16 MiB Dremio
+  reads)`. It costs one short read at the end of each output. The manifest now
+  records the footer size, and an output converted since is left alone
+  whatever its footer, so a file that is still too large after all, which the
+  conversion warns about, does not convert itself every night.
 
 ## [2.10.0] - 2026-09-15
 

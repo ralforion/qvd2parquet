@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
 
@@ -69,6 +70,10 @@ type ManifestEntry struct {
 	// re-opening the file the run just decided not to touch.
 	Table       string `json:"table"`
 	ConvertedAt string `json:"convertedAt"`
+	// FooterBytes is the size of the output's Parquet footer. An entry
+	// without it was written before row groups were sized for the footer, and
+	// is the only kind whose output can carry one too large to load.
+	FooterBytes int64 `json:"footerBytes,omitempty"`
 }
 
 // ManifestPath is where a folder conversion keeps its record.
@@ -284,6 +289,17 @@ func (m *Manifest) Stale(input, output, fingerprint string) string {
 	if e.OutputModTime != stamp(out.ModTime()) {
 		return fmt.Sprintf("output modified since, %s, was %s", stamp(out.ModTime()), e.OutputModTime)
 	}
+	// An output from before row groups were sized for the footer can carry one
+	// that engines refuse to load, and nothing above would ever notice: the
+	// options and both files are exactly as recorded. Only an entry without a
+	// footer size is looked at, so an output converted since is left alone
+	// whatever its footer, rather than converted again every night.
+	if e.FooterBytes == 0 {
+		if fb, err := parquetwrite.FooterBytes(output); err == nil && fb > FooterLimitBytes {
+			return fmt.Sprintf("output footer is %.1f MiB, over the %d MiB Dremio reads",
+				float64(fb)/(1<<20), FooterLimitBytes>>20)
+		}
+	}
 	return ""
 }
 
@@ -302,6 +318,8 @@ func (m *Manifest) Record(input, output, fingerprint string, rows int64, table s
 	if err != nil {
 		return
 	}
+	// Zero when it cannot be read, which only means the next run looks again.
+	footer, _ := parquetwrite.FooterBytes(output)
 	m.Entries[filepath.Base(output)] = ManifestEntry{
 		Input:         canonicalInputPath(input),
 		InputSize:     in.Size(),
@@ -312,6 +330,7 @@ func (m *Manifest) Record(input, output, fingerprint string, rows int64, table s
 		Rows:          rows,
 		Table:         table,
 		ConvertedAt:   stamp(time.Now()),
+		FooterBytes:   footer,
 	}
 }
 

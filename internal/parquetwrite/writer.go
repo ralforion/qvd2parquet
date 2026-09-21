@@ -255,18 +255,43 @@ func (w *Writer) Close() error {
 		f.Close()
 		return fmt.Errorf("%w: sync %s: %v", ErrOutput, w.tmpPath, err)
 	}
-	// A Parquet file ends with the footer length and the magic, four bytes
-	// each. Best-effort: the length only feeds a warning.
-	if fi, err := f.Stat(); err == nil && fi.Size() >= 8 {
-		var tail [8]byte
-		if _, err := f.ReadAt(tail[:], fi.Size()-8); err == nil {
-			w.footer = int64(binary.LittleEndian.Uint32(tail[:4]))
-		}
-	}
+	// Best-effort: the length only feeds a warning.
+	w.footer, _ = footerLength(f)
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("%w: close %s: %v", ErrOutput, w.tmpPath, err)
 	}
 	return nil
+}
+
+// FooterBytes reads the footer size of a finished Parquet file. It costs one
+// short read at the end of the file, whatever the file's size.
+func FooterBytes(path string) (int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	return footerLength(f)
+}
+
+// footerLength reads the footer length a Parquet file ends with: four bytes
+// of it, then the four of the magic.
+func footerLength(f *os.File) (int64, error) {
+	fi, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if fi.Size() < 8 {
+		return 0, fmt.Errorf("%s is too short to be a Parquet file", f.Name())
+	}
+	var tail [8]byte
+	if _, err := f.ReadAt(tail[:], fi.Size()-8); err != nil {
+		return 0, err
+	}
+	if string(tail[4:]) != "PAR1" {
+		return 0, fmt.Errorf("%s does not end as a Parquet file does", f.Name())
+	}
+	return int64(binary.LittleEndian.Uint32(tail[:4])), nil
 }
 
 // Commit renames the finished temporary file onto the final output path.

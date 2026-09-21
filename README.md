@@ -392,8 +392,10 @@ folder that converts itself every night despite the flag can be diagnosed from
 the run's own output. The reasons are `not in the manifest`, `options changed
 since it was converted`, `output was converted from <other path>`, `input
 modified since` or `input size changed`, `output modified since` or `output
-size changed`, and `input cannot be read` or `output cannot be read`. The line
-appears only with `--skip-up-to-date`.
+size changed`, `input cannot be read` or `output cannot be read`, and `output
+footer is <size>, over the 16 MiB Dremio reads` for an output an earlier
+version wrote with too many row groups. The line appears only with
+`--skip-up-to-date`.
 
 **It is not a timestamp comparison.** "Is the `.parquet` newer than the `.qvd`"
 answers the wrong question, in three ways that all end in a stale output nobody
@@ -1819,7 +1821,9 @@ before: 140 columns stay at 65536 rows per row group up to 24 million rows. The
 estimate is only an estimate, since the footer also carries each column's
 minimum and maximum per row group and a long text column makes those large, so
 the footer actually written is checked as well and one over 16 MiB is reported
-as a warning. The price of larger row groups is coarser row-group skipping and
+as a warning. With `--skip-up-to-date`, an output that an earlier version
+wrote with a footer over 16 MiB counts as stale and converts again, once, so
+the files affected do not have to be found by hand. The price of larger row groups is coarser row-group skipping and
 a writer that holds one compressed row group in memory, tens of MB here.
 
 Reproduce:
