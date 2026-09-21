@@ -13,6 +13,8 @@ restarts from it.
 
 ## [Unreleased]
 
+## [2.10.1] - 2026-09-21
+
 ### Fixed
 
 - A long, wide file no longer gets a Parquet footer that engines refuse to
@@ -1251,7 +1253,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.10.0...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.10.1...HEAD
+[2.10.1]: https://github.com/ralforion/qvd2parquet/compare/v2.10.0...v2.10.1
 [2.10.0]: https://github.com/ralforion/qvd2parquet/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/ralforion/qvd2parquet/compare/v2.8.0...v2.9.0
 [2.8.0]: https://github.com/ralforion/qvd2parquet/compare/v2.7.0...v2.8.0
