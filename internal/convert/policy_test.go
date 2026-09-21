@@ -529,6 +529,54 @@ func TestEffectiveBatchRows(t *testing.T) {
 	}
 }
 
+// The footer holds an entry per column per row group, so a long, wide file is
+// given larger row groups rather than a footer engines refuse to load. Every
+// file that fits keeps the size it was asked for, which is what keeps existing
+// outputs and their manifest entries as they are.
+func TestEffectiveRowGroupRows(t *testing.T) {
+	o := DefaultOptions()
+	for _, tc := range []struct {
+		rows    int64
+		columns int
+		want    int64
+	}{
+		{0, 9, DefaultRowGroupRows},           // an empty file
+		{77, 9, DefaultRowGroupRows},          // the products fixture
+		{2_000_000, 213, DefaultRowGroupRows}, // the SAP shape: 31 row groups
+		{16_000_000, 140, DefaultRowGroupRows},
+		{115_000_000, 140, 5 * DefaultRowGroupRows}, // PRCD_ELEMENTS: 28 MiB of footer at the default
+		{1_000_000_000, 1, DefaultRowGroupRows},     // long but narrow still fits
+		{10_000_000, 100_000, 10_027_008},           // absurd width: one row group
+	} {
+		got := o.EffectiveRowGroupRows(tc.rows, tc.columns)
+		if got != tc.want {
+			t.Errorf("EffectiveRowGroupRows(%d, %d) = %d, want %d", tc.rows, tc.columns, got, tc.want)
+		}
+		if got <= 0 {
+			continue
+		}
+		groups := (tc.rows + got - 1) / got
+		if footer := groups * int64(tc.columns) * FooterBytesPerChunk; groups > 1 && footer > TargetFooterBytes {
+			t.Errorf("EffectiveRowGroupRows(%d, %d) = %d leaves an estimated footer of %d bytes, over %d",
+				tc.rows, tc.columns, got, footer, TargetFooterBytes)
+		}
+	}
+
+	// An explicit size is a floor too: it is kept where it fits and raised
+	// where it does not, never lowered.
+	o.RowGroupRows = 1_000_000
+	if got := o.EffectiveRowGroupRows(115_000_000, 140); got != 1_000_000 {
+		t.Errorf("a --row-group-rows that fits was changed: got %d, want 1000000", got)
+	}
+	o.RowGroupRows = 512
+	if got := o.EffectiveRowGroupRows(100_000, 9); got != 512 {
+		t.Errorf("a --row-group-rows that fits was changed: got %d, want 512", got)
+	}
+	if got := o.EffectiveRowGroupRows(115_000_000, 140); got != 5*DefaultRowGroupRows {
+		t.Errorf("a --row-group-rows too small for the footer: got %d, want %d", got, 5*DefaultRowGroupRows)
+	}
+}
+
 func writeFile(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o644)
 }

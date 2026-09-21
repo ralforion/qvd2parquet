@@ -4,6 +4,7 @@
 package parquetwrite
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -159,6 +160,7 @@ type Writer struct {
 	file      *os.File
 	fw        *pqarrow.FileWriter
 	rows      int64
+	footer    int64
 	closed    bool
 	renamed   bool
 }
@@ -213,6 +215,11 @@ func (w *Writer) TempPath() string { return w.tmpPath }
 // Rows is the number of rows written so far.
 func (w *Writer) Rows() int64 { return w.rows }
 
+// FooterBytes is the size of the Parquet footer, known once Close has
+// returned. A reader loads the whole footer before anything else, and engines
+// cap what they accept.
+func (w *Writer) FooterBytes() int64 { return w.footer }
+
 // Write appends one Arrow record as a row group.
 func (w *Writer) Write(rec arrow.Record) error {
 	if rec.NumRows() == 0 {
@@ -247,6 +254,14 @@ func (w *Writer) Close() error {
 	if err := f.Sync(); err != nil {
 		f.Close()
 		return fmt.Errorf("%w: sync %s: %v", ErrOutput, w.tmpPath, err)
+	}
+	// A Parquet file ends with the footer length and the magic, four bytes
+	// each. Best-effort: the length only feeds a warning.
+	if fi, err := f.Stat(); err == nil && fi.Size() >= 8 {
+		var tail [8]byte
+		if _, err := f.ReadAt(tail[:], fi.Size()-8); err == nil {
+			w.footer = int64(binary.LittleEndian.Uint32(tail[:4]))
+		}
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("%w: close %s: %v", ErrOutput, w.tmpPath, err)

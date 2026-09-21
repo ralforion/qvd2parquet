@@ -128,7 +128,7 @@ func run() int {
 		compression   = fs.String("compression", def.Compression, "Parquet compression: zstd|snappy|gzip|uncompressed")
 		encoding      = fs.String("encoding", "", "Pin column encodings: PATTERN=ENCODING,... or 'auto' to measure per file")
 		batchRows     = fs.Int("batch-rows", def.BatchRows, "Rows per Arrow batch, 0 sizes it from the column count to hold in-flight memory steady")
-		rowGroupRows  = fs.Int("row-group-rows", def.RowGroupRows, "Rows per Parquet row group")
+		rowGroupRows  = fs.Int("row-group-rows", def.RowGroupRows, "Rows per Parquet row group, raised for a file whose footer would otherwise pass 8 MiB")
 		workers       = fs.Int("workers", def.Workers, "Decode workers, 0 means one per 2 CPUs (minimum 2)")
 		timezone      = fs.String("timezone", def.TimezoneName, "none|Local|UTC|IANA timezone name for date/time conversion; none writes a naive wall clock")
 		schemaPath    = fs.String("schema", "", "Optional explicit schema override JSON")

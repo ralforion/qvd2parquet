@@ -95,7 +95,8 @@ func TrialEncodings(ctx context.Context, f *qvd.File, rs *ResolvedSchema, opts *
 	if err != nil {
 		return nil, err
 	}
-	candidates := encodingCandidates(rs, f, int64(opts.RowGroupRows), opts.EmptyStringAsNull, pinned.ByColumn)
+	rowGroupRows := opts.EffectiveRowGroupRows(f.NoOfRecords, len(rs.Columns))
+	candidates := encodingCandidates(rs, f, rowGroupRows, opts.EmptyStringAsNull, pinned.ByColumn)
 	if len(candidates) == 0 || f.NoOfRecords == 0 {
 		return nil, nil
 	}
@@ -108,7 +109,7 @@ func TrialEncodings(ctx context.Context, f *qvd.File, rs *ResolvedSchema, opts *
 	if err != nil {
 		return nil, err
 	}
-	base := parquetwrite.Options{Compression: codec, RowGroupRows: int64(opts.RowGroupRows)}
+	base := parquetwrite.Options{Compression: codec, RowGroupRows: rowGroupRows}
 
 	var out []EncodingTrial
 	for start := 0; start < len(candidates); start += trialGroupColumns {

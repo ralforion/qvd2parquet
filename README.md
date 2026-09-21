@@ -138,7 +138,8 @@ qvd2parquet --catalog-scan --catalog-out catalog.parquet <file-or-directory>...
   -encoding 'PAT=ENC,...'    Pin column encodings, or 'auto' to measure per file
   -batch-rows 0              Rows per Arrow batch, 0 sizes it from the column
                              count to hold in-flight memory steady
-  -row-group-rows 65536      Rows per Parquet row group
+  -row-group-rows 65536      Rows per Parquet row group, raised for a file whose
+                             footer would otherwise pass 8 MiB
   -workers 0                 Decode workers, 0 means one per 2 CPUs (minimum 2)
   -timezone none             none|Local|UTC|IANA timezone name
   -schema path.json          Explicit schema override
@@ -1790,6 +1791,36 @@ Lowering `--batch-rows` by hand used to shrink the row groups with it, which
 cost far more in output size than it saved in memory -- on this fixture a
 4096-row batch tripled the file, to 486 MiB. Row group size is now
 `--row-group-rows` and holds still.
+
+`--row-group-rows` is a floor rather than a fixed size, because of the footer.
+A Parquet footer holds one entry per column per row group, about 115 bytes
+each as this tool writes them, and a reader loads all of it before it reads a
+single value. Engines cap what they will load. Dremio stops at 16 MiB:
+
+```
+Failed to read parquet footer for file '.../PRCD_ELEMENTS.parquet'. Reason:
+Footer size of .../PRCD_ELEMENTS.parquet is 28256268. Max supported footer
+size is 16777216.
+```
+
+That was SAP's pricing conditions table, some 140 columns over more than a
+hundred million rows, which at 65536 rows per row group is around 1,750 row
+groups and 245,000 footer entries. So a file whose footer would pass 8 MiB,
+estimated at 160 bytes per entry from the row count in the QVD header and the
+resolved column count, gets row groups large enough to stay under it, in
+multiples of 65536, and says so:
+
+```
+qvd2parquet: row groups: 327680 rows each rather than 65536, so the footer of 115000000 rows over 140 columns stays near 8 MiB
+```
+
+Every file that fits, which is nearly all of them, is written exactly as
+before: 140 columns stay at 65536 rows per row group up to 24 million rows. The
+estimate is only an estimate, since the footer also carries each column's
+minimum and maximum per row group and a long text column makes those large, so
+the footer actually written is checked as well and one over 16 MiB is reported
+as a warning. The price of larger row groups is coarser row-group skipping and
+a writer that holds one compressed row group in memory, tens of MB here.
 
 Reproduce:
 

@@ -13,6 +13,27 @@ restarts from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- A long, wide file no longer gets a Parquet footer that engines refuse to
+  load. The footer holds one entry per column per row group, and at 65536 rows
+  per row group SAP's `PRCD_ELEMENTS`, some 140 columns over more than a
+  hundred million rows, came out with 28 MiB of it. Dremio reads at most 16 MiB
+  and failed with `Failed to read parquet footer ... Max supported footer size
+  is 16777216`. `--row-group-rows` is now a floor: a file whose footer would
+  pass 8 MiB, estimated from the row count in the QVD header and the column
+  count, gets row groups large enough to stay under it, in multiples of 65536,
+  and a `row groups:` line says so. The footer actually written is checked too,
+  and one over 16 MiB is reported as a warning, since long minimum and maximum
+  values can outgrow the estimate.
+
+  Files that fit are written exactly as before, and that is nearly all of
+  them: 140 columns stay at 65536 rows per row group up to 24 million rows. The
+  flag and its default are unchanged, so `--skip-up-to-date` does not reconvert
+  a folder over this. That cuts both ways: an output already written with an
+  oversized footer still counts as up to date, so delete it once to have it
+  converted again.
+
 ## [2.10.0] - 2026-09-15
 
 ### Added

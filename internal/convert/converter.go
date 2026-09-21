@@ -228,10 +228,18 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	// Carry it in a copy so everything downstream -- the quality gate reads
 	// the output back a batch at a time -- sizes itself the same way. A copy,
 	// because a batch run shares one Options across files of differing width.
+	rowGroupRows := opts.EffectiveRowGroupRows(f.NoOfRecords, len(rs.Columns))
+	if rowGroupRows != int64(opts.RowGroupRows) {
+		// Said on its own line, since it overrules a flag: the footer holds an
+		// entry per column per row group, and this file would otherwise write
+		// one that engines refuse to load.
+		logf("row groups: %d rows each rather than %d, so the footer of %d rows over %d columns stays near %d MiB",
+			rowGroupRows, opts.RowGroupRows, f.NoOfRecords, len(rs.Columns), TargetFooterBytes>>20)
+	}
 	if opts.BatchRows != conv.BatchRows {
 		logf("batch: %d rows over %d columns (~%.1fM cells per batch), %d rows per row group",
 			conv.BatchRows, len(rs.Columns),
-			float64(conv.BatchRows*len(rs.Columns))/1e6, opts.RowGroupRows)
+			float64(conv.BatchRows*len(rs.Columns))/1e6, rowGroupRows)
 		sized := *opts
 		sized.BatchRows = conv.BatchRows
 		opts = &sized
@@ -243,8 +251,8 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	}
 	w, err := parquetwrite.Create(outputPath, rs.Arrow, parquetwrite.Options{
 		Compression:     codec,
-		RowGroupRows:    int64(opts.RowGroupRows),
-		ColumnEncodings: writerEncodings(rs, f, int64(opts.RowGroupRows), opts.EmptyStringAsNull, enc.ByColumn),
+		RowGroupRows:    rowGroupRows,
+		ColumnEncodings: writerEncodings(rs, f, rowGroupRows, opts.EmptyStringAsNull, enc.ByColumn),
 	}, opts.Force)
 	if err != nil {
 		return nil, nil, err
@@ -279,6 +287,14 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 		float64(metrics.Rows)/decodeElapsed.Seconds())
 	if err := w.Close(); err != nil {
 		return nil, nil, err
+	}
+	// The row group size was chosen from an estimate. The footer itself is
+	// the fact, and minimum and maximum values of a long text column can make
+	// it several times what the estimate allowed for.
+	if fb := w.FooterBytes(); fb > FooterLimitBytes {
+		logf("warning: the Parquet footer is %.1f MiB, and Dremio refuses one over %d MiB; "+
+			"pass a larger --row-group-rows than %d",
+			float64(fb)/(1<<20), FooterLimitBytes>>20, rowGroupRows)
 	}
 
 	// Validate the temporary file, so a failed gate never leaves a
