@@ -258,7 +258,8 @@ type Options struct {
 	// independent of BatchRows -- the writer buffers batches until the row
 	// group fills -- because the two size different things. BatchRows sizes
 	// in-flight memory, RowGroupRows sizes the unit readers scan and
-	// dictionaries are built over.
+	// dictionaries are built over. A file too long and wide for its footer at
+	// this size gets larger row groups: see EffectiveRowGroupRows.
 	RowGroupRows int
 	Workers      int
 	Location     *time.Location
@@ -326,6 +327,44 @@ const (
 	// so the default output layout is unchanged.
 	DefaultRowGroupRows = 65536
 )
+
+// Footer sizing. The Parquet footer holds one entry per column per row group,
+// and a reader loads all of it before it reads a single value. Engines cap
+// what they will load: Dremio refuses a footer over 16 MiB outright, which a
+// 140-column table of a hundred million rows passes at 65536 rows per row
+// group. Such a file gets larger row groups instead.
+const (
+	// FooterLimitBytes is the largest footer Dremio reads.
+	FooterLimitBytes = 16 << 20
+	// TargetFooterBytes is the footer an automatic row group size aims to
+	// stay under. It is half the limit because FooterBytesPerChunk is an
+	// estimate, and the statistics of a long text column can double it.
+	TargetFooterBytes = 8 << 20
+	// FooterBytesPerChunk estimates what one column of one row group costs
+	// the footer. Measured at 105 to 125 bytes on columns with short names
+	// and short minimum and maximum values.
+	FooterBytesPerChunk = 160
+)
+
+// EffectiveRowGroupRows resolves RowGroupRows for a file with the given number
+// of rows and output columns. RowGroupRows is returned unchanged unless the
+// footer would then pass TargetFooterBytes; the row groups are otherwise made
+// large enough to stay under it, in whole multiples of DefaultRowGroupRows.
+func (o *Options) EffectiveRowGroupRows(rows int64, columns int) int64 {
+	n := int64(o.RowGroupRows)
+	if columns < 1 {
+		columns = 1
+	}
+	maxGroups := int64(TargetFooterBytes / (columns * FooterBytesPerChunk))
+	if maxGroups < 1 {
+		maxGroups = 1
+	}
+	if n <= 0 || rows <= n*maxGroups {
+		return n
+	}
+	need := (rows + maxGroups - 1) / maxGroups
+	return (need + DefaultRowGroupRows - 1) / DefaultRowGroupRows * DefaultRowGroupRows
+}
 
 // EffectiveBatchRows resolves BatchRows for a file with the given number of
 // output columns. An explicit value is returned unchanged; 0 means automatic.

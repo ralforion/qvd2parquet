@@ -4,6 +4,7 @@
 package parquetwrite
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -159,6 +160,7 @@ type Writer struct {
 	file      *os.File
 	fw        *pqarrow.FileWriter
 	rows      int64
+	footer    int64
 	closed    bool
 	renamed   bool
 }
@@ -213,6 +215,11 @@ func (w *Writer) TempPath() string { return w.tmpPath }
 // Rows is the number of rows written so far.
 func (w *Writer) Rows() int64 { return w.rows }
 
+// FooterBytes is the size of the Parquet footer, known once Close has
+// returned. A reader loads the whole footer before anything else, and engines
+// cap what they accept.
+func (w *Writer) FooterBytes() int64 { return w.footer }
+
 // Write appends one Arrow record as a row group.
 func (w *Writer) Write(rec arrow.Record) error {
 	if rec.NumRows() == 0 {
@@ -248,10 +255,43 @@ func (w *Writer) Close() error {
 		f.Close()
 		return fmt.Errorf("%w: sync %s: %v", ErrOutput, w.tmpPath, err)
 	}
+	// Best-effort: the length only feeds a warning.
+	w.footer, _ = footerLength(f)
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("%w: close %s: %v", ErrOutput, w.tmpPath, err)
 	}
 	return nil
+}
+
+// FooterBytes reads the footer size of a finished Parquet file. It costs one
+// short read at the end of the file, whatever the file's size.
+func FooterBytes(path string) (int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	return footerLength(f)
+}
+
+// footerLength reads the footer length a Parquet file ends with: four bytes
+// of it, then the four of the magic.
+func footerLength(f *os.File) (int64, error) {
+	fi, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if fi.Size() < 8 {
+		return 0, fmt.Errorf("%s is too short to be a Parquet file", f.Name())
+	}
+	var tail [8]byte
+	if _, err := f.ReadAt(tail[:], fi.Size()-8); err != nil {
+		return 0, err
+	}
+	if string(tail[4:]) != "PAR1" {
+		return 0, fmt.Errorf("%s does not end as a Parquet file does", f.Name())
+	}
+	return int64(binary.LittleEndian.Uint32(tail[:4])), nil
 }
 
 // Commit renames the finished temporary file onto the final output path.

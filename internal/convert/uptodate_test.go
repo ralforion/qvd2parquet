@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -407,6 +408,57 @@ func manifestFixture(t *testing.T) (dir, in, out string, m *Manifest) {
 	m = LoadManifest(dir)
 	m.Record(in, out, "fp", 10, "Sales")
 	return dir, in, out, m
+}
+
+// parquetTail is the last eight bytes of a Parquet file with a footer of the
+// given size, which is all the footer check reads.
+func parquetTail(footer uint32) []byte {
+	b := binary.LittleEndian.AppendUint32([]byte("data"), footer)
+	return append(b, "PAR1"...)
+}
+
+// An output written before row groups were sized for the footer can carry one
+// Dremio refuses, with its options and both files exactly as recorded. It has
+// to convert again without anyone finding it by hand, and only once.
+func TestManifestStaleOnAnOversizedFooter(t *testing.T) {
+	_, in, out, m := manifestFixture(t)
+	key := filepath.Base(out)
+
+	// An entry from an earlier version carries no footer size.
+	legacy := func() {
+		t.Helper()
+		m.Record(in, out, "fp", 10, "Sales")
+		e := m.Entries[key]
+		e.FooterBytes = 0
+		m.Entries[key] = e
+	}
+
+	if err := os.WriteFile(out, parquetTail(28256268), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacy()
+	if got, want := m.Stale(in, out, "fp"), "output footer is 26.9 MiB, over the 16 MiB Dremio reads"; got != want {
+		t.Errorf("oversized footer from an earlier version: %q, want %q", got, want)
+	}
+
+	// Converted since, the footer size is on record and the output is left
+	// alone even if it is still too large, which the conversion warned about.
+	m.Record(in, out, "fp", 10, "Sales")
+	if got := m.Entries[key].FooterBytes; got != 28256268 {
+		t.Errorf("recorded footer size = %d, want 28256268", got)
+	}
+	if got := m.Stale(in, out, "fp"); got != "" {
+		t.Errorf("an output converted since is stale again: %q", got)
+	}
+
+	// A footer that loads is no reason, whatever wrote it.
+	if err := os.WriteFile(out, parquetTail(FooterLimitBytes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacy()
+	if got := m.Stale(in, out, "fp"); got != "" {
+		t.Errorf("a footer at the limit is stale: %q", got)
+	}
 }
 
 func TestManifestUpToDate(t *testing.T) {
