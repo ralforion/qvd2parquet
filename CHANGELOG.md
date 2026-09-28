@@ -13,6 +13,14 @@ restarts from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- Writing to an S3 bucket mounted as a Windows drive no longer fails every
+  file with `reopen ... to sync: Access is denied`. The temporary file was
+  closed and then opened again for writing to sync it, which such a share
+  refuses: once closed, the file is an object that cannot be written again.
+  The sync now runs on the handle that wrote the file.
+
 ## [2.10.1] - 2026-09-21
 
 ### Fixed

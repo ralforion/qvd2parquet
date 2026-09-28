@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -199,7 +200,9 @@ func Create(finalPath string, schema *arrow.Schema, opts Options, force bool) (*
 	// round-trip types such as time32[ms] faithfully.
 	ap := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema())
 
-	fw, err := pqarrow.NewFileWriter(schema, f, wp, ap)
+	// The writer closes a sink that is an io.Closer. Hiding Close keeps the
+	// handle open, so Close below can sync it without reopening the file.
+	fw, err := pqarrow.NewFileWriter(schema, writeOnly{f}, wp, ap)
 	if err != nil {
 		f.Close()
 		removeTemp(tmpPath)
@@ -239,29 +242,30 @@ func (w *Writer) Close() error {
 		return nil
 	}
 	w.closed = true
-	// pqarrow.FileWriter.Close writes the footer and closes the underlying
-	// file, so the durability sync needs a fresh handle.
+	// The durability sync runs on the handle that wrote the file. Reopening it
+	// is refused on shares backed by object storage (an S3 bucket mounted as a
+	// Windows drive): once closed, the file is an object that cannot be opened
+	// for writing again.
 	if err := w.fw.Close(); err != nil {
 		w.file.Close()
 		return fmt.Errorf("%w: close Parquet writer: %v", ErrOutput, err)
 	}
-	w.file.Close()
-
-	f, err := os.OpenFile(w.tmpPath, os.O_RDWR, 0o644)
-	if err != nil {
-		return fmt.Errorf("%w: reopen %s to sync: %v", ErrOutput, w.tmpPath, err)
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
+	if err := w.file.Sync(); err != nil {
+		w.file.Close()
 		return fmt.Errorf("%w: sync %s: %v", ErrOutput, w.tmpPath, err)
 	}
 	// Best-effort: the length only feeds a warning.
-	w.footer, _ = footerLength(f)
-	if err := f.Close(); err != nil {
+	w.footer, _ = footerLength(w.file)
+	if err := w.file.Close(); err != nil {
 		return fmt.Errorf("%w: close %s: %v", ErrOutput, w.tmpPath, err)
 	}
 	return nil
 }
+
+// writeOnly hides every method of the sink but Write.
+type writeOnly struct{ w io.Writer }
+
+func (o writeOnly) Write(p []byte) (int, error) { return o.w.Write(p) }
 
 // FooterBytes reads the footer size of a finished Parquet file. It costs one
 // short read at the end of the file, whatever the file's size.
