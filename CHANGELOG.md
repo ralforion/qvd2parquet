@@ -13,6 +13,21 @@ restarts from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- Writing to an S3 bucket mounted as a Windows drive no longer fails every
+  file with `reopen ... to sync: Access is denied`. The temporary file was
+  closed and then opened again for writing to sync it, which such a share
+  refuses: once closed, the file is an object that cannot be written again.
+  The sync now runs on the handle that wrote the file.
+- `--force` now replaces an existing output on a share that refuses to
+  overwrite a file, as such a mounted bucket does. When the rename onto the
+  existing file fails, the old file is deleted and the rename retried. That
+  replacement is not atomic. If the retry fails too, the old output is gone,
+  the new one is kept at its temporary path, and the error names it. A batch
+  then stops with exit 5, since the next file would likely lose its output the
+  same way; the files it did not reach keep their old outputs.
+
 ## [2.10.1] - 2026-09-21
 
 ### Fixed

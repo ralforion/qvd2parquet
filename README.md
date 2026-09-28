@@ -1570,6 +1570,14 @@ its `.tmp-` suffix to mark it. Removal is retried briefly first, because
 Windows refuses to delete a file while any handle is open and a virus scanner
 or the search indexer routinely holds one for a moment on a file just written.
 
+One exception, for shares that refuse to overwrite a file. An S3 bucket mounted
+as a Windows drive lets you delete a file and take its name, but not rename onto
+it. There, `--force` falls back to deleting the old output and retrying the
+rename, and that replacement is not atomic. If the retry fails too, the old
+output is gone: the new one is kept at its `.tmp-` path, the error names it, and
+a batch stops with exit **5** rather than try the same on the next file. The
+files it did not reach keep their old outputs and are listed as not converted.
+
 Cancelling is reported as cancellation, not as bad data. A stopped run has
 written fewer rows than the header declares, which is indistinguishable from a
 truncated input if you only look at the counts, and a stopped gate has verified

@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,6 +23,11 @@ import (
 
 // ErrOutput marks an output/write failure (CLI exit code 5).
 var ErrOutput = errors.New("output error")
+
+// ErrOutputLost marks a commit that deleted the existing output to replace it
+// and then could not put the new one in its place. The new file is kept at its
+// temporary path, and a batch stops rather than repeat that on the next file.
+var ErrOutputLost = errors.New("the existing output was deleted and not replaced")
 
 // ParseCompression maps the --compression flag value.
 func ParseCompression(s string) (compress.Compression, error) {
@@ -161,8 +167,10 @@ type Writer struct {
 	fw        *pqarrow.FileWriter
 	rows      int64
 	footer    int64
+	force     bool
 	closed    bool
 	renamed   bool
+	kept      bool
 }
 
 // CheckOutput reports whether a conversion may write to finalPath. Create
@@ -199,13 +207,15 @@ func Create(finalPath string, schema *arrow.Schema, opts Options, force bool) (*
 	// round-trip types such as time32[ms] faithfully.
 	ap := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema())
 
-	fw, err := pqarrow.NewFileWriter(schema, f, wp, ap)
+	// The writer closes a sink that is an io.Closer. Hiding Close keeps the
+	// handle open, so Close below can sync it without reopening the file.
+	fw, err := pqarrow.NewFileWriter(schema, writeOnly{f}, wp, ap)
 	if err != nil {
 		f.Close()
 		removeTemp(tmpPath)
 		return nil, fmt.Errorf("%w: create Parquet writer: %v", ErrOutput, err)
 	}
-	return &Writer{finalPath: finalPath, tmpPath: tmpPath, file: f, fw: fw}, nil
+	return &Writer{finalPath: finalPath, tmpPath: tmpPath, file: f, fw: fw, force: force}, nil
 }
 
 // TempPath is the path currently being written, which the quality gate reads
@@ -239,29 +249,30 @@ func (w *Writer) Close() error {
 		return nil
 	}
 	w.closed = true
-	// pqarrow.FileWriter.Close writes the footer and closes the underlying
-	// file, so the durability sync needs a fresh handle.
+	// The durability sync runs on the handle that wrote the file. Reopening it
+	// is refused on shares backed by object storage (an S3 bucket mounted as a
+	// Windows drive): once closed, the file is an object that cannot be opened
+	// for writing again.
 	if err := w.fw.Close(); err != nil {
 		w.file.Close()
 		return fmt.Errorf("%w: close Parquet writer: %v", ErrOutput, err)
 	}
-	w.file.Close()
-
-	f, err := os.OpenFile(w.tmpPath, os.O_RDWR, 0o644)
-	if err != nil {
-		return fmt.Errorf("%w: reopen %s to sync: %v", ErrOutput, w.tmpPath, err)
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
+	if err := w.file.Sync(); err != nil {
+		w.file.Close()
 		return fmt.Errorf("%w: sync %s: %v", ErrOutput, w.tmpPath, err)
 	}
 	// Best-effort: the length only feeds a warning.
-	w.footer, _ = footerLength(f)
-	if err := f.Close(); err != nil {
+	w.footer, _ = footerLength(w.file)
+	if err := w.file.Close(); err != nil {
 		return fmt.Errorf("%w: close %s: %v", ErrOutput, w.tmpPath, err)
 	}
 	return nil
 }
+
+// writeOnly hides every method of the sink but Write.
+type writeOnly struct{ w io.Writer }
+
+func (o writeOnly) Write(p []byte) (int, error) { return o.w.Write(p) }
 
 // FooterBytes reads the footer size of a finished Parquet file. It costs one
 // short read at the end of the file, whatever the file's size.
@@ -299,22 +310,66 @@ func (w *Writer) Commit() error {
 	if !w.closed {
 		return errors.New("parquetwrite: Commit called before Close")
 	}
-	if err := os.Rename(w.tmpPath, w.finalPath); err != nil {
+	err := rename(w.tmpPath, w.finalPath)
+	if err != nil && w.force {
+		err = replaceByDelete(w.tmpPath, w.finalPath, err)
+	}
+	if errors.Is(err, ErrOutputLost) {
+		// The temporary file is now the only copy of the output, so Abort
+		// must leave it where the error says it is.
+		w.kept = true
+		return fmt.Errorf("%w: %w", ErrOutput, err)
+	}
+	if err != nil {
 		return fmt.Errorf("%w: rename %s to %s: %v", ErrOutput, w.tmpPath, w.finalPath, err)
 	}
 	w.renamed = true
 	return nil
 }
 
+// rename is os.Rename, replaceable so a test can refuse an overwrite the way
+// some shares do.
+var rename = os.Rename
+
+// SetRenameForTest replaces the rename Commit uses and returns a function that
+// restores it. It exists for tests in other packages; nothing else calls it.
+func SetRenameForTest(f func(from, to string) error) (restore func()) {
+	saved := rename
+	rename = f
+	return func() { rename = saved }
+}
+
+// replaceByDelete retries a rename that failed with the target present by
+// deleting the target first. A share backed by object storage (an S3 bucket
+// mounted as a Windows drive) can refuse to overwrite a file but still allow
+// deleting it and taking its name. The replacement is no longer atomic: if the
+// second rename fails, the old output is gone and the new one stays at its
+// temporary name, which the error reports as ErrOutputLost.
+func replaceByDelete(tmpPath, finalPath string, renameErr error) error {
+	// Only a file is replaced: os.Remove would take an empty directory too.
+	if fi, err := os.Lstat(finalPath); err != nil || !fi.Mode().IsRegular() {
+		return renameErr
+	}
+	if err := removeTemp(finalPath); err != nil {
+		return fmt.Errorf("%v; deleting the existing file to replace it failed too: %v", renameErr, err)
+	}
+	if err := rename(tmpPath, finalPath); err != nil {
+		return fmt.Errorf("%w: %s; the new output is kept at %s; rename it to %s by hand (first rename: %v; after deleting: %v)",
+			ErrOutputLost, finalPath, tmpPath, filepath.Base(finalPath), renameErr, err)
+	}
+	return nil
+}
+
 // Abort closes and removes the temporary output. It is safe to call after a
-// successful Commit, where it does nothing.
+// successful Commit, where it does nothing, and after one that failed with
+// ErrOutputLost, where the temporary file is the only copy of the output.
 //
 // It reports a removal it could not make. The temporary file is a partial
 // Parquet file, and leaving one next to the real output without a word is
 // worse than the failure itself: the name is the only thing marking it as
 // unfinished.
 func (w *Writer) Abort() error {
-	if w.renamed {
+	if w.renamed || w.kept {
 		return nil
 	}
 	if !w.closed {

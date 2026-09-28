@@ -71,3 +71,61 @@ func TestFooterBytesGrowsWithRowGroups(t *testing.T) {
 			footers[100], footers[1000])
 	}
 }
+
+// A share that refuses to overwrite a file, as an S3 bucket mounted as a
+// Windows drive does, still gets the new output under --force: the old file is
+// deleted and the rename retried. Without --force nothing is deleted.
+func TestCommitReplacesWhenOverwriteIsRefused(t *testing.T) {
+	saved := rename
+	rename = func(from, to string) error {
+		if _, err := os.Stat(to); err == nil {
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: os.ErrPermission}
+		}
+		return saved(from, to)
+	}
+	defer func() { rename = saved }()
+
+	schema := arrow.NewSchema([]arrow.Field{{Name: "A", Type: arrow.PrimitiveTypes.Int64}}, nil)
+	finish := func(path string, force bool) error {
+		w, err := Create(path, schema, Options{Compression: compress.Codecs.Zstd, RowGroupRows: 10}, force)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return w.Commit()
+	}
+
+	path := filepath.Join(t.TempDir(), "out.parquet")
+	if err := os.WriteFile(path, []byte("old output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := finish(path, true); err != nil {
+		t.Fatalf("Commit with force: %v", err)
+	}
+	if _, err := FooterBytes(path); err != nil {
+		t.Errorf("the output was not replaced by the new Parquet file: %v", err)
+	}
+
+	// Create checks for an existing file without force, so this writer only
+	// meets one that appeared while it was converting.
+	path = filepath.Join(t.TempDir(), "out.parquet")
+	w, err := Create(path, schema, Options{Compression: compress.Codecs.Zstd, RowGroupRows: 10}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Commit(); err == nil {
+		t.Error("Commit without force replaced a file that appeared during the conversion")
+	}
+	w.Abort()
+	if b, _ := os.ReadFile(path); string(b) != "old output" {
+		t.Errorf("Commit without force changed the existing file to %q", b)
+	}
+}
