@@ -20,6 +20,11 @@ restarts from it.
   closed and then opened again for writing to sync it, which such a share
   refuses: once closed, the file is an object that cannot be written again.
   The sync now runs on the handle that wrote the file.
+- `--force` now replaces an existing output on a share that refuses to
+  overwrite a file, as such a mounted bucket does. When the rename onto the
+  existing file fails, the old file is deleted and the rename retried. That
+  replacement is not atomic: if the retry fails too, the old output is gone and
+  the error names the temporary file the new one was left at.
 
 ## [2.10.1] - 2026-09-21
 

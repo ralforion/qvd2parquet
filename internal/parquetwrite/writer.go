@@ -162,6 +162,7 @@ type Writer struct {
 	fw        *pqarrow.FileWriter
 	rows      int64
 	footer    int64
+	force     bool
 	closed    bool
 	renamed   bool
 }
@@ -208,7 +209,7 @@ func Create(finalPath string, schema *arrow.Schema, opts Options, force bool) (*
 		removeTemp(tmpPath)
 		return nil, fmt.Errorf("%w: create Parquet writer: %v", ErrOutput, err)
 	}
-	return &Writer{finalPath: finalPath, tmpPath: tmpPath, file: f, fw: fw}, nil
+	return &Writer{finalPath: finalPath, tmpPath: tmpPath, file: f, fw: fw, force: force}, nil
 }
 
 // TempPath is the path currently being written, which the quality gate reads
@@ -303,10 +304,38 @@ func (w *Writer) Commit() error {
 	if !w.closed {
 		return errors.New("parquetwrite: Commit called before Close")
 	}
-	if err := os.Rename(w.tmpPath, w.finalPath); err != nil {
+	err := rename(w.tmpPath, w.finalPath)
+	if err != nil && w.force {
+		err = replaceByDelete(w.tmpPath, w.finalPath, err)
+	}
+	if err != nil {
 		return fmt.Errorf("%w: rename %s to %s: %v", ErrOutput, w.tmpPath, w.finalPath, err)
 	}
 	w.renamed = true
+	return nil
+}
+
+// rename is os.Rename, replaceable so a test can refuse an overwrite the way
+// some shares do.
+var rename = os.Rename
+
+// replaceByDelete retries a rename that failed with the target present by
+// deleting the target first. A share backed by object storage (an S3 bucket
+// mounted as a Windows drive) can refuse to overwrite a file but still allow
+// deleting it and taking its name. The replacement is no longer atomic: if the
+// second rename fails, the old output is gone and the new one stays at its
+// temporary name.
+func replaceByDelete(tmpPath, finalPath string, renameErr error) error {
+	// Only a file is replaced: os.Remove would take an empty directory too.
+	if fi, err := os.Lstat(finalPath); err != nil || !fi.Mode().IsRegular() {
+		return renameErr
+	}
+	if err := removeTemp(finalPath); err != nil {
+		return fmt.Errorf("%v; deleting the existing file to replace it failed too: %v", renameErr, err)
+	}
+	if err := rename(tmpPath, finalPath); err != nil {
+		return fmt.Errorf("%v; the existing file was deleted, but the new one could not take its name, so it is left at %s: %v", renameErr, tmpPath, err)
+	}
 	return nil
 }
 
