@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -466,6 +467,12 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		logResult(r)
 	}
 
+	// A commit that deleted an output and could not replace it stops the
+	// batch: the next file would most likely meet the same share and lose its
+	// output too.
+	ctx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
+
 	results := make([]FileResult, len(inputs))
 	sem := make(chan struct{}, fileWorkers)
 	var wg sync.WaitGroup
@@ -481,7 +488,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			for j := i; j < len(inputs); j++ {
 				results[j] = FileResult{
 					Input: inputs[j],
-					Err:   fmt.Errorf("%w before this file was converted", ErrCanceled),
+					Err:   stoppedErr(ctx, fmt.Errorf("%w before this file was converted", ErrCanceled)),
 				}
 				logResult(results[j])
 			}
@@ -552,7 +559,19 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		go func(i int, in string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			results[i] = convertOne(ctx, in, opts, many, perFile, fileWorkers > 1, safeLogf)
+			if ctx.Err() != nil {
+				// Stopped while this file waited for a slot: the check at the
+				// top of the loop ran before the file ahead of it finished.
+				results[i] = FileResult{Input: in, Output: OutputPathFor(in, many.OutDir),
+					Err: stoppedErr(ctx, fmt.Errorf("%w before this file was converted", ErrCanceled))}
+			} else {
+				results[i] = convertOne(ctx, in, opts, many, perFile, fileWorkers > 1, safeLogf)
+			}
+			if errors.Is(results[i].Err, parquetwrite.ErrOutputLost) {
+				safeLogf("stopping the batch: %s lost its existing output, and the next file would likely lose its own",
+					DisplayPath(in))
+				stop(&batchStopped{input: in})
+			}
 			// Logged and recorded as soon as this file is done rather than
 			// after the wait: a run killed while the other files are still
 			// converting must not lose the record of this one.
@@ -668,6 +687,7 @@ func convertOne(ctx context.Context, in string, opts *Options, many *ManyOptions
 		}
 	}
 	stats, quality, err := Run(ctx, in, r.Output, &o, fileLogf)
+	err = stoppedErr(ctx, err)
 	r.Elapsed = time.Since(r.Started)
 	r.Stats, r.Quality, r.Err = stats, quality, err
 	if err != nil {
@@ -689,6 +709,24 @@ func convertOne(ctx context.Context, in string, opts *Options, many *ManyOptions
 		logf("FAIL %s: %s", DisplayPath(in), trimPathPrefix(err.Error(), in))
 	}
 	return r
+}
+
+// batchStopped is why a batch was stopped rather than cancelled.
+type batchStopped struct{ input string }
+
+func (s *batchStopped) Error() string {
+	return fmt.Sprintf("the batch stopped after %s lost its existing output", DisplayPath(s.input))
+}
+
+// stoppedErr reports a file the batch stopped before converting as an output
+// error naming the file that stopped it, rather than as a cancellation: nobody
+// pressed Ctrl-C, and exit 7 would say someone did.
+func stoppedErr(ctx context.Context, err error) error {
+	var s *batchStopped
+	if (errors.Is(err, ErrCanceled) || errors.Is(err, context.Canceled)) && errors.As(context.Cause(ctx), &s) {
+		return fmt.Errorf("%w: not converted: %v", parquetwrite.ErrOutput, s)
+	}
+	return err
 }
 
 // PerFileReportPath turns a single report path into a per-file one, so a batch

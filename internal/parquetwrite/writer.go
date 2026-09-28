@@ -24,6 +24,11 @@ import (
 // ErrOutput marks an output/write failure (CLI exit code 5).
 var ErrOutput = errors.New("output error")
 
+// ErrOutputLost marks a commit that deleted the existing output to replace it
+// and then could not put the new one in its place. The new file is kept at its
+// temporary path, and a batch stops rather than repeat that on the next file.
+var ErrOutputLost = errors.New("the existing output was deleted and not replaced")
+
 // ParseCompression maps the --compression flag value.
 func ParseCompression(s string) (compress.Compression, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -165,6 +170,7 @@ type Writer struct {
 	force     bool
 	closed    bool
 	renamed   bool
+	kept      bool
 }
 
 // CheckOutput reports whether a conversion may write to finalPath. Create
@@ -308,6 +314,12 @@ func (w *Writer) Commit() error {
 	if err != nil && w.force {
 		err = replaceByDelete(w.tmpPath, w.finalPath, err)
 	}
+	if errors.Is(err, ErrOutputLost) {
+		// The temporary file is now the only copy of the output, so Abort
+		// must leave it where the error says it is.
+		w.kept = true
+		return fmt.Errorf("%w: %w", ErrOutput, err)
+	}
 	if err != nil {
 		return fmt.Errorf("%w: rename %s to %s: %v", ErrOutput, w.tmpPath, w.finalPath, err)
 	}
@@ -319,12 +331,20 @@ func (w *Writer) Commit() error {
 // some shares do.
 var rename = os.Rename
 
+// SetRenameForTest replaces the rename Commit uses and returns a function that
+// restores it. It exists for tests in other packages; nothing else calls it.
+func SetRenameForTest(f func(from, to string) error) (restore func()) {
+	saved := rename
+	rename = f
+	return func() { rename = saved }
+}
+
 // replaceByDelete retries a rename that failed with the target present by
 // deleting the target first. A share backed by object storage (an S3 bucket
 // mounted as a Windows drive) can refuse to overwrite a file but still allow
 // deleting it and taking its name. The replacement is no longer atomic: if the
 // second rename fails, the old output is gone and the new one stays at its
-// temporary name.
+// temporary name, which the error reports as ErrOutputLost.
 func replaceByDelete(tmpPath, finalPath string, renameErr error) error {
 	// Only a file is replaced: os.Remove would take an empty directory too.
 	if fi, err := os.Lstat(finalPath); err != nil || !fi.Mode().IsRegular() {
@@ -334,20 +354,22 @@ func replaceByDelete(tmpPath, finalPath string, renameErr error) error {
 		return fmt.Errorf("%v; deleting the existing file to replace it failed too: %v", renameErr, err)
 	}
 	if err := rename(tmpPath, finalPath); err != nil {
-		return fmt.Errorf("%v; the existing file was deleted, but the new one could not take its name, so it is left at %s: %v", renameErr, tmpPath, err)
+		return fmt.Errorf("%w: %s; the new output is kept at %s; rename it to %s by hand (first rename: %v; after deleting: %v)",
+			ErrOutputLost, finalPath, tmpPath, filepath.Base(finalPath), renameErr, err)
 	}
 	return nil
 }
 
 // Abort closes and removes the temporary output. It is safe to call after a
-// successful Commit, where it does nothing.
+// successful Commit, where it does nothing, and after one that failed with
+// ErrOutputLost, where the temporary file is the only copy of the output.
 //
 // It reports a removal it could not make. The temporary file is a partial
 // Parquet file, and leaving one next to the real output without a word is
 // worse than the failure itself: the name is the only thing marking it as
 // unfinished.
 func (w *Writer) Abort() error {
-	if w.renamed {
+	if w.renamed || w.kept {
 		return nil
 	}
 	if !w.closed {

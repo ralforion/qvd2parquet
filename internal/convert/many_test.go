@@ -1194,3 +1194,69 @@ func TestRunManyPrefixFollowsEffectiveConcurrency(t *testing.T) {
 		t.Fatalf("no progress lines at all:\n%s", strings.Join(lines, "\n"))
 	}
 }
+
+// A commit that deleted an existing output and could not put the new one in
+// its place stops the batch. The share that refused the rename would most
+// likely refuse it for the next file too, which would lose that file's output
+// as well. The new output is kept at its temporary path, the files after it
+// keep their old outputs, and they are reported as output errors rather than
+// as a cancellation nobody asked for.
+func TestRunManyStopsWhenAnOutputIsLost(t *testing.T) {
+	src := t.TempDir()
+	for _, name := range []string{"a.qvd", "b.qvd", "c.qvd"} {
+		if _, err := qvdtest.Build(filepath.Join(src, name), sampleTable(5)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	outDir := filepath.Join(t.TempDir(), "out")
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.parquet", "b.parquet", "c.parquet"} {
+		if err := os.WriteFile(filepath.Join(outDir, name), []byte("old output"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer parquetwrite.SetRenameForTest(func(from, to string) error {
+		return &os.LinkError{Op: "rename", Old: from, New: to, Err: os.ErrPermission}
+	})()
+
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+	opts.Force = true
+	b, err := RunMany(context.Background(), inputs, &opts, &ManyOptions{OutDir: outDir, FileWorkers: 1}, nil)
+	if err != nil {
+		t.Fatalf("RunMany: %v", err)
+	}
+	if b.Failed != 3 {
+		t.Fatalf("failed = %d, want 3: %+v", b.Failed, b.Results)
+	}
+
+	first := b.Results[0]
+	if !errors.Is(first.Err, parquetwrite.ErrOutputLost) {
+		t.Errorf("%s reported %v, want ErrOutputLost", first.Input, first.Err)
+	}
+	kept, _ := filepath.Glob(filepath.Join(outDir, "a.parquet.tmp-*"))
+	if len(kept) != 1 {
+		t.Fatalf("the new output of a.qvd should be kept at its temporary path, found %v", kept)
+	}
+	if !strings.Contains(first.Err.Error(), kept[0]) {
+		t.Errorf("the error should name the kept file %s: %v", kept[0], first.Err)
+	}
+	if _, err := parquetwrite.FooterBytes(kept[0]); err != nil {
+		t.Errorf("the kept file is not a finished Parquet file: %v", err)
+	}
+
+	for _, r := range b.Results[1:] {
+		if errors.Is(r.Err, ErrCanceled) || !errors.Is(r.Err, parquetwrite.ErrOutput) {
+			t.Errorf("%s reported %v, want an output error naming the stop", r.Input, r.Err)
+		}
+		out := OutputPathFor(r.Input, outDir)
+		if got, _ := os.ReadFile(out); string(got) != "old output" {
+			t.Errorf("%s was touched after the batch stopped: %q", out, got)
+		}
+	}
+	if code := b.ExitCode(testExitCode); code != 5 {
+		t.Errorf("exit code = %d, want 5", code)
+	}
+}
