@@ -713,6 +713,23 @@ func convertOne(ctx context.Context, in string, opts *Options, many *ManyOptions
 	o.Workers = perFile
 	o.SchemaReportPath = many.Tree.Report(opts.SchemaReportPath, in, many.OutDir)
 	o.QualityReportPath = many.Tree.Report(opts.QualityReportPath, in, many.OutDir)
+	// A report in an input's subfolder is written before the Parquet writer
+	// creates that folder, and the schema report long before, so the folder
+	// has to exist first. Only a subfolder: a report directory the user named
+	// is theirs to create, as it is without --keep-tree.
+	if many.Tree[in] != "" {
+		for _, p := range []string{o.SchemaReportPath, o.QualityReportPath} {
+			if p == "" {
+				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				r.Err = fmt.Errorf("%w: create report directory: %v", parquetwrite.ErrOutput, err)
+				r.Elapsed = time.Since(r.Started)
+				logf("FAIL %s: %s", DisplayPath(in), trimPathPrefix(r.Err.Error(), in))
+				return r
+			}
+		}
+	}
 
 	// A batch run used to discard everything the conversion said, so a single
 	// large file showed one line on starting and nothing again until it

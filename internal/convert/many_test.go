@@ -1369,3 +1369,58 @@ func TestTreeReportPaths(t *testing.T) {
 		t.Errorf("flat: %s, want %s", got, want)
 	}
 }
+
+// Per-file reports in an input's subfolder are written before the Parquet
+// writer creates that folder, the schema report first of all, so the run has
+// to create it. Both a bare report name, which lands under --out-dir, and a
+// report directory the user named get the input's subfolder.
+func TestRunManyKeepTreeWritesReportsInSubfolders(t *testing.T) {
+	src := t.TempDir()
+	for _, p := range []string{"A/X.qvd", "B/X.qvd"} {
+		if _, err := qvdtest.Build(filepath.Join(src, filepath.FromSlash(p)), sampleTable(5)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	found := FindInputs([]string{src}, InputSelection{Recursive: true})
+
+	for _, tc := range []struct {
+		name            string
+		schema, quality func(base string) string
+		want            []string
+	}{
+		{"bare names under --out-dir",
+			func(string) string { return "schema.json" }, func(string) string { return "quality.json" },
+			[]string{"out/A/X.schema.json", "out/B/X.schema.json", "out/A/X.quality.json", "out/B/X.quality.json"}},
+		{"a report directory",
+			func(b string) string { return filepath.Join(b, "reports", "schema.json") },
+			func(b string) string { return filepath.Join(b, "reports", "quality.json") },
+			[]string{"reports/A/X.schema.json", "reports/B/X.schema.json", "reports/A/X.quality.json", "reports/B/X.quality.json"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			// The report directory the user named exists, as it has to without
+			// --keep-tree; only the subfolders under it are the run's to make.
+			reports := filepath.Join(base, "reports")
+			if err := os.MkdirAll(reports, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			opts := testOptions()
+			opts.Quality = QualityFull
+			opts.SchemaReportPath = tc.schema(base)
+			opts.QualityReportPath = tc.quality(base)
+			b, err := RunMany(context.Background(), found.Files, &opts,
+				&ManyOptions{OutDir: filepath.Join(base, "out"), Tree: found.Tree}, nil)
+			if err != nil {
+				t.Fatalf("RunMany: %v", err)
+			}
+			if b.Failed != 0 {
+				t.Fatalf("failed = %d: %+v", b.Failed, b.Results)
+			}
+			for _, p := range tc.want {
+				if _, err := os.Stat(filepath.Join(base, filepath.FromSlash(p))); err != nil {
+					t.Errorf("%s: %v", p, err)
+				}
+			}
+		})
+	}
+}
