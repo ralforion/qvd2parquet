@@ -111,6 +111,7 @@ qvd2parquet --catalog-scan --catalog-out catalog.parquet <file-or-directory>...
   -out-dir DIR               Convert every input into this directory
   -file-workers 1            Files to convert at once; decode workers are divided
   -recursive                 With --out-dir, descend into subdirectories
+  -keep-tree                 With --out-dir, write each output in its input's subfolder
   -include-files 'CE*'       With --out-dir, convert only files matching these patterns
   -exclude-files '*_TMP'     With --out-dir, skip files matching these patterns
   -skip-up-to-date           With --out-dir, leave a file this run already produced
@@ -316,6 +317,35 @@ descend into subdirectories.
 Two inputs whose names would produce the same output file are refused **before
 anything is written**, since `--force` would otherwise silently overwrite the
 first result.
+
+### Keeping the folder layout
+
+Outputs go flat into `--out-dir` by default. `--keep-tree` writes each one in
+the same subfolder its input has under the directory you named, so a folder of
+table folders converts into a folder of table folders:
+
+```bat
+qvd2parquet --out-dir parquet-delta --keep-tree --recursive --force --skip-up-to-date qvd-delta
+```
+
+```
+qvd-delta\VBAK\VBAK.qvd        ->  parquet-delta\VBAK\VBAK.parquet
+qvd-delta\BSID\BSID_0928.qvd   ->  parquet-delta\BSID\BSID_0928.parquet
+```
+
+- A directory a wildcard matched keeps its own name: `qvd-delta\*` places the
+  files of `qvd-delta\VBAK` in `parquet-delta\VBAK`, without `--recursive`.
+- A file named directly on the command line goes in `--out-dir` itself.
+- Two folders may hold the same file name: `A\X.qvd` and `B\X.qvd` become
+  `A\X.parquet` and `B\X.parquet` rather than a collision.
+- Per-file `--schema-report` and `--quality-report` files follow the same
+  subfolders.
+- One `--skip-up-to-date` manifest at the top of `--out-dir` covers the whole
+  tree. Its entries are keyed by the path under `--out-dir`, which for a flat
+  run is the file name it always was, so a manifest from an earlier version
+  still skips what it skipped. Turning `--keep-tree` on for a folder converted
+  flat with `--recursive` converts each file once more, into its subfolder;
+  the flat outputs from before are left where they are.
 
 ### Selecting which files convert
 

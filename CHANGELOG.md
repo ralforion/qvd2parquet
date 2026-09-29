@@ -13,6 +13,19 @@ restarts from it.
 
 ## [Unreleased]
 
+### Added
+
+- `--keep-tree` writes each output of a folder conversion in the same
+  subfolder its input has under the directory given, so
+  `qvd-delta\VBAK\VBAK.qvd` becomes `parquet-delta\VBAK\VBAK.parquet`
+  instead of landing flat in `--out-dir`. A directory a wildcard matched keeps
+  its name, so `qvd-delta\*` works from `cmd.exe` without `--recursive`. Two
+  folders may now hold the same file name. Per-file reports follow the
+  subfolders, and one `--skip-up-to-date` manifest covers the tree. Off by
+  default; without it every output goes where it went before. The manifest
+  keys entries by path under `--out-dir`, which for a flat run is the file
+  name, so an upgrade converts nothing again.
+
 ## [2.10.2] - 2026-09-28
 
 ### Fixed
