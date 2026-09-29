@@ -13,6 +13,8 @@ restarts from it.
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-09-29
+
 ### Added
 
 - `--keep-tree` writes each output of a folder conversion in the same
@@ -1283,7 +1285,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.10.2...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.11.0...HEAD
+[2.11.0]: https://github.com/ralforion/qvd2parquet/compare/v2.10.2...v2.11.0
 [2.10.2]: https://github.com/ralforion/qvd2parquet/compare/v2.10.1...v2.10.2
 [2.10.1]: https://github.com/ralforion/qvd2parquet/compare/v2.10.0...v2.10.1
 [2.10.0]: https://github.com/ralforion/qvd2parquet/compare/v2.9.0...v2.10.0
