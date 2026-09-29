@@ -42,9 +42,15 @@ const manifestFormat = 1
 // produce this file" instead, which is the question worth asking.
 type Manifest struct {
 	Format int `json:"format"`
-	// Entries are keyed by the output file name within --out-dir, since that
-	// is what the run promises to have produced.
+	// Entries are keyed by the output's path within --out-dir, with forward
+	// slashes, since that is what the run promises to have produced. A flat
+	// run's key is the file name, which is all a key was before --keep-tree
+	// put outputs in subfolders, so a manifest written then still matches.
 	Entries map[string]ManifestEntry `json:"entries"`
+
+	// dir is the folder the manifest was loaded from, which its keys are
+	// relative to.
+	dir string
 }
 
 // ManifestEntry is one converted file, described well enough to tell whether
@@ -85,7 +91,7 @@ func ManifestPath(outDir string) string { return filepath.Join(outDir, ManifestN
 // need converting, and failing the run instead would be the more expensive
 // answer to a file the run itself owns.
 func LoadManifest(outDir string) *Manifest {
-	empty := &Manifest{Format: manifestFormat, Entries: map[string]ManifestEntry{}}
+	empty := &Manifest{Format: manifestFormat, Entries: map[string]ManifestEntry{}, dir: outDir}
 	b, err := os.ReadFile(ManifestPath(outDir))
 	if err != nil {
 		return empty
@@ -94,7 +100,21 @@ func LoadManifest(outDir string) *Manifest {
 	if err := json.Unmarshal(b, &m); err != nil || m.Format != manifestFormat || m.Entries == nil {
 		return empty
 	}
+	m.dir = outDir
 	return &m
+}
+
+// key is the entry name for an output: its path relative to the manifest's
+// folder, or its file name for an output outside it or a manifest that was
+// not loaded from one.
+func (m *Manifest) key(output string) string {
+	if m.dir != "" {
+		if rel, err := filepath.Rel(m.dir, output); err == nil && rel != ".." &&
+			!strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return filepath.Base(output)
 }
 
 // Save writes the record back. The caller reports a failure as a note rather
@@ -253,7 +273,7 @@ func (m *Manifest) Stale(input, output, fingerprint string) string {
 	if m == nil {
 		return "no manifest"
 	}
-	e, ok := m.Entries[filepath.Base(output)]
+	e, ok := m.Entries[m.key(output)]
 	if !ok {
 		return "not in the manifest"
 	}
@@ -320,7 +340,7 @@ func (m *Manifest) Record(input, output, fingerprint string, rows int64, table s
 	}
 	// Zero when it cannot be read, which only means the next run looks again.
 	footer, _ := parquetwrite.FooterBytes(output)
-	m.Entries[filepath.Base(output)] = ManifestEntry{
+	m.Entries[m.key(output)] = ManifestEntry{
 		Input:         canonicalInputPath(input),
 		InputSize:     in.Size(),
 		InputModTime:  stamp(in.ModTime()),
@@ -342,7 +362,7 @@ func (m *Manifest) TableFor(output string) string {
 	if m == nil {
 		return ""
 	}
-	return m.Entries[filepath.Base(output)].Table
+	return m.Entries[m.key(output)].Table
 }
 
 // NoteTable fills in a name an older binary did not record, so the field is
@@ -357,7 +377,7 @@ func (m *Manifest) NoteTable(output, table string) {
 	if m == nil || table == "" {
 		return
 	}
-	key := filepath.Base(output)
+	key := m.key(output)
 	e, ok := m.Entries[key]
 	if !ok || e.Table != "" {
 		return

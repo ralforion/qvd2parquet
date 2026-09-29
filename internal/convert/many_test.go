@@ -1260,3 +1260,112 @@ func TestRunManyStopsWhenAnOutputIsLost(t *testing.T) {
 		t.Errorf("exit code = %d, want 5", code)
 	}
 }
+
+// FindInputs records each file's folder relative to the path it was found
+// under. A directory a wildcard matched keeps its own name, since "qvds/*" is
+// how cmd.exe users name a folder of table folders.
+func TestFindInputsRecordsTheTree(t *testing.T) {
+	src := t.TempDir()
+	for _, p := range []string{"top.qvd", "VBAK/VBAK.qvd", "BSID/BSID.qvd", "BSID/2026/BSID_0928.qvd"} {
+		if _, err := qvdtest.Build(filepath.Join(src, filepath.FromSlash(p)), sampleTable(5)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rel := func(found FoundInputs) map[string]string {
+		out := map[string]string{}
+		for _, f := range found.Files {
+			r, _ := filepath.Rel(src, f)
+			out[filepath.ToSlash(r)] = filepath.ToSlash(found.Tree[f])
+		}
+		return out
+	}
+	check := func(name string, got, want map[string]string) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Errorf("%s: found %v, want %v", name, got, want)
+			return
+		}
+		for k, v := range want {
+			if g, ok := got[k]; !ok || g != v {
+				t.Errorf("%s: %s is in folder %q, want %q (all: %v)", name, k, g, v, got)
+			}
+		}
+	}
+
+	check("recursive directory", rel(FindInputs([]string{src}, InputSelection{Recursive: true})), map[string]string{
+		"top.qvd": "", "VBAK/VBAK.qvd": "VBAK", "BSID/BSID.qvd": "BSID", "BSID/2026/BSID_0928.qvd": "BSID/2026",
+	})
+	check("wildcard over table folders", rel(FindInputs([]string{filepath.Join(src, "*")}, InputSelection{})), map[string]string{
+		"top.qvd": "", "VBAK/VBAK.qvd": "VBAK", "BSID/BSID.qvd": "BSID",
+	})
+	check("a file named directly", rel(FindInputs([]string{filepath.Join(src, "VBAK", "VBAK.qvd")}, InputSelection{})), map[string]string{
+		"VBAK/VBAK.qvd": "",
+	})
+}
+
+// With a Tree each output lands in its input's folder under --out-dir. Two
+// folders holding the same file name no longer clash, and --skip-up-to-date
+// tells their outputs apart on the next run.
+func TestRunManyKeepsTheTree(t *testing.T) {
+	src := t.TempDir()
+	for _, p := range []string{"VBAK/VBAK.qvd", "BSID/BSID.qvd", "A/X.qvd", "B/X.qvd"} {
+		if _, err := qvdtest.Build(filepath.Join(src, filepath.FromSlash(p)), sampleTable(5)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	outDir := filepath.Join(t.TempDir(), "out")
+	found := FindInputs([]string{src}, InputSelection{Recursive: true})
+
+	if err := CheckOutputCollisions(found.Files, outDir, nil); err == nil {
+		t.Error("without a Tree, A/X.qvd and B/X.qvd should clash on X.parquet")
+	}
+
+	run := func() *BatchResult {
+		t.Helper()
+		opts := testOptions()
+		opts.Force = true
+		b, err := RunMany(context.Background(), found.Files, &opts,
+			&ManyOptions{OutDir: outDir, Tree: found.Tree, SkipUpToDate: true, ToolVersion: "2.11.0"}, nil)
+		if err != nil {
+			t.Fatalf("RunMany: %v", err)
+		}
+		return b
+	}
+	if b := run(); b.Converted != 4 || b.Failed != 0 {
+		t.Fatalf("converted=%d failed=%d, want 4 and 0: %+v", b.Converted, b.Failed, b.Results)
+	}
+	for _, p := range []string{"VBAK/VBAK.parquet", "BSID/BSID.parquet", "A/X.parquet", "B/X.parquet"} {
+		if _, err := os.Stat(filepath.Join(outDir, filepath.FromSlash(p))); err != nil {
+			t.Errorf("%s missing: %v", p, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "X.parquet")); err == nil {
+		t.Error("an output was written flat into --out-dir")
+	}
+
+	m := LoadManifest(outDir)
+	for _, k := range []string{"VBAK/VBAK.parquet", "A/X.parquet", "B/X.parquet"} {
+		if _, ok := m.Entries[k]; !ok {
+			t.Errorf("manifest has no entry %q: %v", k, m.Entries)
+		}
+	}
+	if b := run(); b.Skipped != 4 || b.Converted != 0 {
+		t.Errorf("second run converted=%d skipped=%d, want 0 and 4", b.Converted, b.Skipped)
+	}
+}
+
+// Report paths follow the input's folder, so the reports of two tables with
+// the same file name do not overwrite each other.
+func TestTreeReportPaths(t *testing.T) {
+	tree := Tree{filepath.Join("in", "A", "X.qvd"): "A"}
+	in := filepath.Join("in", "A", "X.qvd")
+	if got, want := tree.Report("quality.json", in, "out"), filepath.Join("out", "A", "X.quality.json"); got != want {
+		t.Errorf("bare report name: %s, want %s", got, want)
+	}
+	if got, want := tree.Report(filepath.Join("reports", "q.json"), in, "out"), filepath.Join("reports", "A", "X.q.json"); got != want {
+		t.Errorf("report directory: %s, want %s", got, want)
+	}
+	if got, want := Tree(nil).Report("quality.json", in, "out"), filepath.Join("out", "X.quality.json"); got != want {
+		t.Errorf("flat: %s, want %s", got, want)
+	}
+}

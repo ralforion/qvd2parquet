@@ -138,6 +138,10 @@ func (s InputSelection) Patterns() string {
 type FoundInputs struct {
 	// Files are the .qvd files to convert, sorted and deduplicated.
 	Files []string
+	// Tree holds, for each file a directory contributed, the folder it sits
+	// in relative to the path it was found under. --keep-tree places the
+	// outputs by it.
+	Tree Tree
 	// Problems are paths that could not be examined.
 	Problems []InputProblem
 	// Filtered counts the files a directory offered that Include or Exclude
@@ -176,10 +180,10 @@ func (f *FoundInputs) Notes() []string {
 // batch guarantee is that every input is attempted, and aborting here would
 // discard the valid inputs listed beside a mistyped one.
 func FindInputs(paths []string, sel InputSelection) FoundInputs {
-	var found FoundInputs
+	found := FoundInputs{Tree: Tree{}}
 	filter := newNameFilter(sel)
 	seen := make(map[string]bool)
-	add := func(p string) {
+	add := func(p, root string) {
 		if abs, err := filepath.Abs(p); err == nil {
 			if seen[abs] {
 				return
@@ -187,19 +191,16 @@ func FindInputs(paths []string, sel InputSelection) FoundInputs {
 			seen[abs] = true
 		}
 		found.Files = append(found.Files, p)
-	}
-	// Only what a directory offers is filtered; an expanded wildcard is the
-	// user naming files, at one remove.
-	addFromDir := func(p string) {
-		if !filter.keep(filepath.Base(p)) {
-			found.Filtered++
-			return
+		if rel, err := filepath.Rel(root, filepath.Dir(p)); err == nil && rel != "." {
+			found.Tree[p] = rel
 		}
-		add(p)
 	}
 
-	var take func(p string, fromWildcard bool)
-	take = func(p string, fromWildcard bool) {
+	// root is the directory the relative folder of a file is measured from:
+	// the path given, or for a directory a wildcard matched, the directory
+	// holding the wildcard, so "qvds/*" keeps each table folder's name.
+	var take func(p, root string, fromWildcard bool)
+	take = func(p, root string, fromWildcard bool) {
 		info, err := os.Stat(p)
 		if err != nil {
 			// A wildcard the shell did not expand reaches us verbatim, which
@@ -213,7 +214,7 @@ func FindInputs(paths []string, sel InputSelection) FoundInputs {
 					return
 				}
 				for _, m := range matches {
-					take(m, true)
+					take(m, filepath.Dir(m), true)
 				}
 				return
 			}
@@ -221,8 +222,20 @@ func FindInputs(paths []string, sel InputSelection) FoundInputs {
 			return
 		}
 		if !info.IsDir() {
-			add(p)
+			add(p, filepath.Dir(p))
 			return
+		}
+		if root == "" {
+			root = p
+		}
+		// Only what a directory offers is filtered; an expanded wildcard is
+		// the user naming files, at one remove.
+		addFromDir := func(f string) {
+			if !filter.keep(filepath.Base(f)) {
+				found.Filtered++
+				return
+			}
+			add(f, root)
 		}
 		if err := walkQVDs(p, sel.Recursive, addFromDir); err != nil {
 			found.Problems = append(found.Problems, InputProblem{Path: p, Err: err})
@@ -230,7 +243,7 @@ func FindInputs(paths []string, sel InputSelection) FoundInputs {
 	}
 
 	for _, p := range paths {
-		take(p, false)
+		take(p, "", false)
 	}
 	found.Unmatched = filter.unmatched()
 	sort.Strings(found.Files)
@@ -363,6 +376,33 @@ func OutputPathFor(input, outDir string) string {
 	return filepath.Join(outDir, base)
 }
 
+// Tree maps an input onto the folder, relative to --out-dir, its output goes
+// in. An input it does not name, and every input of a nil Tree, goes in
+// --out-dir itself, which is the layout without --keep-tree.
+type Tree map[string]string
+
+// Output is where the input's output goes.
+func (t Tree) Output(input, outDir string) string {
+	return OutputPathFor(input, filepath.Join(outDir, t[input]))
+}
+
+// Report turns a single report path into the input's own, in the input's
+// folder under the report's directory, or under outDir for a bare file name.
+func (t Tree) Report(path, input, outDir string) string {
+	if path == "" {
+		return ""
+	}
+	base := filepath.Base(input)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	ext := filepath.Ext(path)
+	stem := strings.TrimSuffix(filepath.Base(path), ext)
+	dir := filepath.Dir(path)
+	if dir == "." {
+		dir = outDir
+	}
+	return filepath.Join(dir, t[input], fmt.Sprintf("%s.%s%s", base, stem, ext))
+}
+
 // ManyOptions configures a multi-file run.
 type ManyOptions struct {
 	// OutDir receives the converted files.
@@ -373,6 +413,9 @@ type ManyOptions struct {
 	FileWorkers int
 	// Recursive descends into subdirectories when expanding a directory.
 	Recursive bool
+	// Tree places each output in a folder under OutDir. Nil writes them all
+	// to OutDir.
+	Tree Tree
 	// Log receives one structured record per file. May be nil.
 	Log *LogWriter
 	// Problems are inputs that could not even be examined. They are reported
@@ -406,7 +449,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	// per-file --force guard would report that as a pre-existing file, and
 	// with --force it would silently overwrite, so catch it before converting
 	// anything.
-	if err := CheckOutputCollisions(inputs, many.OutDir); err != nil {
+	if err := CheckOutputCollisions(inputs, many.OutDir, many.Tree); err != nil {
 		return nil, err
 	}
 
@@ -499,7 +542,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			break
 		}
 
-		out := OutputPathFor(in, many.OutDir)
+		out := many.Tree.Output(in, many.OutDir)
 		stale, reason := live.Stale(in, out)
 		if !stale {
 			// A manifest written before entries carried the table name has
@@ -562,7 +605,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			if ctx.Err() != nil {
 				// Stopped while this file waited for a slot: the check at the
 				// top of the loop ran before the file ahead of it finished.
-				results[i] = FileResult{Input: in, Output: OutputPathFor(in, many.OutDir),
+				results[i] = FileResult{Input: in, Output: many.Tree.Output(in, many.OutDir),
 					Err: stoppedErr(ctx, fmt.Errorf("%w before this file was converted", ErrCanceled))}
 			} else {
 				results[i] = convertOne(ctx, in, opts, many, perFile, fileWorkers > 1, safeLogf)
@@ -624,10 +667,10 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 // log and the catalog before converting, both by truncating, and a run refused
 // here would otherwise have destroyed them on the way out. A guard that runs
 // after a writer is open protects nothing.
-func CheckOutputCollisions(inputs []string, outDir string) error {
+func CheckOutputCollisions(inputs []string, outDir string, tree Tree) error {
 	byOutput := make(map[string][]string, len(inputs))
 	for _, in := range inputs {
-		out := OutputPathFor(in, outDir)
+		out := tree.Output(in, outDir)
 		byOutput[out] = append(byOutput[out], in)
 	}
 	var clashes []string
@@ -662,14 +705,14 @@ func displayAll(paths []string) []string {
 // --file-workers: asking for four and converting one file runs one at a time,
 // and prefixing there would contradict the "converting 1 file(s)" above it.
 func convertOne(ctx context.Context, in string, opts *Options, many *ManyOptions, perFile int, prefixProgress bool, logf Logf) FileResult {
-	r := FileResult{Input: in, Output: OutputPathFor(in, many.OutDir), Started: time.Now()}
+	r := FileResult{Input: in, Output: many.Tree.Output(in, many.OutDir), Started: time.Now()}
 
 	// Each file gets its own copy, so a per-file report path cannot leak
 	// between goroutines.
 	o := *opts
 	o.Workers = perFile
-	o.SchemaReportPath = PerFileReportPath(opts.SchemaReportPath, in, many.OutDir)
-	o.QualityReportPath = PerFileReportPath(opts.QualityReportPath, in, many.OutDir)
+	o.SchemaReportPath = many.Tree.Report(opts.SchemaReportPath, in, many.OutDir)
+	o.QualityReportPath = many.Tree.Report(opts.QualityReportPath, in, many.OutDir)
 
 	// A batch run used to discard everything the conversion said, so a single
 	// large file showed one line on starting and nothing again until it
@@ -734,18 +777,7 @@ func stoppedErr(ctx context.Context, err error) error {
 // the command has to know every path a batch will write before it opens the
 // log, so the log cannot be pointed at one of them.
 func PerFileReportPath(path, input, outDir string) string {
-	if path == "" {
-		return ""
-	}
-	base := filepath.Base(input)
-	base = strings.TrimSuffix(base, filepath.Ext(base))
-	ext := filepath.Ext(path)
-	stem := strings.TrimSuffix(filepath.Base(path), ext)
-	dir := filepath.Dir(path)
-	if dir == "." {
-		dir = outDir
-	}
-	return filepath.Join(dir, fmt.Sprintf("%s.%s%s", base, stem, ext))
+	return Tree(nil).Report(path, input, outDir)
 }
 
 // splitWorkerBudget divides the decode workers between concurrently converting

@@ -145,6 +145,7 @@ func run() int {
 		outDir        = fs.String("out-dir", "", "Convert every input into this directory, one .parquet per .qvd")
 		fileWorkers   = fs.Int("file-workers", 1, "Files to convert at once; decode workers are divided between them")
 		recursive     = fs.Bool("recursive", false, "With --out-dir, descend into subdirectories")
+		keepTree      = fs.Bool("keep-tree", false, "With --out-dir, write each output in the same subfolder its input has under the directory given")
 		includeFiles  = fs.String("include-files", "", "With --out-dir, convert only the files matching these comma-separated wildcard patterns, e.g. 'CE*'")
 		excludeFiles  = fs.String("exclude-files", "", "With --out-dir, skip the files matching these comma-separated wildcard patterns")
 		skipUpToDate  = fs.Bool("skip-up-to-date", false, "With --out-dir, leave a file alone when this exact run already produced its output")
@@ -188,6 +189,9 @@ func run() int {
 	case batch && fs.NArg() < 1:
 		fmt.Fprintf(stderr, "%s: --out-dir needs at least one input file or directory\n\n", programName)
 		fs.Usage()
+		return exitUsage
+	case *keepTree && !batch:
+		fmt.Fprintf(stderr, "%s: --keep-tree places the outputs of --out-dir, and needs it\n", programName)
 		return exitUsage
 	case batch && *inspect:
 		fmt.Fprintf(stderr, "%s: --inspect and --out-dir cannot be combined; "+
@@ -331,7 +335,7 @@ func run() int {
 			Include:   splitList(*includeFiles),
 			Exclude:   splitList(*excludeFiles),
 		}
-		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, sel, *skipUpToDate,
+		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, sel, *keepTree, *skipUpToDate,
 			*logPath, *catalogOut, *consolePath, logf)
 	}
 
@@ -541,7 +545,7 @@ func validateCatalogPath(catalogPath, inputPath, outputPath string, opts *conver
 // The message names the offending file rather than its role, because a batch
 // may have found hundreds and "the input path" would not say which one.
 func validateBatchWriterPath(path, flag string, inputs []string,
-	problems []convert.InputProblem, outDir string, opts *convert.Options) error {
+	problems []convert.InputProblem, outDir string, tree convert.Tree, opts *convert.Options) error {
 
 	if path == "" {
 		return nil
@@ -565,14 +569,12 @@ func validateBatchWriterPath(path, flag string, inputs []string,
 		}
 	}
 	for _, in := range inputs {
-		out := convert.OutputPathFor(in, outDir)
+		out := tree.Output(in, outDir)
 		if err := checkCollisions(path, flag, []logCollision{
 			{"the input " + in, in},
 			{"the output " + out, out},
-			{"the --schema-report for " + in,
-				convert.PerFileReportPath(opts.SchemaReportPath, in, outDir)},
-			{"the --quality-report for " + in,
-				convert.PerFileReportPath(opts.QualityReportPath, in, outDir)},
+			{"the --schema-report for " + in, tree.Report(opts.SchemaReportPath, in, outDir)},
+			{"the --quality-report for " + in, tree.Report(opts.QualityReportPath, in, outDir)},
 		}); err != nil {
 			return err
 		}
@@ -582,16 +584,16 @@ func validateBatchWriterPath(path, flag string, inputs []string,
 
 // validateBatchCatalogPath is the batch guard for --catalog-out.
 func validateBatchCatalogPath(catalogPath string, inputs []string,
-	problems []convert.InputProblem, outDir string, opts *convert.Options) error {
+	problems []convert.InputProblem, outDir string, tree convert.Tree, opts *convert.Options) error {
 
-	return validateBatchWriterPath(catalogPath, "--catalog-out", inputs, problems, outDir, opts)
+	return validateBatchWriterPath(catalogPath, "--catalog-out", inputs, problems, outDir, tree, opts)
 }
 
 // validateBatchLogPath is the batch guard for --log.
 func validateBatchLogPath(logPath string, inputs []string, problems []convert.InputProblem,
-	outDir string, opts *convert.Options) error {
+	outDir string, tree convert.Tree, opts *convert.Options) error {
 
-	return validateBatchWriterPath(logPath, "--log", inputs, problems, outDir, opts)
+	return validateBatchWriterPath(logPath, "--log", inputs, problems, outDir, tree, opts)
 }
 
 // startConsoleLog checks --console-log against every path the run reads or
@@ -689,11 +691,16 @@ func canonicalPath(path string) string {
 // runBatch converts every input into --out-dir, continuing past a failure so
 // one bad file does not hide the state of the rest.
 func runBatch(ctx context.Context, paths []string, opts *convert.Options,
-	outDir string, fileWorkers int, sel convert.InputSelection, skipUpToDate bool,
+	outDir string, fileWorkers int, sel convert.InputSelection, keepTree, skipUpToDate bool,
 	logPath, catalogPath, consolePath string, logf convert.Logf) (code int) {
 
 	found := convert.FindInputs(paths, sel)
 	inputs, problems := found.Files, found.Problems
+	// Without --keep-tree every output goes in --out-dir itself.
+	var tree convert.Tree
+	if keepTree {
+		tree = found.Tree
+	}
 	if len(inputs) == 0 && len(problems) == 0 {
 		// Saying only that nothing was found would read as an empty folder
 		// when it was the patterns that emptied it.
@@ -730,11 +737,11 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	// after the CLI has opened both writers, so the check has to happen here
 	// as well. It is cheap and idempotent, and RunMany keeps its own copy for
 	// callers that are not this one.
-	if err := convert.CheckOutputCollisions(inputs, outDir); err != nil {
+	if err := convert.CheckOutputCollisions(inputs, outDir, tree); err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)
 	}
-	if err := validateBatchCatalogPath(catalogPath, inputs, problems, outDir, opts); err != nil {
+	if err := validateBatchCatalogPath(catalogPath, inputs, problems, outDir, tree, opts); err != nil {
 		return usageErr(err)
 	}
 	if err := checkCollisions(catalogPath, "--catalog-out", []logCollision{
@@ -754,11 +761,11 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 				return usageErr(err)
 			}
 		}
-		if err := validateBatchLogPath(logPath, inputs, problems, outDir, opts); err != nil {
+		if err := validateBatchLogPath(logPath, inputs, problems, outDir, tree, opts); err != nil {
 			return usageErr(err)
 		}
 	}
-	if err := validateBatchWriterPath(consolePath, "--console-log", inputs, problems, outDir, opts); err != nil {
+	if err := validateBatchWriterPath(consolePath, "--console-log", inputs, problems, outDir, tree, opts); err != nil {
 		return usageErr(err)
 	}
 	if code := startConsoleLog(consolePath, []logCollision{
@@ -791,6 +798,7 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		OutDir:       outDir,
 		FileWorkers:  fileWorkers,
 		Recursive:    sel.Recursive,
+		Tree:         tree,
 		Log:          log,
 		Problems:     problems,
 		SkipUpToDate: skipUpToDate,

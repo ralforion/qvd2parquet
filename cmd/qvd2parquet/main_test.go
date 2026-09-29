@@ -447,7 +447,7 @@ func TestValidateBatchLogPath(t *testing.T) {
 	}
 	for _, tc := range collisions {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := validateBatchLogPath(tc.logPath, inputs, problems, outDir, &tc.opts); err == nil {
+			if err := validateBatchLogPath(tc.logPath, inputs, problems, outDir, nil, &tc.opts); err == nil {
 				t.Fatal("collision accepted")
 			}
 		})
@@ -456,7 +456,7 @@ func TestValidateBatchLogPath(t *testing.T) {
 	// The guard must not reject a log that merely sits beside the outputs,
 	// which is where a batch log normally goes.
 	var opts convert.Options
-	if err := validateBatchLogPath(filepath.Join(outDir, "run.jsonl"), inputs, problems, outDir, &opts); err != nil {
+	if err := validateBatchLogPath(filepath.Join(outDir, "run.jsonl"), inputs, problems, outDir, nil, &opts); err != nil {
 		t.Errorf("log beside the outputs rejected: %v", err)
 	}
 }
@@ -1865,5 +1865,40 @@ func TestStaleFileSaysWhyItConverts(t *testing.T) {
 	}
 	if out := run("--skip-up-to-date"); !strings.Contains(out, "orders.qvd (input modified since, ") {
 		t.Fatalf("re-extracted input was not the reason:\n%s", out)
+	}
+}
+
+// --keep-tree mirrors table folders under --out-dir. The wildcard reaches the
+// tool unexpanded, as it does from cmd.exe, and a folder it matches keeps its
+// name. Without --out-dir there is nothing to place, so the flag is refused
+// rather than ignored.
+func TestKeepTree(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "qvd-delta")
+	for _, table := range []string{"VBAK", "BSID"} {
+		buildQVD(t, filepath.Join(src, table, table+".qvd"), table)
+	}
+	outDir := filepath.Join(dir, "parquet-delta")
+
+	cmd := exec.Command(bin, "--progress", "0", "--quality-gate", "none",
+		"--out-dir", outDir, "--keep-tree", filepath.Join(src, "*"))
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run: %v\n%s", err, combined)
+	}
+	for _, table := range []string{"VBAK", "BSID"} {
+		if _, err := os.Stat(filepath.Join(outDir, table, table+".parquet")); err != nil {
+			t.Errorf("%s: %v", table, err)
+		}
+	}
+
+	cmd = exec.Command(bin, "--keep-tree", filepath.Join(src, "VBAK", "VBAK.qvd"), filepath.Join(dir, "out.parquet"))
+	combined, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitUsage {
+		t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+	}
+	if !strings.Contains(string(combined), "--keep-tree") {
+		t.Errorf("message = %s", combined)
 	}
 }
