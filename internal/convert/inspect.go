@@ -172,6 +172,11 @@ func (r *InspectReport) Write(w io.Writer) error {
 	}
 	if r.FolderSchema != "" {
 		fmt.Fprintf(w, "Schema pins     %s\n", r.FolderSchema)
+		if r.Schema != nil {
+			if line := r.Schema.UnpinnedLine(r.FolderSchema, maxNamedFields); line != "" {
+				fmt.Fprintln(w, line)
+			}
+		}
 	}
 	if r.Schema != nil {
 		if line := duplicateRenameLine(r.Schema.Duplicates, maxNamedFields); line != "" {

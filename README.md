@@ -1509,6 +1509,16 @@ in the main table still fits, and the scale is kept so both sides match.
 - A file that cannot be read or parsed fails every QVD of its folder with an
   error naming it, rather than converting the folder without its pins.
 - The conversion log and `--inspect` name the file a pin came from.
+- A column the folder schema leaves unpinned is inferred per file again, so
+  the log and `--inspect` warn about it by the name it is written as. This is
+  how a field SAP adds shows up on its first day; a pin from `--schema`
+  counts.
+
+  ```text
+  qvd2parquet: WARNING: 1 column(s) not pinned by qvd-delta\BSEG\qvd2parquet-schema.json, so their types are inferred from this file and may differ from day to day: ZZNEW1
+  ```
+
+  A field SAP removes needs nothing: its pin is ignored for files without it.
 - `--skip-up-to-date` fingerprints the file's contents per folder. Adding,
   editing or removing one reconverts that folder and no other, and a folder
   without one keeps the fingerprint it had before this lookup existed.

@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -310,5 +311,73 @@ func TestFolderSchemaMergeKeepsCaseVariants(t *testing.T) {
 				t.Fatalf("run %d: %s pinned to %+v, %v, want %s", i, name, co, ok, want)
 			}
 		}
+	}
+}
+
+// A column a folder schema does not pin is inferred per file again, which is
+// the drift the schema exists to stop, so the run warns about it by the name
+// it is written as. A folder without a schema warns about nothing, and a pin
+// from --schema counts as a pin.
+func TestFolderSchemaWarnsAboutUnpinnedColumns(t *testing.T) {
+	build := func(t *testing.T, schema string) string {
+		dir := t.TempDir()
+		tbl := qvdtest.Table{Name: "T", Fields: []qvdtest.Field{
+			{Name: "T_Amount", Type: "REAL", Rows: []int{0}, Symbols: []qvd.Symbol{qvdtest.Float(1.5)}},
+			{Name: "T_Code", Type: "INTEGER", Rows: []int{0}, Symbols: []qvd.Symbol{qvdtest.Int(7)}},
+			{Name: "T_New", Type: "INTEGER", Rows: []int{0}, Symbols: []qvd.Symbol{qvdtest.Int(1)}},
+		}}
+		in := filepath.Join(dir, "T.qvd")
+		if _, err := qvdtest.Build(in, tbl); err != nil {
+			t.Fatalf("build fixture: %v", err)
+		}
+		if schema != "" {
+			writeFolderSchema(t, dir, schema)
+		}
+		return in
+	}
+	for _, tc := range []struct {
+		name, folder, global string
+		want                 string // "" for no warning
+	}{
+		{"partly pinned", `{"columns":{"Amount":{"type":"float64"}}}`, "",
+			"WARNING: 2 column(s) not pinned by "},
+		{"no folder schema", "", "", ""},
+		{"pinned by both", `{"columns":{"Amount":{"type":"float64"},"New":{"type":"int64"}}}`,
+			`{"columns":{"T_Code":{"type":"int64"}}}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := build(t, tc.folder)
+			opts := testOptions()
+			if tc.global != "" {
+				opts.SchemaOverridePath = filepath.Join(t.TempDir(), "schema.json")
+				if err := os.WriteFile(opts.SchemaOverridePath, []byte(tc.global), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r, err := NewFieldRenamer(`^T_(?P<name>.*)$`, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts.Renamer = r
+			var lines []string
+			logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+			if _, _, err := Run(context.Background(), in, filepath.Join(t.TempDir(), "T.parquet"), &opts, logf); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			var warning string
+			for _, l := range lines {
+				if strings.HasPrefix(l, "WARNING:") {
+					warning = l
+				}
+			}
+			switch {
+			case tc.want == "" && warning != "":
+				t.Errorf("unexpected warning: %s", warning)
+			case tc.want != "" && !strings.HasPrefix(warning, tc.want):
+				t.Errorf("warning = %q, want prefix %q", warning, tc.want)
+			case tc.want != "" && !strings.HasSuffix(warning, ": Code, New"):
+				t.Errorf("warning = %q, want the written names Code, New", warning)
+			}
+		})
 	}
 }

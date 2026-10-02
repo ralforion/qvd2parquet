@@ -114,6 +114,10 @@ type ResolvedSchema struct {
 	// an earlier column of the same name. Empty under the default policy,
 	// which rejects the schema instead.
 	Duplicates []DuplicateRename
+	// Unpinned names, as written, the columns no schema override pinned.
+	// Their types are inferred from this file alone, which is what a folder
+	// schema is there to prevent, so a run with one warns about them.
+	Unpinned []string
 }
 
 // SchemaOverride is the --schema JSON document.
@@ -173,6 +177,21 @@ func ParseSchemaOverride(path string, b []byte) (*SchemaOverride, error) {
 		}
 	}
 	return &so, nil
+}
+
+// UnpinnedLine is the warning for columns a folder schema leaves to
+// inference, or "" when it pins them all.
+func (rs *ResolvedSchema) UnpinnedLine(folderSchema string, max int) string {
+	if folderSchema == "" || len(rs.Unpinned) == 0 {
+		return ""
+	}
+	shown, suffix := rs.Unpinned, ""
+	if max > 0 && len(shown) > max {
+		shown = shown[:max]
+		suffix = fmt.Sprintf(" and %d more", len(rs.Unpinned)-max)
+	}
+	return fmt.Sprintf("WARNING: %d column(s) not pinned by %s, so their types are inferred from this file and may differ from day to day: %s%s",
+		len(rs.Unpinned), folderSchema, strings.Join(shown, ", "), suffix)
 }
 
 // pick finds the pin for a column read as original and written as renamed. A
@@ -374,6 +393,10 @@ func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*Resol
 	// named once, as what it is actually written as.
 	for _, idx := range f.SelectedColumns() {
 		c := rs.Columns[firstOf[idx]]
+		name, _ := opts.Renamer.Apply(f.Columns[idx].Name)
+		if _, pinned := override.pick(f.Columns[idx].Name, name); !pinned {
+			rs.Unpinned = append(rs.Unpinned, c.Name)
+		}
 		if c.Name == f.Columns[idx].Name {
 			continue
 		}

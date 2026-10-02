@@ -22,7 +22,9 @@ restarts from it.
   precision or `int64` from one day to the next. A column pinned by both takes
   the folder's pin. Unlike `--schema`, its keys also match the names
   `--field-regex` produces, so a file generated from the main table's Parquet
-  works as written. Each folder's file is read once per run, `--inspect` and
+  works as written. A column the folder schema leaves unpinned is reported
+  with a `WARNING:` line in the log and `--inspect`, so a new field is noticed
+  before it drifts. Each folder's file is read once per run, `--inspect` and
   the log name it, and `--skip-up-to-date` reconverts only a folder whose file
   was added, edited or removed, so an upgrade converts nothing again.
 

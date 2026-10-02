@@ -152,6 +152,9 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	if line := duplicateRenameLine(rs.Duplicates, maxNamedFields); line != "" {
 		logf("duplicate-names: %s", line)
 	}
+	if line := rs.UnpinnedLine(folderSchema, maxNamedFields); line != "" {
+		logf("%s", line)
+	}
 
 	// Batch size depends on the resolved column count, so it can only be
 	// settled here. Work from a copy: the caller's Options are shared across
