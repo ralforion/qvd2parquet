@@ -20,6 +20,14 @@ import (
 // is read as data.
 const FolderSchemaName = "qvd2parquet-schema.json"
 
+// FolderSchemaPath is where the schema for an input's folder is looked up,
+// whether or not one is there. A writer must not take that path either way:
+// one that exists would be truncated, and one that does not would be created
+// and read back as pins on the next run.
+func FolderSchemaPath(input string) string {
+	return filepath.Join(filepath.Dir(input), FolderSchemaName)
+}
+
 // folderSchema is one folder's schema as read. Path is empty when the folder
 // holds none, and Err is kept rather than retried, so every file of a folder
 // with a broken schema fails the same way.
@@ -91,9 +99,10 @@ func readFolderSchema(dir string) *folderSchema {
 	return &folderSchema{Path: p, Override: so, Hash: fmt.Sprintf("%x", sha256.Sum256(b))}
 }
 
-// LoadOverrides combines --schema with the input's folder schema. A column
-// pinned in both takes the folder's pin, being the more specific of the two,
-// and the path of the folder schema is returned so the run can say it used it.
+// LoadOverrides combines --schema with the input's folder schema, and returns
+// the folder schema's path so the run can say it used it. Both sets of pins
+// are kept: which one a column takes is decided by pick, which prefers the
+// folder's, so nothing here has to delete a pin to make it lose.
 func LoadOverrides(input string, opts *Options) (so *SchemaOverride, folder string, err error) {
 	if opts.SchemaOverridePath != "" {
 		if so, err = LoadSchemaOverride(opts.SchemaOverridePath); err != nil {
@@ -115,14 +124,6 @@ func LoadOverrides(input string, opts *Options) (so *SchemaOverride, folder stri
 		merged.Columns[name] = co
 	}
 	for name, co := range local.Override.Columns {
-		// lookup matches names case-insensitively, so a global pin spelled
-		// with other capitals would otherwise survive beside the folder's
-		// and win or lose on map order.
-		for g := range merged.Columns {
-			if strings.EqualFold(g, name) {
-				delete(merged.Columns, g)
-			}
-		}
 		merged.Columns[name] = co
 	}
 	return merged, local.Path, nil

@@ -175,15 +175,40 @@ func ParseSchemaOverride(path string, b []byte) (*SchemaOverride, error) {
 	return &so, nil
 }
 
-func (so *SchemaOverride) lookup(name string) (ColumnOverride, bool) {
+// pick finds the pin for a column read as original and written as renamed. A
+// folder pin wins over a --schema pin under either name, being the more
+// specific of the two. A folder schema is often generated from Parquet
+// already written, which carries the renamed names, so its pins match those
+// too; --schema keeps matching the QVD name alone, as it always has.
+func (so *SchemaOverride) pick(original, renamed string) (ColumnOverride, bool) {
 	if so == nil {
 		return ColumnOverride{}, false
 	}
-	if co, ok := so.Columns[name]; ok {
+	fromFolder := func(co ColumnOverride) bool { return co.from != "" }
+	anywhere := func(ColumnOverride) bool { return true }
+	for _, try := range []struct {
+		name string
+		keep func(ColumnOverride) bool
+	}{
+		{original, fromFolder},
+		{renamed, fromFolder},
+		{original, anywhere},
+	} {
+		if co, ok := so.lookup(try.name, try.keep); ok {
+			return co, true
+		}
+	}
+	return ColumnOverride{}, false
+}
+
+// lookup matches a name exactly first and then ignoring case, among the pins
+// keep accepts.
+func (so *SchemaOverride) lookup(name string, keep func(ColumnOverride) bool) (ColumnOverride, bool) {
+	if co, ok := so.Columns[name]; ok && keep(co) {
 		return co, true
 	}
 	for k, co := range so.Columns {
-		if strings.EqualFold(k, name) {
+		if strings.EqualFold(k, name) && keep(co) {
 			return co, true
 		}
 	}
@@ -538,16 +563,7 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 
 	// An explicit override wins over inference, but is still validated against
 	// the symbols actually present.
-	co, ok := override.lookup(col.Name)
-	if !ok && name != col.Name {
-		// A folder schema is often generated from Parquet already written,
-		// which carries the renamed names. --schema keeps matching the QVD
-		// name alone, as it always has.
-		if c, found := override.lookup(name); found && c.from != "" {
-			co, ok = c, true
-		}
-	}
-	if ok {
+	if co, ok := override.pick(col.Name, name); ok {
 		rc, scan, err := applyOverride(base, co, col, syms, tsType, opts.Location, opts.EmptyStringAsNull)
 		if err != nil {
 			return nil, "", err

@@ -519,6 +519,7 @@ func validateWriterPath(path, flag, inputPath, outputPath string, opts *convert.
 		{"the input path", inputPath},
 		{"the output path", outputPath},
 		{"--schema", opts.SchemaOverridePath},
+		{"the folder schema " + convert.FolderSchemaPath(inputPath), convert.FolderSchemaPath(inputPath)},
 		{"--schema-report", opts.SchemaReportPath},
 		{"--quality-report", opts.QualityReportPath},
 	})
@@ -570,9 +571,11 @@ func validateBatchWriterPath(path, flag string, inputs []string,
 	}
 	for _, in := range inputs {
 		out := tree.Output(in, outDir)
+		folderSchema := convert.FolderSchemaPath(in)
 		if err := checkCollisions(path, flag, []logCollision{
 			{"the input " + in, in},
 			{"the output " + out, out},
+			{"the folder schema " + folderSchema, folderSchema},
 			{"the --schema-report for " + in, tree.Report(opts.SchemaReportPath, in, outDir)},
 			{"the --quality-report for " + in, tree.Report(opts.QualityReportPath, in, outDir)},
 		}); err != nil {

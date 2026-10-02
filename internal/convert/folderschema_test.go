@@ -254,3 +254,61 @@ func TestFolderSchemaMatchesRenamedFields(t *testing.T) {
 		t.Error("--schema matched a renamed name; it must keep matching the QVD name only")
 	}
 }
+
+// A folder pin wins over a --schema pin whichever name each one uses: a
+// --schema pin on the QVD name must not beat the folder's pin on the renamed
+// one.
+func TestFolderSchemaRenamedPinBeatsGlobalOriginal(t *testing.T) {
+	dir := t.TempDir()
+	tbl := qvdtest.Table{Name: "T", Fields: []qvdtest.Field{
+		{Name: "T_Amount", Type: "REAL", Rows: []int{0}, Symbols: []qvd.Symbol{qvdtest.Float(1.5)}},
+	}}
+	in := filepath.Join(dir, "T.qvd")
+	if _, err := qvdtest.Build(in, tbl); err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	writeFolderSchema(t, dir, `{"columns":{"Amount":{"type":"decimal","precision":18,"scale":2}}}`)
+	global := filepath.Join(t.TempDir(), "schema.json")
+	if err := os.WriteFile(global, []byte(`{"columns":{"T_Amount":{"type":"float64"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.SchemaOverridePath = global
+	r, err := NewFieldRenamer(`^T_(?P<name>.*)$`, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.Renamer = r
+	out := filepath.Join(t.TempDir(), "T.parquet")
+	if _, _, err := Run(context.Background(), in, out, &opts, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := columnType(t, out, "Amount"); got != "decimal(18, 2)" {
+		t.Errorf("Amount = %s, want the folder's decimal(18, 2) over --schema's float64", got)
+	}
+}
+
+// Merging with --schema must not drop folder pins that differ only by case.
+// Map order decided which one survived, so repeat enough to see both orders.
+func TestFolderSchemaMergeKeepsCaseVariants(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "T.qvd")
+	writeFolderSchema(t, dir, `{"columns":{"Code":{"type":"string"},"code":{"type":"int64"}}}`)
+	global := filepath.Join(t.TempDir(), "schema.json")
+	if err := os.WriteFile(global, []byte(`{"columns":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.SchemaOverridePath = global
+	for i := 0; i < 50; i++ {
+		so, _, err := LoadOverrides(in, &opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, want := range map[string]string{"Code": "string", "code": "int64"} {
+			if co, ok := so.pick(name, name); !ok || co.Type != want {
+				t.Fatalf("run %d: %s pinned to %+v, %v, want %s", i, name, co, ok, want)
+			}
+		}
+	}
+}

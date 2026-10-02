@@ -1902,3 +1902,68 @@ func TestKeepTree(t *testing.T) {
 		t.Errorf("message = %s", combined)
 	}
 }
+
+// A folder schema is read only once the conversion starts, after every writer
+// has opened, so a writer given its path would truncate the pins before they
+// are read. Each writer must refuse it, in batch and single-file runs alike.
+func TestWritersRefuseTheFolderSchema(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	original, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sample-small.qvd"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	const pins = `{"columns":{"Amount":{"type":"decimal","precision":18,"scale":2}}}`
+
+	for _, tc := range []struct {
+		name string
+		args func(dir, input, schema string) []string
+	}{
+		{"batch --log", func(dir, input, schema string) []string {
+			return []string{"--out-dir", filepath.Join(dir, "out"), "--log", schema, filepath.Dir(input)}
+		}},
+		{"batch --catalog-out", func(dir, input, schema string) []string {
+			return []string{"--out-dir", filepath.Join(dir, "out"), "--catalog-out", schema, filepath.Dir(input)}
+		}},
+		{"batch --console-log", func(dir, input, schema string) []string {
+			return []string{"--out-dir", filepath.Join(dir, "out"), "--console-log", schema, filepath.Dir(input)}
+		}},
+		{"single --log", func(dir, input, schema string) []string {
+			return []string{"--log", schema, input, filepath.Join(dir, "o.parquet")}
+		}},
+		{"inspect --console-log", func(dir, input, schema string) []string {
+			return []string{"--inspect", "--console-log", schema, input}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			inDir := filepath.Join(dir, "in")
+			if err := os.Mkdir(inDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			input := filepath.Join(inDir, "sample-small.qvd")
+			if err := os.WriteFile(input, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			schema := filepath.Join(inDir, "qvd2parquet-schema.json")
+			if err := os.WriteFile(schema, []byte(pins), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command(bin, append([]string{"--progress", "0"}, tc.args(dir, input, schema)...)...)
+			combined, err := cmd.CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != exitUsage {
+				t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+			}
+			if !strings.Contains(string(combined), "must differ from the folder schema") {
+				t.Errorf("missing diagnostic:\n%s", combined)
+			}
+			if after, _ := os.ReadFile(schema); string(after) != pins {
+				t.Errorf("folder schema changed to %q", after)
+			}
+		})
+	}
+}
