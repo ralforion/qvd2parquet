@@ -114,6 +114,10 @@ type ResolvedSchema struct {
 	// an earlier column of the same name. Empty under the default policy,
 	// which rejects the schema instead.
 	Duplicates []DuplicateRename
+	// Unpinned names, as written, the columns no schema override pinned.
+	// Their types are inferred from this file alone, which is what a folder
+	// schema is there to prevent, so a run with one warns about them.
+	Unpinned []string
 }
 
 // SchemaOverride is the --schema JSON document.
@@ -126,6 +130,15 @@ type ColumnOverride struct {
 	Type      string `json:"type"`
 	Precision int32  `json:"precision"`
 	Scale     int32  `json:"scale"`
+	// from names a folder schema the pin came from; empty for --schema.
+	from string
+}
+
+func (co ColumnOverride) source() string {
+	if co.from != "" {
+		return co.from
+	}
+	return "--schema"
 }
 
 // LoadSchemaOverride reads and validates a --schema document.
@@ -134,6 +147,12 @@ func LoadSchemaOverride(path string) (*SchemaOverride, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read schema override %s: %w", path, err)
 	}
+	return ParseSchemaOverride(path, b)
+}
+
+// ParseSchemaOverride validates a schema override document already read from
+// path, which names it in errors.
+func ParseSchemaOverride(path string, b []byte) (*SchemaOverride, error) {
 	var so SchemaOverride
 	dec := json.NewDecoder(strings.NewReader(string(b)))
 	dec.DisallowUnknownFields()
@@ -160,15 +179,55 @@ func LoadSchemaOverride(path string) (*SchemaOverride, error) {
 	return &so, nil
 }
 
-func (so *SchemaOverride) lookup(name string) (ColumnOverride, bool) {
+// UnpinnedLine is the warning for columns a folder schema leaves to
+// inference, or "" when it pins them all.
+func (rs *ResolvedSchema) UnpinnedLine(folderSchema string, max int) string {
+	if folderSchema == "" || len(rs.Unpinned) == 0 {
+		return ""
+	}
+	shown, suffix := rs.Unpinned, ""
+	if max > 0 && len(shown) > max {
+		shown = shown[:max]
+		suffix = fmt.Sprintf(" and %d more", len(rs.Unpinned)-max)
+	}
+	return fmt.Sprintf("WARNING: %d column(s) not pinned by %s, so their types are inferred from this file and may differ from day to day: %s%s",
+		len(rs.Unpinned), folderSchema, strings.Join(shown, ", "), suffix)
+}
+
+// pick finds the pin for a column read as original and written as renamed. A
+// folder pin wins over a --schema pin under either name, being the more
+// specific of the two. A folder schema is often generated from Parquet
+// already written, which carries the renamed names, so its pins match those
+// too; --schema keeps matching the QVD name alone, as it always has.
+func (so *SchemaOverride) pick(original, renamed string) (ColumnOverride, bool) {
 	if so == nil {
 		return ColumnOverride{}, false
 	}
-	if co, ok := so.Columns[name]; ok {
+	fromFolder := func(co ColumnOverride) bool { return co.from != "" }
+	anywhere := func(ColumnOverride) bool { return true }
+	for _, try := range []struct {
+		name string
+		keep func(ColumnOverride) bool
+	}{
+		{original, fromFolder},
+		{renamed, fromFolder},
+		{original, anywhere},
+	} {
+		if co, ok := so.lookup(try.name, try.keep); ok {
+			return co, true
+		}
+	}
+	return ColumnOverride{}, false
+}
+
+// lookup matches a name exactly first and then ignoring case, among the pins
+// keep accepts.
+func (so *SchemaOverride) lookup(name string, keep func(ColumnOverride) bool) (ColumnOverride, bool) {
+	if co, ok := so.Columns[name]; ok && keep(co) {
 		return co, true
 	}
 	for k, co := range so.Columns {
-		if strings.EqualFold(k, name) {
+		if strings.EqualFold(k, name) && keep(co) {
 			return co, true
 		}
 	}
@@ -334,6 +393,10 @@ func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*Resol
 	// named once, as what it is actually written as.
 	for _, idx := range f.SelectedColumns() {
 		c := rs.Columns[firstOf[idx]]
+		name, _ := opts.Renamer.Apply(f.Columns[idx].Name)
+		if _, pinned := override.pick(f.Columns[idx].Name, name); !pinned {
+			rs.Unpinned = append(rs.Unpinned, c.Name)
+		}
 		if c.Name == f.Columns[idx].Name {
 			continue
 		}
@@ -523,13 +586,13 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 
 	// An explicit override wins over inference, but is still validated against
 	// the symbols actually present.
-	if co, ok := override.lookup(col.Name); ok {
+	if co, ok := override.pick(col.Name, name); ok {
 		rc, scan, err := applyOverride(base, co, col, syms, tsType, opts.Location, opts.EmptyStringAsNull)
 		if err != nil {
 			return nil, "", err
 		}
 		return []ResolvedColumn{rc}, withNonFiniteNote(
-			fmt.Sprintf("%s: pinned to %s by --schema", col.Name, rc.ArrowType), scan), nil
+			fmt.Sprintf("%s: pinned to %s by %s", col.Name, rc.ArrowType, co.source()), scan), nil
 	}
 
 	if prof.HasOnlyNulls() {

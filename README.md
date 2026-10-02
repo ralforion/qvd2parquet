@@ -1446,6 +1446,84 @@ zone is named. It reports the same conversion caveats too, so a pin that
 relocates a wall clock across a DST discontinuity says so rather than doing it
 quietly.
 
+### A schema per folder
+
+One `--schema` covers a whole run, which does not fit a run over a tree of
+table folders: `BSEG` and `BKPF` need their own pins. So a folder can carry
+its own, in a file named `qvd2parquet-schema.json` next to the QVDs, in the
+same format as `--schema`. Every QVD in that folder is converted with it.
+
+```text
+qvd-delta\BSEG\qvd2parquet-schema.json
+qvd-delta\BSEG\BSEG_20260930.qvd
+qvd-delta\BSEG\BSEG_20261001.qvd
+qvd-delta\BKPF\BKPF_20261001.qvd      (no file: types are inferred)
+```
+
+This is what keeps daily deltas readable as one dataset. Each delta infers its
+types from its own values, so a day with small amounts writes `decimal(5,2)`
+and a day with large ones `decimal(9,2)`, a day of whole numbers writes
+`int64`, and a query engine that promotes the folder sees files that disagree.
+Pinning the columns gives every delta the same schema, and generating the file
+from the main table's Parquet gives the deltas the main table's:
+
+```sql
+-- DuckDB: write BSEG's main-table types as a folder schema
+copy (
+  select json_object('columns', json_group_object(column_name, spec))
+  from (
+    select column_name,
+      case
+        when column_type like 'DECIMAL%' then json_object('type', 'decimal',
+          'precision', greatest(18, regexp_extract(column_type, '\((\d+),', 1)::int),
+          'scale', regexp_extract(column_type, ',(\d+)\)', 1)::int)
+        when column_type = 'BIGINT'        then json_object('type', 'int64')
+        when column_type = 'DOUBLE'        then json_object('type', 'float64')
+        when column_type = 'DATE'          then json_object('type', 'date32')
+        when column_type like 'TIMESTAMP%' then json_object('type', 'timestamp')
+        when column_type like 'TIME%'      then json_object('type', 'time')
+        else json_object('type', 'string')
+      end as spec
+    from (describe select * from read_parquet('parquet-main/BSEG/*.parquet'))
+  )
+) to 'qvd-delta/BSEG/qvd2parquet-schema.json' (format csv, header false, quote '', delimiter '\t');
+```
+
+Decimals are widened to at least precision 18, so a delta larger than anything
+in the main table still fits, and the scale is kept so both sides match.
+
+- The file lives beside the input, not the output: the output folder is the
+  one a query engine reads as a dataset, and a JSON file there is read as data.
+- Keys match the QVD field name or, unlike `--schema`, the name
+  `--field-regex` gives it. A file generated from Parquet already written
+  carries the renamed names, so it works as it comes.
+- With `--schema` as well, both apply, and a column pinned in both takes the
+  folder's pin, whichever name each of them uses.
+- `--log`, `--catalog-out`, `--console-log`, `--schema-report` and
+  `--quality-report` refuse the path of any input's folder schema, existing or
+  not: writing there would replace the pins, and a new file there would be read
+  back as pins on the next run. The two reports refuse `--schema` too.
+- A delta that does not fit a pin, such as cents in a column pinned to
+  `int64`, fails as a schema policy error (exit code 3) instead of writing a
+  file that disagrees with the rest.
+- Each folder's file is read once per run, however many QVDs the folder holds.
+- A file that cannot be read or parsed fails every QVD of its folder with an
+  error naming it, rather than converting the folder without its pins.
+- The conversion log and `--inspect` name the file a pin came from.
+- A column the folder schema leaves unpinned is inferred per file again, so
+  the log and `--inspect` warn about it by the name it is written as. This is
+  how a field SAP adds shows up on its first day; a pin from `--schema`
+  counts.
+
+  ```text
+  qvd2parquet: WARNING: 1 column(s) not pinned by qvd-delta\BSEG\qvd2parquet-schema.json, so their types are inferred from this file and may differ from day to day: ZZNEW1
+  ```
+
+  A field SAP removes needs nothing: its pin is ignored for files without it.
+- `--skip-up-to-date` fingerprints the file's contents per folder. Adding,
+  editing or removing one reconverts that folder and no other, and a folder
+  without one keeps the fingerprint it had before this lookup existed.
+
 ### Dates and times
 
 Qlik stores dates and times as serial day numbers where `25569` is

@@ -1902,3 +1902,188 @@ func TestKeepTree(t *testing.T) {
 		t.Errorf("message = %s", combined)
 	}
 }
+
+// A folder schema is read only once the conversion starts, after every writer
+// has opened, so a writer given its path would truncate the pins before they
+// are read. A report is written after the pins are read, so the run succeeds
+// and the next one finds a report where the pins were. Each writer must refuse
+// it, in batch, single-file and inspect runs alike.
+func TestWritersRefuseTheFolderSchema(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	original, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sample-small.qvd"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	const pins = `{"columns":{"Amount":{"type":"decimal","precision":18,"scale":2}}}`
+
+	for _, tc := range []struct {
+		name string
+		args func(dir, input, schema string) []string
+	}{
+		{"batch --log", func(dir, input, schema string) []string {
+			return []string{"--out-dir", filepath.Join(dir, "out"), "--log", schema, filepath.Dir(input)}
+		}},
+		{"batch --catalog-out", func(dir, input, schema string) []string {
+			return []string{"--out-dir", filepath.Join(dir, "out"), "--catalog-out", schema, filepath.Dir(input)}
+		}},
+		{"batch --console-log", func(dir, input, schema string) []string {
+			return []string{"--out-dir", filepath.Join(dir, "out"), "--console-log", schema, filepath.Dir(input)}
+		}},
+		{"single --log", func(dir, input, schema string) []string {
+			return []string{"--log", schema, input, filepath.Join(dir, "o.parquet")}
+		}},
+		{"inspect --console-log", func(dir, input, schema string) []string {
+			return []string{"--inspect", "--console-log", schema, input}
+		}},
+		{"single --schema-report", func(dir, input, schema string) []string {
+			return []string{"--schema-report", schema, input, filepath.Join(dir, "o.parquet")}
+		}},
+		{"single --quality-report", func(dir, input, schema string) []string {
+			return []string{"--quality-report", schema, input, filepath.Join(dir, "o.parquet")}
+		}},
+		{"inspect --schema-report", func(dir, input, schema string) []string {
+			return []string{"--inspect", "--schema-report", schema, input}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			inDir := filepath.Join(dir, "in")
+			if err := os.Mkdir(inDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			input := filepath.Join(inDir, "sample-small.qvd")
+			if err := os.WriteFile(input, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			schema := filepath.Join(inDir, "qvd2parquet-schema.json")
+			if err := os.WriteFile(schema, []byte(pins), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command(bin, append([]string{"--progress", "0"}, tc.args(dir, input, schema)...)...)
+			combined, err := cmd.CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != exitUsage {
+				t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+			}
+			if !strings.Contains(string(combined), "must differ from the folder schema") {
+				t.Errorf("missing diagnostic:\n%s", combined)
+			}
+			if after, _ := os.ReadFile(schema); string(after) != pins {
+				t.Errorf("folder schema changed to %q", after)
+			}
+		})
+	}
+}
+
+// A report pointed at --schema replaced the pins with the report and exited 0,
+// leaving the next run to fail parsing it.
+func TestReportsRefuseTheSchemaFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	const pins = `{"columns":{}}`
+	for _, flag := range []string{"--schema-report", "--quality-report"} {
+		t.Run(flag, func(t *testing.T) {
+			dir := t.TempDir()
+			schema := filepath.Join(dir, "schema.json")
+			if err := os.WriteFile(schema, []byte(pins), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(bin, "--progress", "0", "--schema", schema, flag, schema,
+				fixture, filepath.Join(dir, "o.parquet"))
+			combined, err := cmd.CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != exitUsage {
+				t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+			}
+			if !strings.Contains(string(combined), flag+" path must differ from --schema") {
+				t.Errorf("missing diagnostic:\n%s", combined)
+			}
+			if after, _ := os.ReadFile(schema); string(after) != pins {
+				t.Errorf("--schema changed to %q", after)
+			}
+		})
+	}
+}
+
+// A batch report is named after its input but can land in another input's
+// folder: --schema-report B/json names the report for an input called
+// qvd2parquet-schema.qvd B/qvd2parquet-schema.json, and a report path that is
+// a symlink can point at any folder schema whatever it is called. Each report
+// must be checked against every input's folder schema, not only its own.
+func TestBatchReportsRefuseOtherFoldersSchemas(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	original, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sample-small.qvd"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	const pins = `{"columns":{"Amount":{"type":"decimal","precision":18,"scale":2}}}`
+
+	// setup lays out A/qvd2parquet-schema.qvd and B/orders.qvd, with pins in B.
+	setup := func(t *testing.T) (dir, a, b, schema string) {
+		dir = t.TempDir()
+		for _, d := range []string{"A", "B"} {
+			if err := os.Mkdir(filepath.Join(dir, d), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		a = filepath.Join(dir, "A", "qvd2parquet-schema.qvd")
+		b = filepath.Join(dir, "B", "orders.qvd")
+		for _, p := range []string{a, b} {
+			if err := os.WriteFile(p, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		schema = filepath.Join(dir, "B", "qvd2parquet-schema.json")
+		if err := os.WriteFile(schema, []byte(pins), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir, a, b, schema
+	}
+	refused := func(t *testing.T, schema string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(bin, append([]string{"--progress", "0"}, args...)...)
+		combined, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != exitUsage {
+			t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+		}
+		if !strings.Contains(string(combined), "must differ from the folder schema") {
+			t.Errorf("missing diagnostic:\n%s", combined)
+		}
+		if after, _ := os.ReadFile(schema); string(after) != pins {
+			t.Errorf("B's folder schema changed to %q", after)
+		}
+	}
+
+	for _, flag := range []string{"--schema-report", "--quality-report"} {
+		t.Run(flag+" named into another folder", func(t *testing.T) {
+			dir, a, b, schema := setup(t)
+			refused(t, schema, "--out-dir", filepath.Join(dir, "out"),
+				flag, filepath.Join(dir, "B", "json"), a, b)
+		})
+		t.Run(flag+" through a symlink", func(t *testing.T) {
+			dir, a, b, schema := setup(t)
+			links := filepath.Join(dir, "links")
+			if err := os.Mkdir(links, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// The report for A's input under links/r.json, pointing at B's
+			// pins: only a check against other folders' schemas catches it.
+			if err := os.Symlink(schema, filepath.Join(links, "qvd2parquet-schema.r.json")); err != nil {
+				t.Skipf("cannot create a symlink here: %v", err)
+			}
+			refused(t, schema, "--out-dir", filepath.Join(dir, "out"),
+				flag, filepath.Join(links, "r.json"), a, b)
+		})
+	}
+}

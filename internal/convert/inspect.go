@@ -34,6 +34,9 @@ type InspectReport struct {
 	// rejects has no resolved schema, and a run that fails on one column is
 	// exactly when the rest of the command line wants checking.
 	Renames RenameSummary
+	// FolderSchema is the qvd2parquet-schema.json the input's folder supplied
+	// pins from, or empty.
+	FolderSchema string
 	// Encodings reports the columns --encoding pins, and EncodingErr the
 	// reason a pin cannot be applied. Inspect predicts the conversion, so a
 	// pin that would fail the run has to fail here too.
@@ -109,13 +112,12 @@ func Inspect(ctx context.Context, inputPath string, opts *Options) (*InspectRepo
 		}
 	}
 
-	var override *SchemaOverride
-	if opts.SchemaOverridePath != "" {
-		if override, err = LoadSchemaOverride(opts.SchemaOverridePath); err != nil {
-			f.Close()
-			return nil, err
-		}
+	override, folderSchema, err := LoadOverrides(inputPath, opts)
+	if err != nil {
+		f.Close()
+		return nil, err
 	}
+	rep.FolderSchema = folderSchema
 	rep.Schema, rep.SchemaErr = ResolveSchema(f, opts, override)
 	if rep.Schema != nil {
 		rep.Encodings, rep.EncodingErr = ResolveEncodings(opts.Encodings.Rules, rep.Schema, f)
@@ -167,6 +169,14 @@ func (r *InspectReport) Write(w io.Writer) error {
 	}
 	if line := r.Renames.Line(maxNamedFields); line != "" {
 		fmt.Fprintf(w, "Field regex     %s\n", line)
+	}
+	if r.FolderSchema != "" {
+		fmt.Fprintf(w, "Schema pins     %s\n", r.FolderSchema)
+		if r.Schema != nil {
+			if line := r.Schema.UnpinnedLine(r.FolderSchema, maxNamedFields); line != "" {
+				fmt.Fprintln(w, line)
+			}
+		}
 	}
 	if r.Schema != nil {
 		if line := duplicateRenameLine(r.Schema.Duplicates, maxNamedFields); line != "" {

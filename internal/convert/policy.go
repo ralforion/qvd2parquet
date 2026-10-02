@@ -272,7 +272,10 @@ type Options struct {
 	// Catalog collects one row per output column across the whole run. It is
 	// shared by every file of a batch and is safe for concurrent use. Nil
 	// unless --catalog-out was given.
-	Catalog             *catalog.Writer
+	Catalog *catalog.Writer
+	// FolderSchemas reads each input folder's qvd2parquet-schema.json once
+	// per run rather than once per file. Nil loads it afresh every time.
+	FolderSchemas       *FolderSchemas
 	Quality             QualityMode
 	QualityReportPath   string
 	QualityRelTolerance float64

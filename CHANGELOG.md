@@ -13,6 +13,21 @@ restarts from it.
 
 ## [Unreleased]
 
+### Added
+
+- A folder can carry its own schema override: a `qvd2parquet-schema.json`
+  next to the QVDs, in the format of `--schema`, pins the types of every file
+  in that folder. One run over a tree of table folders can then give each
+  table its own pins, so daily deltas stop inferring a different decimal
+  precision or `int64` from one day to the next. A column pinned by both takes
+  the folder's pin. Unlike `--schema`, its keys also match the names
+  `--field-regex` produces, so a file generated from the main table's Parquet
+  works as written. A column the folder schema leaves unpinned is reported
+  with a `WARNING:` line in the log and `--inspect`, so a new field is noticed
+  before it drifts. Each folder's file is read once per run, `--inspect` and
+  the log name it, and `--skip-up-to-date` reconverts only a folder whose file
+  was added, edited or removed, so an upgrade converts nothing again.
+
 ## [2.11.0] - 2026-09-29
 
 ### Added

@@ -390,8 +390,8 @@ func TestSchemaOverrideValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSchemaOverride: %v", err)
 	}
-	if co, ok := so.lookup("amount"); !ok || co.Precision != 18 || co.Scale != 4 {
-		t.Errorf("lookup = %+v, %v", co, ok)
+	if co, ok := so.pick("amount", "amount"); !ok || co.Precision != 18 || co.Scale != 4 {
+		t.Errorf("pick = %+v, %v", co, ok)
 	}
 }
 
