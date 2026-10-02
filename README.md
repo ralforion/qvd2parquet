@@ -1499,9 +1499,10 @@ in the main table still fits, and the scale is kept so both sides match.
   carries the renamed names, so it works as it comes.
 - With `--schema` as well, both apply, and a column pinned in both takes the
   folder's pin, whichever name each of them uses.
-- `--log`, `--catalog-out` and `--console-log` refuse the path of any input's
-  folder schema, existing or not: the first would truncate the pins, and a new
-  file there would be read back as pins on the next run.
+- `--log`, `--catalog-out`, `--console-log`, `--schema-report` and
+  `--quality-report` refuse the path of any input's folder schema, existing or
+  not: writing there would replace the pins, and a new file there would be read
+  back as pins on the next run. The two reports refuse `--schema` too.
 - A delta that does not fit a pin, such as cents in a column pinned to
   `int64`, fails as a schema policy error (exit code 3) instead of writing a
   file that disagrees with the rest.

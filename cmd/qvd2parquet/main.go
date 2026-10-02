@@ -404,6 +404,9 @@ func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.
 	// the catalog are written by truncating, so a writer opened ahead of a
 	// guard that then refuses the run destroys a file on the way out -- and
 	// the refusal it prints makes that damage look impossible.
+	if err := validateReportPaths([]string{inputPath}, "", nil, opts); err != nil {
+		return usageErr(err)
+	}
 	if err := validateCatalogPath(catalogPath, inputPath, outputPath, opts); err != nil {
 		return usageErr(err)
 	}
@@ -523,6 +526,36 @@ func validateWriterPath(path, flag, inputPath, outputPath string, opts *convert.
 		{"--schema-report", opts.SchemaReportPath},
 		{"--quality-report", opts.QualityReportPath},
 	})
+}
+
+// validateReportPaths keeps --schema-report and --quality-report off the
+// schema files a run reads. A report is written after the schema is loaded,
+// so the run itself succeeds and the next one finds the pins replaced by a
+// report. In a batch each input's reports are checked against its own folder
+// schema; a derived report name cannot match another folder's.
+func validateReportPaths(inputs []string, outDir string, tree convert.Tree, opts *convert.Options) error {
+	for _, in := range inputs {
+		folderSchema := convert.FolderSchemaPath(in)
+		for _, r := range []struct{ flag, path string }{
+			{"--schema-report", opts.SchemaReportPath},
+			{"--quality-report", opts.QualityReportPath},
+		} {
+			if r.path == "" {
+				continue
+			}
+			path := r.path
+			if outDir != "" {
+				path = tree.Report(r.path, in, outDir)
+			}
+			if err := checkCollisions(path, r.flag, []logCollision{
+				{"--schema", opts.SchemaOverridePath},
+				{"the folder schema " + folderSchema, folderSchema},
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // validateLogPath is the guard for --log.
@@ -744,6 +777,9 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 		return exitCodeFor(err)
 	}
+	if err := validateReportPaths(inputs, outDir, tree, opts); err != nil {
+		return usageErr(err)
+	}
 	if err := validateBatchCatalogPath(catalogPath, inputs, problems, outDir, tree, opts); err != nil {
 		return usageErr(err)
 	}
@@ -911,6 +947,9 @@ func runCatalogScan(paths []string, catalogPath, consolePath string, recursive, 
 func runInspect(ctx context.Context, inputPath string, opts *convert.Options,
 	catalogPath, consolePath string, logf convert.Logf) (code int) {
 
+	if err := validateReportPaths([]string{inputPath}, "", nil, opts); err != nil {
+		return usageErr(err)
+	}
 	if err := validateCatalogPath(catalogPath, inputPath, "", opts); err != nil {
 		return usageErr(err)
 	}

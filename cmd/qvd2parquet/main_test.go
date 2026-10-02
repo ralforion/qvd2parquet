@@ -1905,7 +1905,9 @@ func TestKeepTree(t *testing.T) {
 
 // A folder schema is read only once the conversion starts, after every writer
 // has opened, so a writer given its path would truncate the pins before they
-// are read. Each writer must refuse it, in batch and single-file runs alike.
+// are read. A report is written after the pins are read, so the run succeeds
+// and the next one finds a report where the pins were. Each writer must refuse
+// it, in batch, single-file and inspect runs alike.
 func TestWritersRefuseTheFolderSchema(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a binary")
@@ -1936,6 +1938,15 @@ func TestWritersRefuseTheFolderSchema(t *testing.T) {
 		{"inspect --console-log", func(dir, input, schema string) []string {
 			return []string{"--inspect", "--console-log", schema, input}
 		}},
+		{"single --schema-report", func(dir, input, schema string) []string {
+			return []string{"--schema-report", schema, input, filepath.Join(dir, "o.parquet")}
+		}},
+		{"single --quality-report", func(dir, input, schema string) []string {
+			return []string{"--quality-report", schema, input, filepath.Join(dir, "o.parquet")}
+		}},
+		{"inspect --schema-report", func(dir, input, schema string) []string {
+			return []string{"--inspect", "--schema-report", schema, input}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -1963,6 +1974,39 @@ func TestWritersRefuseTheFolderSchema(t *testing.T) {
 			}
 			if after, _ := os.ReadFile(schema); string(after) != pins {
 				t.Errorf("folder schema changed to %q", after)
+			}
+		})
+	}
+}
+
+// A report pointed at --schema replaced the pins with the report and exited 0,
+// leaving the next run to fail parsing it.
+func TestReportsRefuseTheSchemaFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	fixture := filepath.Join("..", "..", "testdata", "sample-small.qvd")
+	const pins = `{"columns":{}}`
+	for _, flag := range []string{"--schema-report", "--quality-report"} {
+		t.Run(flag, func(t *testing.T) {
+			dir := t.TempDir()
+			schema := filepath.Join(dir, "schema.json")
+			if err := os.WriteFile(schema, []byte(pins), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(bin, "--progress", "0", "--schema", schema, flag, schema,
+				fixture, filepath.Join(dir, "o.parquet"))
+			combined, err := cmd.CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != exitUsage {
+				t.Fatalf("exit = %v, want %d\n%s", err, exitUsage, combined)
+			}
+			if !strings.Contains(string(combined), flag+" path must differ from --schema") {
+				t.Errorf("missing diagnostic:\n%s", combined)
+			}
+			if after, _ := os.ReadFile(schema); string(after) != pins {
+				t.Errorf("--schema changed to %q", after)
 			}
 		})
 	}
