@@ -131,11 +131,12 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	logf("read %d symbols in %s; records start at offset %d",
 		symbolsRead, time.Since(symStart).Round(time.Millisecond), f.RecordStart)
 
-	var override *SchemaOverride
-	if opts.SchemaOverridePath != "" {
-		if override, err = LoadSchemaOverride(opts.SchemaOverridePath); err != nil {
-			return nil, nil, err
-		}
+	override, folderSchema, err := LoadOverrides(inputPath, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if folderSchema != "" {
+		logf("schema: pins from %s", folderSchema)
 	}
 
 	rs, err := ResolveSchema(f, opts, override)

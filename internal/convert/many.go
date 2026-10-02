@@ -453,6 +453,14 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		return nil, err
 	}
 
+	// One cache for the run, shared by the up-to-date check and every
+	// conversion, so a folder's schema is read once and both see the same one.
+	if opts.FolderSchemas == nil {
+		o := *opts
+		o.FolderSchemas = NewFolderSchemas()
+		opts = &o
+	}
+
 	// A manifest is read and written only when asked for, so a run that never
 	// passes --skip-up-to-date leaves no state in its output directory.
 	var manifest *Manifest
@@ -493,7 +501,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	// done: the log holds a line per finished file instead of nothing, and the
 	// manifest names the outputs so the next --skip-up-to-date run resumes
 	// rather than converting the whole folder again.
-	live := newLiveManifest(manifest, many.OutDir, fingerprint, safeLogf)
+	live := newLiveManifest(manifest, many.OutDir, fingerprint, opts.FolderSchemas, safeLogf)
 	logResult := func(r FileResult) { many.Log.File(r) } // a nil log writes nothing
 
 	start := time.Now()

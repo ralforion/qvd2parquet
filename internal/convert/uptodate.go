@@ -153,6 +153,7 @@ type liveManifest struct {
 	m           *Manifest // nil unless --skip-up-to-date asked for one
 	outDir      string
 	fingerprint string
+	schemas     *FolderSchemas
 	lastSave    time.Time
 	gap         time.Duration
 	warned      bool
@@ -174,8 +175,8 @@ const (
 // newLiveManifest starts with no last save and no gap, so the first file to
 // finish is written out at once. A run killed a few seconds in then still has
 // a manifest to resume from, and the throttle applies only from there on.
-func newLiveManifest(m *Manifest, outDir, fingerprint string, logf Logf) *liveManifest {
-	return &liveManifest{m: m, outDir: outDir, fingerprint: fingerprint, logf: logf}
+func newLiveManifest(m *Manifest, outDir, fingerprint string, schemas *FolderSchemas, logf Logf) *liveManifest {
+	return &liveManifest{m: m, outDir: outDir, fingerprint: fingerprint, schemas: schemas, logf: logf}
 }
 
 // Stale answers for the run's fingerprint. Without a manifest every file is
@@ -187,7 +188,11 @@ func (l *liveManifest) Stale(input, output string) (stale bool, reason string) {
 	if l.m == nil {
 		return true, ""
 	}
-	reason = l.m.Stale(input, output, l.fingerprint)
+	fp, err := folderFingerprint(l.fingerprint, l.schemas, input)
+	if err != nil {
+		return true, err.Error()
+	}
+	reason = l.m.Stale(input, output, fp)
 	return reason != "", reason
 }
 
@@ -218,7 +223,13 @@ func (l *liveManifest) Record(r FileResult) {
 	if l.m == nil {
 		return
 	}
-	l.m.Record(r.Input, r.Output, l.fingerprint, r.Stats.Rows, r.Stats.TableName)
+	fp, err := folderFingerprint(l.fingerprint, l.schemas, r.Input)
+	if err != nil {
+		// Cannot happen for a file that converted, which loaded the same
+		// cached schema. Leaving it out converts it again next time.
+		return
+	}
+	l.m.Record(r.Input, r.Output, fp, r.Stats.Rows, r.Stats.TableName)
 	if time.Since(l.lastSave) < l.gap {
 		return
 	}
@@ -447,6 +458,7 @@ var fingerprintIgnores = map[string]bool{
 	"SchemaReportPath":  true, // a side document
 	"QualityReportPath": true, // a side document
 	"Catalog":           true, // a side document, and a live writer besides
+	"FolderSchemas":     true, // a cache; the schemas it holds are fingerprinted per file
 }
 
 // FingerprintOptions identifies a conversion by everything about it that can

@@ -126,6 +126,15 @@ type ColumnOverride struct {
 	Type      string `json:"type"`
 	Precision int32  `json:"precision"`
 	Scale     int32  `json:"scale"`
+	// from names a folder schema the pin came from; empty for --schema.
+	from string
+}
+
+func (co ColumnOverride) source() string {
+	if co.from != "" {
+		return co.from
+	}
+	return "--schema"
 }
 
 // LoadSchemaOverride reads and validates a --schema document.
@@ -134,6 +143,12 @@ func LoadSchemaOverride(path string) (*SchemaOverride, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read schema override %s: %w", path, err)
 	}
+	return ParseSchemaOverride(path, b)
+}
+
+// ParseSchemaOverride validates a schema override document already read from
+// path, which names it in errors.
+func ParseSchemaOverride(path string, b []byte) (*SchemaOverride, error) {
 	var so SchemaOverride
 	dec := json.NewDecoder(strings.NewReader(string(b)))
 	dec.DisallowUnknownFields()
@@ -523,13 +538,22 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 
 	// An explicit override wins over inference, but is still validated against
 	// the symbols actually present.
-	if co, ok := override.lookup(col.Name); ok {
+	co, ok := override.lookup(col.Name)
+	if !ok && name != col.Name {
+		// A folder schema is often generated from Parquet already written,
+		// which carries the renamed names. --schema keeps matching the QVD
+		// name alone, as it always has.
+		if c, found := override.lookup(name); found && c.from != "" {
+			co, ok = c, true
+		}
+	}
+	if ok {
 		rc, scan, err := applyOverride(base, co, col, syms, tsType, opts.Location, opts.EmptyStringAsNull)
 		if err != nil {
 			return nil, "", err
 		}
 		return []ResolvedColumn{rc}, withNonFiniteNote(
-			fmt.Sprintf("%s: pinned to %s by --schema", col.Name, rc.ArrowType), scan), nil
+			fmt.Sprintf("%s: pinned to %s by %s", col.Name, rc.ArrowType, co.source()), scan), nil
 	}
 
 	if prof.HasOnlyNulls() {
