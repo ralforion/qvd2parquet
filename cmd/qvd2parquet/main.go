@@ -531,11 +531,47 @@ func validateWriterPath(path, flag, inputPath, outputPath string, opts *convert.
 // validateReportPaths keeps --schema-report and --quality-report off the
 // schema files a run reads. A report is written after the schema is loaded,
 // so the run itself succeeds and the next one finds the pins replaced by a
-// report. In a batch each input's reports are checked against its own folder
-// schema; a derived report name cannot match another folder's.
+// report.
+//
+// Every report is checked against every input's folder schema, not only its
+// own: a report name derived from one input can land in another input's
+// folder, as --schema-report B/json does for an input named
+// qvd2parquet-schema.qvd, and a report path that is a symlink can point
+// anywhere. A batch can hold tens of thousands of inputs over a hundred
+// folders, so rather than comparing every pair through samePath, each path
+// is resolved once and the pairs are compared in memory, by canonical path
+// for files to be created and by file identity for files that exist.
 func validateReportPaths(inputs []string, outDir string, tree convert.Tree, opts *convert.Options) error {
+	if opts.SchemaReportPath == "" && opts.QualityReportPath == "" {
+		return nil
+	}
+	type protected struct {
+		name string
+		info os.FileInfo // nil when the file does not exist yet
+	}
+	byPath := map[string]protected{}
+	var existing []protected
+	protect := func(name, path string) {
+		key := strings.ToLower(canonicalPath(path))
+		if _, seen := byPath[key]; seen {
+			return
+		}
+		p := protected{name: name}
+		if info, err := os.Stat(path); err == nil {
+			p.info = info
+			existing = append(existing, p)
+		}
+		byPath[key] = p
+	}
+	if opts.SchemaOverridePath != "" {
+		protect("--schema", opts.SchemaOverridePath)
+	}
 	for _, in := range inputs {
-		folderSchema := convert.FolderSchemaPath(in)
+		fs := convert.FolderSchemaPath(in)
+		protect("the folder schema "+fs, fs)
+	}
+
+	for _, in := range inputs {
 		for _, r := range []struct{ flag, path string }{
 			{"--schema-report", opts.SchemaReportPath},
 			{"--quality-report", opts.QualityReportPath},
@@ -547,11 +583,17 @@ func validateReportPaths(inputs []string, outDir string, tree convert.Tree, opts
 			if outDir != "" {
 				path = tree.Report(r.path, in, outDir)
 			}
-			if err := checkCollisions(path, r.flag, []logCollision{
-				{"--schema", opts.SchemaOverridePath},
-				{"the folder schema " + folderSchema, folderSchema},
-			}); err != nil {
-				return err
+			if p, hit := byPath[strings.ToLower(canonicalPath(path))]; hit {
+				return fmt.Errorf("%s path must differ from %s", r.flag, p.name)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			for _, p := range existing {
+				if os.SameFile(info, p.info) {
+					return fmt.Errorf("%s path must differ from %s", r.flag, p.name)
+				}
 			}
 		}
 	}
