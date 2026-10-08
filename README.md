@@ -1403,10 +1403,21 @@ scaled integers end to end, so no step of the pipeline rounds through a double.
 - `--decimal-source=auto` (the default) prefers the dual display string, which
   preserves decimal intent better than the binary double, and falls back to
   scaling the numeric payload. `text` and `numeric` force one source.
-- By default a value that does not fit the declared scale is **rounded** to it,
-  half away from zero — the same value Qlik itself displays for a field with
-  `nDec` decimals. Rounding is counted and reported, both on stderr and in
-  `--schema-report`, so it is never silent:
+- By default a value that does not fit the declared scale is **rounded** to it
+  the way Qlik's number format displays it: the digits the value reads as
+  are rounded half up, toward positive infinity, whatever the double behind
+  them holds. Measured in Qlik with `Num(v, '0.00')`:
+
+  | value | the double holds | written |
+  | --- | --- | --- |
+  | `1.005` | `1.00499999999999989…` | `1.01` |
+  | `0.285` | `0.28499999999999997…` | `0.29` |
+  | `-2.345` | `-2.34500000000000019…` | `-2.34` |
+  | `-2.346` | | `-2.35` |
+
+  Rounding the double itself would write `1.00`, `0.28` and `-2.35`. A display
+  string is rounded by the same rule. Rounding is counted and reported, both
+  on stderr and in `--schema-report`, so it is never silent:
 
   ```text
   qvd2parquet: schema: Amount: MONEY, written as decimal(9,2); ...; 3 value(s) rounded to scale 2 (--decimal-strict=false)
@@ -1419,10 +1430,7 @@ scaled integers end to end, so no step of the pipeline rounds through a double.
 - A scale pinned by `--schema` or a folder's `qvd2parquet-schema.json` always
   rounds, whatever `--decimal-strict` and `--strict` say: the pin states what
   the column is. A display string that fits the scale is taken as written,
-  one with more decimals is rounded from its text, and a bare double is
-  rounded from its shortest form, the digits it reads as, so `1.005` becomes
-  `1.01` although the double holds `1.00499999999999989`. The count is
-  reported the same way:
+  and anything else is rounded as above. The count is reported the same way:
 
   ```text
   qvd2parquet: schema: VV120: pinned to decimal(18, 2) by qvd-delta\CE10500\qvd2parquet-schema.json; 2 value(s) rounded to scale 2

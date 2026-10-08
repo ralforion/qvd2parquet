@@ -91,10 +91,11 @@ func TestStrictDecimalStillFails(t *testing.T) {
 func TestScaledFromTextRounding(t *testing.T) {
 	tests := []struct{ text, want string }{
 		{"1.234", "123"}, // rounds down
-		{"1.235", "124"}, // rounds half away from zero
+		{"1.235", "124"}, // rounds half up
 		{"1.239", "124"},
-		{"-1.235", "-124"}, // away from zero on the negative side too
-		{"1.2300", "123"},  // trailing zeros are not rounding
+		{"-1.235", "-123"},  // a negative half rounds up too, as Qlik displays it
+		{"-1.2351", "-124"}, // past the half rounds away from zero
+		{"1.2300", "123"},   // trailing zeros are not rounding
 	}
 	for _, tc := range tests {
 		got, err := ScaledFromTextRounded(tc.text, 2, ".", "")

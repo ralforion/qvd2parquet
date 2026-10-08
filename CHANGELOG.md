@@ -13,6 +13,31 @@ restarts from it.
 
 ## [Unreleased]
 
+### Changed
+
+- Decimal rounding now writes what Qlik's number format displays, measured
+  in Qlik with `Num(v, '0.00')`: the digits a value reads as are rounded half
+  up, toward positive infinity. A double was rounded from its binary value,
+  so `1.005` (stored as `1.00499999999999989`) was written as `1.00` and
+  `0.285` as `0.28` where Qlik shows `1.01` and `0.29`. Every rounded value,
+  from a double or a display string, in an inferred or a pinned column, was
+  rounded half away from zero, so `-2.345` was written as `-2.35` where Qlik
+  shows `-2.34`. Only values that needed rounding change, and only those on
+  an exact half of the scale's last digit, by one step.
+
+  This is a major release because it changes what an existing file converts
+  to. The major version is part of the `--skip-up-to-date` fingerprint, so
+  the first run after upgrading reconverts every file once, and a folder
+  never mixes files rounded by both rules.
+- A value further from the scale than `0.000001` but within a double's
+  precision now counts as representation error only when the digits it reads
+  as fit the scale. Where the scale asks for more digits than a double holds,
+  a half such as `-2147483648.0078125` at scale 6 passed as noise and was
+  settled away from zero; it is now rounded half up like any other. A genuine
+  extra decimal on an amount in the hundreds of billions, which 2.12.1
+  accepted silently, is now counted as rounded, or fails under
+  `--decimal-strict`.
+
 ## [2.13.0] - 2026-10-08
 
 ### Changed
