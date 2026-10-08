@@ -19,10 +19,12 @@ restarts from it.
   scale. A double's representation error grows with its magnitude, so from
   about 100 million upward at scale 2 a value such as `169713776.95`, stored
   as `169713776.94999999`, missed the fixed tolerance and failed the file
-  with "not a multiple of 0.01". A value is now also accepted when its
-  shortest form, the one the scale is inferred from, fits the scale, and it
-  is written as that value. A value that has more decimals than the scale
-  still fails, and every value accepted before converts exactly as before.
+  with "not a multiple of 0.01". The tolerance now grows with the value, to
+  two units in the last place of the double, scaled. Every value accepted
+  before converts exactly as before. A value with more decimals than the
+  scale still fails unless it is so large that the double itself barely
+  holds the scale, from about 270 billion at scale 2, where it is rounded
+  to the scale.
 
 ## [2.12.0] - 2026-10-02
 

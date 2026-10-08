@@ -94,9 +94,9 @@ func TestScaledFromFloat(t *testing.T) {
 }
 
 // Representation error grows with magnitude, so large amounts that are exact
-// cents miss decimalTolerance once scaled. These are VV120 values from a
-// CE10500 QVD that strict mode rejected. Their shortest forms fit the scale,
-// so they are exact; a genuine third decimal at the same size still fails.
+// cents miss decimalTolerance once scaled. The first six are VV120 values from
+// a CE10500 QVD that strict mode rejected; scaleTolerance grows with them, and
+// a genuine extra decimal at any of these sizes still fails.
 func TestScaledFromFloatLargeAmounts(t *testing.T) {
 	for _, tc := range []struct {
 		v    float64
@@ -108,6 +108,8 @@ func TestScaledFromFloatLargeAmounts(t *testing.T) {
 		{-143299267.11, "-14329926711"},
 		{143299267.11, "14329926711"},
 		{631566769.69, "63156676969"},
+		{100000000000.01, "10000000000001"},
+		{-987654321098.76, "-98765432109876"},
 	} {
 		got, err := ScaledFromFloat(tc.v, 2)
 		if err != nil {
@@ -123,7 +125,7 @@ func TestScaledFromFloatLargeAmounts(t *testing.T) {
 		}
 	}
 
-	for _, v := range []float64{169713776.953, -643467705.191} {
+	for _, v := range []float64{169713776.953, -643467705.191, 100000000000.011, 1.234999} {
 		if got, err := ScaledFromFloat(v, 2); !errors.Is(err, ErrDecimalInexact) {
 			t.Errorf("ScaledFromFloat(%v, 2) = %v, %v, want ErrDecimalInexact", v, got, err)
 		}
