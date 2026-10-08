@@ -190,17 +190,41 @@ func scaledFromFloat(v float64, scale int32) (*big.Int, error) {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return nil, fmt.Errorf("%w: %s is not finite", ErrDecimalInexact, exactText(v))
 	}
-	scaled := v * math.Pow(10, float64(scale))
+	if scale < 0 || int(scale) >= len(float64Pow10) {
+		return scaledFromFloatBig(v, scale)
+	}
+	p := float64Pow10[scale]
+	// The conversion stops the compiler fusing the multiply into a later
+	// operation, which arm64 does and amd64 does not; without it the two
+	// disagreed on whether a product was exact.
+	scaled := float64(v * p)
 	if math.Abs(scaled) >= 1e18 {
 		// Beyond float64's exact integer range; go through the decimal text
 		// form, which is exact for any finite double.
 		return scaledFromFloatBig(v, scale)
 	}
 	rounded := math.Round(scaled)
-	if math.Abs(scaled-rounded) <= decimalTolerance {
+	// The product itself can round: -4503600.0029296875 times 1e9 is
+	// -4503600002929687.5, which a float64 holds only as ...688, so scaled
+	// looks exact while the value sits on a half. FMA gives the product's
+	// rounding error exactly, so the distance below is the true one, and a
+	// product that rounded by more than the tolerance goes the exact way.
+	e := math.FMA(v, p, -scaled)
+	d := math.Abs(scaled - rounded)
+	if d+math.Abs(e) <= decimalTolerance {
 		return big.NewInt(int64(rounded)), nil
 	}
-	return scaledPastTolerance(v, scale, math.Abs(scaled-rounded))
+	if e != 0 {
+		return scaledFromFloatBig(v, scale)
+	}
+	return scaledPastTolerance(v, scale, d)
+}
+
+// float64Pow10 holds the powers of ten a float64 represents exactly, so a
+// product with one is rounded once and math.FMA can measure that rounding.
+var float64Pow10 = [...]float64{
+	1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
+	1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
 }
 
 // scaledPastTolerance settles a scaled double further than decimalTolerance

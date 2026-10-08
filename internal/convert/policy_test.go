@@ -550,6 +550,10 @@ func TestHalfBeyondDoublePrecisionRoundsUp(t *testing.T) {
 		want  string
 	}{
 		{-2147483648.0078125, 6, "-2147483648007812"},
+		// v*10^9 is a half that a float64 product rounds away to ...688;
+		// arm64 fuses the multiply and hid it, amd64 did not.
+		{-4503600.0029296875, 9, "-4503600002929687"},
+		{4503600.0029296875, 9, "4503600002929688"},
 		{2147483648.0078125, 6, "2147483648007813"},
 		{-2147483648.0078125, 12, "-2147483648007812500000"}, // exact, big path
 		// The double holds ...776.0078125, but reads as ...776.0078, which
