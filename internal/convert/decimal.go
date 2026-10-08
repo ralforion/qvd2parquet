@@ -30,10 +30,26 @@ type DecimalSpec struct {
 
 func (s DecimalSpec) String() string { return fmt.Sprintf("decimal(%d,%d)", s.Precision, s.Scale) }
 
-// decimalTolerance bounds the binary floating-point representation noise that
-// may be rounded away when scaling a double. It is small enough that a value
-// carrying more decimal places than the declared scale is still rejected.
+// decimalTolerance is the least binary floating-point representation noise
+// that may be rounded away when scaling a double. It is small enough that a
+// value carrying more decimal places than the declared scale is still
+// rejected. Larger values may carry more noise; see scaleTolerance.
 const decimalTolerance = 1e-6
+
+// scaleTolerance is the noise that may be rounded away when v is scaled by
+// 10^scale. A double's representation error grows with its magnitude:
+// 169713776.95 is stored as 169713776.94999999, which scales to
+// 16971377694.9999981, past decimalTolerance though it is exact cents. The
+// error of a scaled double is at most half a unit in the last place of v,
+// scaled, plus half of one of the product, about 1.5 units of v's own; two
+// units of v's own covers it at any magnitude. A genuine extra decimal is
+// far larger than that until the scale asks for more digits than a double
+// holds, where every value is as near the scale as the double can say.
+func scaleTolerance(v float64, scale int32) float64 {
+	a := math.Abs(v)
+	ulp := math.Nextafter(a, math.Inf(1)) - a
+	return math.Max(decimalTolerance, 2*ulp*math.Pow(10, float64(scale)))
+}
 
 // pow10 returns 10^n as a big.Int, for n >= 0.
 func pow10(n int32) *big.Int {
@@ -167,7 +183,7 @@ func scaledFromFloat(v float64, scale int32, round bool) (*big.Int, error) {
 		return scaledFromFloatBig(v, scale, round)
 	}
 	rounded := math.Round(scaled)
-	if !round && math.Abs(scaled-rounded) > decimalTolerance {
+	if !round && math.Abs(scaled-rounded) > scaleTolerance(v, scale) {
 		return nil, fmt.Errorf("%w: stored as %s, not a multiple of %s",
 			ErrDecimalInexact, storedText(v, scale), scaleStep(scale))
 	}
@@ -183,26 +199,22 @@ func scaledFromFloatBig(v float64, scale int32, round bool) (*big.Int, error) {
 	if acc == big.Exact {
 		return i, nil
 	}
-	// Allow rounding away representation noise only.
+	// Allow rounding away representation noise only, to the nearest
+	// integer: the tolerance can pass half a unit when the scale asks for
+	// more digits than the double holds.
 	frac := new(big.Float).SetPrec(200).Sub(bf, new(big.Float).SetPrec(200).SetInt(i))
 	f, _ := frac.Float64()
-	if math.Abs(f) <= decimalTolerance {
-		return i, nil
+	nearest := i
+	switch {
+	case f >= 0.5:
+		nearest = new(big.Int).Add(i, big.NewInt(1))
+		f -= 1
+	case f <= -0.5:
+		nearest = new(big.Int).Sub(i, big.NewInt(1))
+		f += 1
 	}
-	if math.Abs(f) >= 1-decimalTolerance {
-		if f > 0 {
-			return i.Add(i, big.NewInt(1)), nil
-		}
-		return i.Sub(i, big.NewInt(1)), nil
-	}
-	if round {
-		if f >= 0.5 {
-			return i.Add(i, big.NewInt(1)), nil
-		}
-		if f <= -0.5 {
-			return i.Sub(i, big.NewInt(1)), nil
-		}
-		return i, nil
+	if round || math.Abs(f) <= scaleTolerance(v, scale) {
+		return nearest, nil
 	}
 	return nil, fmt.Errorf("%w: stored as %s, not a multiple of %s",
 		ErrDecimalInexact, storedText(v, scale), scaleStep(scale))
