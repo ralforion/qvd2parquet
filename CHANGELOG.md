@@ -13,6 +13,8 @@ restarts from it.
 
 ## [Unreleased]
 
+## [2.13.0] - 2026-10-08
+
 ### Changed
 
 - A decimal scale pinned by `--schema` or a folder's
@@ -1330,7 +1332,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.12.1...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.13.0...HEAD
+[2.13.0]: https://github.com/ralforion/qvd2parquet/compare/v2.12.1...v2.13.0
 [2.12.1]: https://github.com/ralforion/qvd2parquet/compare/v2.12.0...v2.12.1
 [2.12.0]: https://github.com/ralforion/qvd2parquet/compare/v2.11.0...v2.12.0
 [2.11.0]: https://github.com/ralforion/qvd2parquet/compare/v2.10.2...v2.11.0
