@@ -508,6 +508,30 @@ func TestSchemaOverrideRoundsDecimalToPinnedScale(t *testing.T) {
 	}
 }
 
+// Every half rounds away from zero, whichever side of the half its double
+// happens to sit on: 1.005 and 1.015 are stored just below, 1.025 and 1.035
+// just above, and a binary rounding would split them.
+func TestPinnedScaleRoundsHalvesAwayFromZero(t *testing.T) {
+	ex := &DecimalExtractor{Scale: 2, Source: DecimalAuto, RoundShortest: true}
+	for _, tc := range []struct {
+		v    float64
+		want string
+	}{
+		{1.005, "101"}, {1.015, "102"}, {1.025, "103"}, {1.035, "104"},
+		{0.285, "29"}, {2.675, "268"}, {-2.345, "-235"}, {-1.005, "-101"},
+		{8115022364.865, "811502236487"},
+	} {
+		got, err := ex.Scaled(qvdtest.Float(tc.v))
+		if err != nil {
+			t.Errorf("%v: %v", tc.v, err)
+			continue
+		}
+		if got.String() != tc.want {
+			t.Errorf("%v rounded to %s, want %s", tc.v, got, tc.want)
+		}
+	}
+}
+
 func TestParseFlags(t *testing.T) {
 	if _, err := ParseMixedStrategy("nope"); err == nil {
 		t.Error("expected an error for an invalid --mixed")
