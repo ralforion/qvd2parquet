@@ -157,6 +157,39 @@ func ScaledFromFloatRounded(v float64, scale int32) (*big.Int, error) {
 }
 
 func scaledFromFloat(v float64, scale int32, round bool) (*big.Int, error) {
+	got, err := scaledFromFloatNear(v, scale, false)
+	if err == nil {
+		return got, nil
+	}
+	// decimalTolerance is absolute, but a double's representation error
+	// grows with its magnitude: 169713776.95 scales to 16971377694.9999981,
+	// past the tolerance though it is exact cents. Its shortest form, the one
+	// decimalsNeeded infers the scale from, says what the value was meant to
+	// be, so a value whose shortest form fits the scale is that value.
+	if exact, ok := scaledFromShortest(v, scale); ok {
+		return exact, nil
+	}
+	if round {
+		return scaledFromFloatNear(v, scale, true)
+	}
+	return nil, err
+}
+
+// scaledFromShortest scales the shortest decimal form of v, the one that
+// round-trips to the same double, when it has no more decimals than the
+// scale.
+func scaledFromShortest(v float64, scale int32) (*big.Int, bool) {
+	n, ok := decimalsNeeded(v)
+	if !ok || n > scale {
+		return nil, false
+	}
+	got, err := ScaledFromText(strconv.FormatFloat(v, 'f', -1, 64), scale, ".", "")
+	return got, err == nil
+}
+
+// scaledFromFloatNear scales v and rounds away representation noise up to
+// decimalTolerance, or any excess when round is set.
+func scaledFromFloatNear(v float64, scale int32, round bool) (*big.Int, error) {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return nil, fmt.Errorf("%w: %s is not finite", ErrDecimalInexact, exactText(v))
 	}

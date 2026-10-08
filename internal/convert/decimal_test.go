@@ -93,6 +93,52 @@ func TestScaledFromFloat(t *testing.T) {
 	}
 }
 
+// Representation error grows with magnitude, so large amounts that are exact
+// cents miss decimalTolerance once scaled. These are VV120 values from a
+// CE10500 QVD that strict mode rejected. Their shortest forms fit the scale,
+// so they are exact; a genuine third decimal at the same size still fails.
+func TestScaledFromFloatLargeAmounts(t *testing.T) {
+	for _, tc := range []struct {
+		v    float64
+		want string
+	}{
+		{169713776.95, "16971377695"},
+		{-643467705.19, "-64346770519"},
+		{643467705.19, "64346770519"},
+		{-143299267.11, "-14329926711"},
+		{143299267.11, "14329926711"},
+		{631566769.69, "63156676969"},
+	} {
+		got, err := ScaledFromFloat(tc.v, 2)
+		if err != nil {
+			t.Errorf("ScaledFromFloat(%v, 2): %v", tc.v, err)
+			continue
+		}
+		if got.String() != tc.want {
+			t.Errorf("ScaledFromFloat(%v, 2) = %s, want %s", tc.v, got, tc.want)
+		}
+		rounded, err := ScaledFromFloatRounded(tc.v, 2)
+		if err != nil || rounded.String() != tc.want {
+			t.Errorf("ScaledFromFloatRounded(%v, 2) = %v, %v, want %s", tc.v, rounded, err, tc.want)
+		}
+	}
+
+	for _, v := range []float64{169713776.953, -643467705.191} {
+		if got, err := ScaledFromFloat(v, 2); !errors.Is(err, ErrDecimalInexact) {
+			t.Errorf("ScaledFromFloat(%v, 2) = %v, %v, want ErrDecimalInexact", v, got, err)
+		}
+	}
+
+	// Not counted as rounded: nothing was lost.
+	ex := &DecimalExtractor{Scale: 2, Source: DecimalNumeric}
+	if _, err := ex.Scaled(qvdtest.Float(169713776.95)); err != nil {
+		t.Fatal(err)
+	}
+	if ex.Rounded != 0 {
+		t.Errorf("Rounded = %d, want 0 for an exact value", ex.Rounded)
+	}
+}
+
 func TestDecimalExtractorPrefersText(t *testing.T) {
 	// The binary side lost the intent; the display string kept it.
 	ex := &DecimalExtractor{Scale: 2, Source: DecimalAuto, Strict: true, DecSep: ","}

@@ -13,6 +13,17 @@ restarts from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- `--decimal-strict` rejected large amounts that are exact at the declared
+  scale. A double's representation error grows with its magnitude, so from
+  about 100 million upward at scale 2 a value such as `169713776.95`, stored
+  as `169713776.94999999`, missed the fixed tolerance and failed the file
+  with "not a multiple of 0.01". A value is now also accepted when its
+  shortest form, the one the scale is inferred from, fits the scale, and it
+  is written as that value. A value that has more decimals than the scale
+  still fails, and every value accepted before converts exactly as before.
+
 ## [2.12.0] - 2026-10-02
 
 ### Added
