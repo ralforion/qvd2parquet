@@ -539,6 +539,35 @@ func TestRoundingMatchesQlikDisplay(t *testing.T) {
 	}
 }
 
+// Where the scale asks for more digits than the double holds, the noise
+// tolerance reaches half a unit, so a half must not pass as noise and be
+// settled by math.Round away from zero. The float and the display string it
+// reads as must agree, on half up.
+func TestHalfBeyondDoublePrecisionRoundsUp(t *testing.T) {
+	for _, tc := range []struct {
+		v     float64
+		scale int32
+		want  string
+	}{
+		{-2147483648.0078125, 6, "-2147483648007812"},
+		{2147483648.0078125, 6, "2147483648007813"},
+		{-2147483648.0078125, 12, "-2147483648007812500000"}, // exact, big path
+		// The double holds ...776.0078125, but reads as ...776.0078, which
+		// fits the scale, so it is written as it reads, not as a half.
+		{-1099511627776.0078125, 6, "-1099511627776007800"},
+		{1099511627776.0078125, 6, "1099511627776007800"},
+	} {
+		ex := &DecimalExtractor{Scale: tc.scale, Source: DecimalAuto}
+		if got, err := ex.Scaled(qvdtest.Float(tc.v)); err != nil || got.String() != tc.want {
+			t.Errorf("%v at scale %d: float rounded to %v, %v, want %s", tc.v, tc.scale, got, err, tc.want)
+		}
+		text := strconv.FormatFloat(tc.v, 'f', -1, 64)
+		if got, err := ScaledFromTextRounded(text, tc.scale, ".", ""); err != nil || got.String() != tc.want {
+			t.Errorf("%s at scale %d: text rounded to %v, %v, want %s", text, tc.scale, got, err, tc.want)
+		}
+	}
+}
+
 func TestParseFlags(t *testing.T) {
 	if _, err := ParseMixedStrategy("nope"); err == nil {
 		t.Error("expected an error for an invalid --mixed")

@@ -197,11 +197,28 @@ func scaledFromFloat(v float64, scale int32) (*big.Int, error) {
 		return scaledFromFloatBig(v, scale)
 	}
 	rounded := math.Round(scaled)
-	if math.Abs(scaled-rounded) > scaleTolerance(v, scale) {
-		return nil, fmt.Errorf("%w: stored as %s, not a multiple of %s",
-			ErrDecimalInexact, storedText(v, scale), scaleStep(scale))
+	if math.Abs(scaled-rounded) <= decimalTolerance {
+		return big.NewInt(int64(rounded)), nil
 	}
-	return big.NewInt(int64(rounded)), nil
+	return scaledPastTolerance(v, scale, math.Abs(scaled-rounded))
+}
+
+// scaledPastTolerance settles a scaled double further than decimalTolerance
+// from an integer. Up to scaleTolerance that is still representation error
+// when the value's shortest form fits the scale, and the value is that form.
+// Otherwise it is a decimal the scale does not hold. Where the scale asks
+// for more digits than the double has, scaleTolerance reaches half a unit,
+// and -2147483648.0078125 at scale 6 sits exactly on a half; only the
+// shortest form, which does not fit, tells it from noise, and rounding it is
+// left to ScaledFromFloatRounded, which rounds half up as Qlik displays it.
+func scaledPastTolerance(v float64, scale int32, dist float64) (*big.Int, error) {
+	if dist <= scaleTolerance(v, scale) {
+		if n, ok := decimalsNeeded(v); ok && n <= scale {
+			return ScaledFromText(strconv.FormatFloat(v, 'f', -1, 64), scale, ".", "")
+		}
+	}
+	return nil, fmt.Errorf("%w: stored as %s, not a multiple of %s",
+		ErrDecimalInexact, storedText(v, scale), scaleStep(scale))
 }
 
 // scaledFromFloatBig scales through big.Float, which represents any finite
@@ -227,11 +244,10 @@ func scaledFromFloatBig(v float64, scale int32) (*big.Int, error) {
 		nearest = new(big.Int).Sub(i, big.NewInt(1))
 		f += 1
 	}
-	if math.Abs(f) <= scaleTolerance(v, scale) {
+	if math.Abs(f) <= decimalTolerance {
 		return nearest, nil
 	}
-	return nil, fmt.Errorf("%w: stored as %s, not a multiple of %s",
-		ErrDecimalInexact, storedText(v, scale), scaleStep(scale))
+	return scaledPastTolerance(v, scale, math.Abs(f))
 }
 
 // DecimalExtractor converts the symbols of one column into scaled integers
