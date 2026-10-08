@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -458,7 +459,7 @@ func TestSchemaOverrideRoundsDecimalToPinnedScale(t *testing.T) {
 		Symbols: []qvd.Symbol{
 			qvdtest.Float(169713776.95),           // exact cents, binary noise
 			qvdtest.Float(1.239),                  // a third decimal
-			qvdtest.Float(-2.345),                 // half away from zero
+			qvdtest.Float(-2.345),                 // a negative half rounds up
 			qvdtest.Float(1.005),                  // stored as 1.00499..., reads 1.005
 			qvdtest.Float(0.285),                  // stored as 0.28499..., reads 0.285
 			qvdtest.DualFloat(1.0/3, "0.33"),      // text fits: taken as written
@@ -491,7 +492,7 @@ func TestSchemaOverrideRoundsDecimalToPinnedScale(t *testing.T) {
 		for _, v := range c.Scaled {
 			got = append(got, v.String())
 		}
-		want := []string{"16971377695", "124", "-235", "101", "29", "33", "1235"}
+		want := []string{"16971377695", "124", "-234", "101", "29", "33", "1235"}
 		if strings.Join(got, " ") != strings.Join(want, " ") {
 			t.Errorf("strict=%v: scaled = %v, want %v", strict, got, want)
 		}
@@ -508,26 +509,32 @@ func TestSchemaOverrideRoundsDecimalToPinnedScale(t *testing.T) {
 	}
 }
 
-// Every half rounds away from zero, whichever side of the half its double
-// happens to sit on: 1.005 and 1.015 are stored just below, 1.025 and 1.035
-// just above, and a binary rounding would split them.
-func TestPinnedScaleRoundsHalvesAwayFromZero(t *testing.T) {
-	ex := &DecimalExtractor{Scale: 2, Source: DecimalAuto, RoundShortest: true}
+// Rounding matches what Qlik's number format displays, measured in Qlik
+// with Num(v, '0.00'): the digits a value reads as are rounded half up,
+// toward positive infinity, whichever side of the half its double sits on.
+// 1.005 and 1.015 are stored just below the half and -2.345 just past it in
+// magnitude, so rounding the binary value would get all three wrong.
+func TestRoundingMatchesQlikDisplay(t *testing.T) {
 	for _, tc := range []struct {
 		v    float64
 		want string
 	}{
-		{1.005, "101"}, {1.015, "102"}, {1.025, "103"}, {1.035, "104"},
-		{0.285, "29"}, {2.675, "268"}, {-2.345, "-235"}, {-1.005, "-101"},
-		{8115022364.865, "811502236487"},
+		// The Qlik table.
+		{1.005, "101"}, {1.015, "102"}, {1.025, "103"}, {0.285, "29"},
+		{2.675, "268"}, {-2.345, "-234"}, {8115022364.865, "811502236487"},
+		// Past the half rounds away from zero on both sides.
+		{-2.346, "-235"}, {1.0051, "101"},
+		// An exact binary half follows the same rule.
+		{0.125, "13"}, {-0.125, "-12"},
 	} {
-		got, err := ex.Scaled(qvdtest.Float(tc.v))
-		if err != nil {
-			t.Errorf("%v: %v", tc.v, err)
-			continue
+		ex := &DecimalExtractor{Scale: 2, Source: DecimalAuto}
+		if got, err := ex.Scaled(qvdtest.Float(tc.v)); err != nil || got.String() != tc.want {
+			t.Errorf("%v rounded to %v, %v, want %s", tc.v, got, err, tc.want)
 		}
-		if got.String() != tc.want {
-			t.Errorf("%v rounded to %s, want %s", tc.v, got, tc.want)
+		// A display string rounds the same way as the float it reads as.
+		got, err := ScaledFromTextRounded(strconv.FormatFloat(tc.v, 'f', -1, 64), 2, ".", "")
+		if err != nil || got.String() != tc.want {
+			t.Errorf("text %v rounded to %v, %v, want %s", tc.v, got, err, tc.want)
 		}
 	}
 }

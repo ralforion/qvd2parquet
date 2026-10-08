@@ -73,9 +73,10 @@ func ScaledFromText(text string, scale int32, decSep, thouSep string) (*big.Int,
 	return scaledFromText(text, scale, decSep, thouSep, false)
 }
 
-// ScaledFromTextRounded is ScaledFromText but rounds excess decimals
-// half-away-from-zero instead of failing. It is used when --decimal-strict is
-// disabled.
+// ScaledFromTextRounded is ScaledFromText but rounds excess decimals half up,
+// toward positive infinity, instead of failing: 1.005 becomes 1.01 and
+// -2.345 becomes -2.34, as Qlik displays them. It is used when
+// --decimal-strict is disabled.
 func ScaledFromTextRounded(text string, scale int32, decSep, thouSep string) (*big.Int, error) {
 	return scaledFromText(text, scale, decSep, thouSep, true)
 }
@@ -129,8 +130,11 @@ func scaledFromText(text string, scale int32, decSep, thouSep string, round bool
 				return nil, fmt.Errorf("%w: %q has %d decimals, scale is %d",
 					ErrDecimalInexact, text, len(fracPart), scale)
 			}
-			// Round half away from zero on the first dropped digit.
-			roundUp = extra[0] >= '5'
+			// Round half up, toward positive infinity, as Qlik's number
+			// format does: a positive half grows, a negative half shrinks
+			// toward zero, and anything past the half grows either way.
+			exactHalf := extra[0] == '5' && strings.Trim(extra[1:], "0") == ""
+			roundUp = extra[0] > '5' || (extra[0] == '5' && !(neg && exactHalf))
 		}
 		fracPart = fracPart[:scale]
 	}
@@ -162,17 +166,27 @@ func allDigits(s string) bool {
 // ScaledFromFloat converts a binary double to an integer scaled by 10^scale,
 // failing when the value carries more precision than the scale allows.
 func ScaledFromFloat(v float64, scale int32) (*big.Int, error) {
-	return scaledFromFloat(v, scale, false)
+	return scaledFromFloat(v, scale)
 }
 
 // ScaledFromFloatRounded is ScaledFromFloat but rounds a value carrying more
 // precision than the scale allows instead of failing. It is used when
 // --decimal-strict is disabled.
+//
+// The value is rounded from its shortest decimal form, the digits it reads
+// as, by ScaledFromTextRounded's rule, not from its binary value: 1.005 is
+// stored as 1.00499999999999989, which the binary rounds to 1.00, while Qlik
+// displays 1.01, and -2.345 is stored as -2.34500000000000020, which the
+// binary rounds to -2.35, while Qlik displays -2.34.
 func ScaledFromFloatRounded(v float64, scale int32) (*big.Int, error) {
-	return scaledFromFloat(v, scale, true)
+	exact, err := ScaledFromFloat(v, scale)
+	if err == nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return exact, err
+	}
+	return ScaledFromTextRounded(strconv.FormatFloat(v, 'f', -1, 64), scale, ".", "")
 }
 
-func scaledFromFloat(v float64, scale int32, round bool) (*big.Int, error) {
+func scaledFromFloat(v float64, scale int32) (*big.Int, error) {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return nil, fmt.Errorf("%w: %s is not finite", ErrDecimalInexact, exactText(v))
 	}
@@ -180,10 +194,10 @@ func scaledFromFloat(v float64, scale int32, round bool) (*big.Int, error) {
 	if math.Abs(scaled) >= 1e18 {
 		// Beyond float64's exact integer range; go through the decimal text
 		// form, which is exact for any finite double.
-		return scaledFromFloatBig(v, scale, round)
+		return scaledFromFloatBig(v, scale)
 	}
 	rounded := math.Round(scaled)
-	if !round && math.Abs(scaled-rounded) > scaleTolerance(v, scale) {
+	if math.Abs(scaled-rounded) > scaleTolerance(v, scale) {
 		return nil, fmt.Errorf("%w: stored as %s, not a multiple of %s",
 			ErrDecimalInexact, storedText(v, scale), scaleStep(scale))
 	}
@@ -192,7 +206,7 @@ func scaledFromFloat(v float64, scale int32, round bool) (*big.Int, error) {
 
 // scaledFromFloatBig scales through big.Float, which represents any finite
 // double exactly.
-func scaledFromFloatBig(v float64, scale int32, round bool) (*big.Int, error) {
+func scaledFromFloatBig(v float64, scale int32) (*big.Int, error) {
 	bf := new(big.Float).SetPrec(200).SetFloat64(v)
 	bf.Mul(bf, new(big.Float).SetPrec(200).SetInt(pow10(scale)))
 	i, acc := bf.Int(nil)
@@ -213,7 +227,7 @@ func scaledFromFloatBig(v float64, scale int32, round bool) (*big.Int, error) {
 		nearest = new(big.Int).Sub(i, big.NewInt(1))
 		f += 1
 	}
-	if round || math.Abs(f) <= scaleTolerance(v, scale) {
+	if math.Abs(f) <= scaleTolerance(v, scale) {
 		return nearest, nil
 	}
 	return nil, fmt.Errorf("%w: stored as %s, not a multiple of %s",
@@ -241,12 +255,6 @@ type DecimalExtractor struct {
 	// EmptyAsNull treats a symbol that is nothing but an empty string as
 	// absent, matching how the rest of the pipeline reads it.
 	EmptyAsNull bool
-	// RoundShortest rounds a double from its shortest decimal form, the
-	// digits a reader sees, rather than from its binary value: 1.005 is
-	// stored as 1.00499999999999989, which the binary rounds to 1.00 and the
-	// shortest form to 1.01. Inferred columns keep the binary rounding they
-	// have always written; a pinned scale rounds as the value reads.
-	RoundShortest bool
 }
 
 // Scaled converts one symbol. It returns (nil, nil) for a null symbol.
@@ -297,9 +305,6 @@ func (e *DecimalExtractor) Scaled(s qvd.Symbol) (*big.Int, error) {
 			return exact, nil
 		}
 		e.Rounded++
-		if e.RoundShortest {
-			return ScaledFromTextRounded(strconv.FormatFloat(n, 'f', -1, 64), e.Scale, ".", "")
-		}
 		return ScaledFromFloatRounded(n, e.Scale)
 	}
 

@@ -13,6 +13,20 @@ restarts from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- Decimal rounding now writes what Qlik's number format displays, measured
+  in Qlik with `Num(v, '0.00')`: the digits a value reads as are rounded half
+  up, toward positive infinity. A double was rounded from its binary value,
+  so `1.005` (stored as `1.00499999999999989`) was written as `1.00` and
+  `0.285` as `0.28` where Qlik shows `1.01` and `0.29`. Every rounded value,
+  from a double or a display string, in an inferred or a pinned column, was
+  rounded half away from zero, so `-2.345` was written as `-2.35` where Qlik
+  shows `-2.34`. Only values that needed rounding change, and only those on
+  an exact half of the scale's last digit, by one step. Files are not
+  reconverted on upgrade; a file converted again for another reason gets the
+  corrected values.
+
 ## [2.13.0] - 2026-10-08
 
 ### Changed

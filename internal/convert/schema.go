@@ -1037,17 +1037,16 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 		base.ArrowType, base.Strategy = arrowTime32, StrategyTimeMillis
 	case "decimal":
 		// A pinned scale is what the column is, so every value is rounded to
-		// it half away from zero, as Qlik displays it, and counted. Failing
-		// instead stopped a whole folder of deltas over one amount whose
-		// double sat a hair off the cent.
+		// it half up, as Qlik displays it, and counted. Failing instead
+		// stopped a whole folder of deltas over one amount whose double sat
+		// a hair off the cent.
 		ex := &DecimalExtractor{
-			Scale:         co.Scale,
-			Source:        DecimalAuto,
-			Strict:        false,
-			RoundShortest: true,
-			DecSep:        col.DecSep,
-			ThouSep:       col.ThouSep,
-			EmptyAsNull:   emptyAsNull,
+			Scale:       co.Scale,
+			Source:      DecimalAuto,
+			Strict:      false,
+			DecSep:      col.DecSep,
+			ThouSep:     col.ThouSep,
+			EmptyAsNull: emptyAsNull,
 		}
 		spec, scaled, err := ResolveDecimalSpec(col.Name, syms, ex)
 		if err != nil {
