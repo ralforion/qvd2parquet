@@ -9,9 +9,12 @@ not be removed or change its meaning, and a default will not change what an
 existing file converts to, outside a major bump. New behaviour arrives behind a
 new flag or a new value for an existing one. 2.0.0 is that major bump: it is
 the release where the defaults were re-chosen for wide files, and the promise
-restarts from it.
+restarts from it. 3.0.0 restarts it again: no flag changed, but decimals are
+rounded the way Qlik displays them, which changes values already written.
 
 ## [Unreleased]
+
+## [3.0.0] - 2026-10-08
 
 ### Changed
 
@@ -1357,7 +1360,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v2.13.0...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/ralforion/qvd2parquet/compare/v2.13.0...v3.0.0
 [2.13.0]: https://github.com/ralforion/qvd2parquet/compare/v2.12.1...v2.13.0
 [2.12.1]: https://github.com/ralforion/qvd2parquet/compare/v2.12.0...v2.12.1
 [2.12.0]: https://github.com/ralforion/qvd2parquet/compare/v2.11.0...v2.12.0
