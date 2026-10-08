@@ -159,14 +159,20 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	// Batch size depends on the resolved column count, so it can only be
 	// settled here. Work from a copy: the caller's Options are shared across
 	// files in a batch run, where each file resolves its own width.
-	var rounded, nonFinite int64
+	var rounded, roundedInferred, nonFinite int64
 	for _, c := range rs.Columns {
 		rounded += c.DecimalRounded
+		if !c.DecimalPinned {
+			roundedInferred += c.DecimalRounded
+		}
 		nonFinite += c.NonFiniteNulls
 	}
-	if rounded > 0 {
+	switch {
+	case roundedInferred > 0:
 		logf("note: %d decimal value(s) were rounded to their column's scale; "+
 			"pass --decimal-strict to fail instead", rounded)
+	case rounded > 0:
+		logf("note: %d decimal value(s) were rounded to their pinned scale", rounded)
 	}
 	if nonFinite > 0 {
 		logf("note: %d value(s) are NaN or infinite and were written as null", nonFinite)

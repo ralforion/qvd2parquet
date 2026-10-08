@@ -81,8 +81,13 @@ type ResolvedColumn struct {
 	DecimalFromText    bool
 	DecimalFromNumeric bool
 	// DecimalRounded counts values that did not fit the declared scale and
-	// were rounded to it. Non-zero only when --decimal-strict is false.
+	// were rounded to it. Non-zero only when --decimal-strict is false, or
+	// for a pinned scale, which always rounds.
 	DecimalRounded int64
+	// DecimalPinned is set when a schema override pinned the scale.
+	// --decimal-strict does not apply to it, so a note about rounding does
+	// not suggest that flag for this column.
+	DecimalPinned bool
 	// NonFiniteNulls counts symbols written as null because they are NaN or
 	// infinite and so cannot be represented in this column's type.
 	NonFiniteNulls int64
@@ -591,8 +596,11 @@ func resolveColumn(col qvd.Column, prof *qvd.ColumnProfile, syms []qvd.Symbol,
 		if err != nil {
 			return nil, "", err
 		}
-		return []ResolvedColumn{rc}, withNonFiniteNote(
-			fmt.Sprintf("%s: pinned to %s by %s", col.Name, rc.ArrowType, co.source()), scan), nil
+		note := fmt.Sprintf("%s: pinned to %s by %s", col.Name, rc.ArrowType, co.source())
+		if rc.DecimalRounded > 0 {
+			note += fmt.Sprintf("; %d value(s) rounded to scale %d", rc.DecimalRounded, rc.Decimal.Scale)
+		}
+		return []ResolvedColumn{rc}, withNonFiniteNote(note, scan), nil
 	}
 
 	if prof.HasOnlyNulls() {
@@ -1028,13 +1036,18 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 		base.NonFiniteNulls, outScan = scan.NonFinite, scan
 		base.ArrowType, base.Strategy = arrowTime32, StrategyTimeMillis
 	case "decimal":
+		// A pinned scale is what the column is, so every value is rounded to
+		// it half away from zero, as Qlik displays it, and counted. Failing
+		// instead stopped a whole folder of deltas over one amount whose
+		// double sat a hair off the cent.
 		ex := &DecimalExtractor{
-			Scale:       co.Scale,
-			Source:      DecimalAuto,
-			Strict:      true,
-			DecSep:      col.DecSep,
-			ThouSep:     col.ThouSep,
-			EmptyAsNull: emptyAsNull,
+			Scale:         co.Scale,
+			Source:        DecimalAuto,
+			Strict:        false,
+			RoundShortest: true,
+			DecSep:        col.DecSep,
+			ThouSep:       col.ThouSep,
+			EmptyAsNull:   emptyAsNull,
 		}
 		spec, scaled, err := ResolveDecimalSpec(col.Name, syms, ex)
 		if err != nil {
@@ -1048,6 +1061,7 @@ func applyOverride(base ResolvedColumn, co ColumnOverride, col qvd.Column,
 		base.ArrowType = &arrow.Decimal128Type{Precision: spec.Precision, Scale: spec.Scale}
 		base.Strategy, base.Decimal, base.Scaled = StrategyDecimal, spec, scaled
 		base.DecimalFromText, base.DecimalFromNumeric = ex.UsedText, ex.UsedNumeric
+		base.DecimalRounded, base.DecimalPinned = ex.Rounded, true
 	}
 	return base, outScan, nil
 }

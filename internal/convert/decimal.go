@@ -241,6 +241,12 @@ type DecimalExtractor struct {
 	// EmptyAsNull treats a symbol that is nothing but an empty string as
 	// absent, matching how the rest of the pipeline reads it.
 	EmptyAsNull bool
+	// RoundShortest rounds a double from its shortest decimal form, the
+	// digits a reader sees, rather than from its binary value: 1.005 is
+	// stored as 1.00499999999999989, which the binary rounds to 1.00 and the
+	// shortest form to 1.01. Inferred columns keep the binary rounding they
+	// have always written; a pinned scale rounds as the value reads.
+	RoundShortest bool
 }
 
 // Scaled converts one symbol. It returns (nil, nil) for a null symbol.
@@ -286,13 +292,15 @@ func (e *DecimalExtractor) Scaled(s qvd.Symbol) (*big.Int, error) {
 		if e.Strict {
 			return ScaledFromFloat(n, e.Scale)
 		}
-		v, err := ScaledFromFloatRounded(n, e.Scale)
+		exact, err := ScaledFromFloat(n, e.Scale)
 		if err == nil {
-			if _, strict := ScaledFromFloat(n, e.Scale); strict != nil {
-				e.Rounded++
-			}
+			return exact, nil
 		}
-		return v, err
+		e.Rounded++
+		if e.RoundShortest {
+			return ScaledFromTextRounded(strconv.FormatFloat(n, 'f', -1, 64), e.Scale, ".", "")
+		}
+		return ScaledFromFloatRounded(n, e.Scale)
 	}
 
 	switch e.Source {

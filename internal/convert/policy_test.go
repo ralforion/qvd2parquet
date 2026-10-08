@@ -448,6 +448,66 @@ func TestSchemaOverridePinsDecimalPrecision(t *testing.T) {
 	}
 }
 
+// A pinned scale rounds every value to it, as Qlik displays it, instead of
+// failing the file, and --decimal-strict does not change that. A display
+// string that fits is taken as written; one with more decimals is rounded
+// from the text, and only a bare double is rounded from its binary value.
+func TestSchemaOverrideRoundsDecimalToPinnedScale(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.qvd")
+	f := qvdtest.Field{Name: "VV120", Type: "REAL",
+		Symbols: []qvd.Symbol{
+			qvdtest.Float(169713776.95),           // exact cents, binary noise
+			qvdtest.Float(1.239),                  // a third decimal
+			qvdtest.Float(-2.345),                 // half away from zero
+			qvdtest.Float(1.005),                  // stored as 1.00499..., reads 1.005
+			qvdtest.Float(0.285),                  // stored as 0.28499..., reads 0.285
+			qvdtest.DualFloat(1.0/3, "0.33"),      // text fits: taken as written
+			qvdtest.DualFloat(12.3456, "12.3456"), // text too long: rounded from text
+		},
+		Rows: []int{0, 1, 2, 3, 4, 5, 6}}
+	if _, err := qvdtest.Build(path, qvdtest.Table{Name: "T", Fields: []qvdtest.Field{f}}); err != nil {
+		t.Fatal(err)
+	}
+	qf, err := qvd.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer qf.Close()
+	if err := qf.ReadSymbols(qvd.UnknownSymbolError); err != nil {
+		t.Fatal(err)
+	}
+	override := &SchemaOverride{Columns: map[string]ColumnOverride{
+		"VV120": {Type: "decimal", Precision: 18, Scale: 2},
+	}}
+	for _, strict := range []bool{false, true} {
+		opts := DefaultOptions()
+		opts.DecimalStrict = strict
+		rs, err := ResolveSchema(qf, &opts, override)
+		if err != nil {
+			t.Fatalf("strict=%v: ResolveSchema: %v", strict, err)
+		}
+		c := rs.Columns[0]
+		var got []string
+		for _, v := range c.Scaled {
+			got = append(got, v.String())
+		}
+		want := []string{"16971377695", "124", "-235", "101", "29", "33", "1235"}
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("strict=%v: scaled = %v, want %v", strict, got, want)
+		}
+		// The noise is not a rounding and the fitting text is exact.
+		if c.DecimalRounded != 5 {
+			t.Errorf("strict=%v: DecimalRounded = %d, want 5", strict, c.DecimalRounded)
+		}
+		if !c.DecimalPinned {
+			t.Errorf("strict=%v: DecimalPinned not set", strict)
+		}
+		if !strings.Contains(rs.Notes[0], "5 value(s) rounded to scale 2") {
+			t.Errorf("strict=%v: note does not report the rounding: %s", strict, rs.Notes[0])
+		}
+	}
+}
+
 func TestParseFlags(t *testing.T) {
 	if _, err := ParseMixedStrategy("nope"); err == nil {
 		t.Error("expected an error for an invalid --mixed")

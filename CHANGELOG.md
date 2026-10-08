@@ -13,6 +13,19 @@ restarts from it.
 
 ## [Unreleased]
 
+### Changed
+
+- A decimal scale pinned by `--schema` or a folder's
+  `qvd2parquet-schema.json` now rounds every value to the scale, half away
+  from zero, as Qlik displays it, instead of failing the file. It did so
+  regardless of `--decimal-strict`, and still ignores that flag and
+  `--strict`, so a pinned folder of deltas no longer stops over one value
+  with a third decimal. A display string that fits is taken as written, one
+  with more decimals is rounded from its text, and a bare double is rounded
+  from its shortest form, so `1.005` becomes `1.01`. Rounded values are
+  counted in the schema note, the log and `--schema-report`. Only files that
+  failed before convert differently, so nothing reconverts on upgrade.
+
 ## [2.12.1] - 2026-10-08
 
 ### Fixed
