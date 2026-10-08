@@ -1416,6 +1416,18 @@ scaled integers end to end, so no step of the pipeline rounds through a double.
 - `--decimal-strict` restores the stricter behaviour: the conversion fails
   naming the column and the offending value. Use it in a pipeline where an
   unexpected precision change must stop the job. `--strict` implies it.
+- A scale pinned by `--schema` or a folder's `qvd2parquet-schema.json` always
+  rounds, whatever `--decimal-strict` and `--strict` say: the pin states what
+  the column is. A display string that fits the scale is taken as written,
+  one with more decimals is rounded from its text, and a bare double is
+  rounded from its shortest form, the digits it reads as, so `1.005` becomes
+  `1.01` although the double holds `1.00499999999999989`. The count is
+  reported the same way:
+
+  ```text
+  qvd2parquet: schema: VV120: pinned to decimal(18, 2) by qvd-delta\CE10500\qvd2parquet-schema.json; 2 value(s) rounded to scale 2
+  qvd2parquet: note: 2 decimal value(s) were rounded to their pinned scale
+  ```
 - A value is never dropped. Turning an inexact value into a null would lose
   data that no later check could recover, since the quality metrics describe
   the converted value.
