@@ -197,6 +197,12 @@ func Create(finalPath string, schema *arrow.Schema, opts Options, force bool) (*
 	if err := os.MkdirAll(filepath.Dir(tmpPath), 0o755); err != nil {
 		return nil, fmt.Errorf("%w: create output directory: %v", ErrOutput, err)
 	}
+	// A temporary left by a killed run whose process ID Windows has reused is
+	// removed first: an S3 bucket mounted as a drive refuses to open an
+	// existing object for writing, where a local disk would truncate it.
+	if err := removeTemp(tmpPath); err != nil {
+		return nil, err
+	}
 	f, err := os.Create(tmpPath)
 	if err != nil {
 		return nil, fmt.Errorf("%w: create %s: %v", ErrOutput, tmpPath, err)
@@ -337,6 +343,17 @@ func SetRenameForTest(f func(from, to string) error) (restore func()) {
 	saved := rename
 	rename = f
 	return func() { rename = saved }
+}
+
+// ReplaceFile renames from over to the way Commit does with --force: when the
+// share refuses to overwrite, the target is deleted and the rename retried. A
+// failure after the delete is reported as ErrOutputLost, with from still in
+// place.
+func ReplaceFile(from, to string) error {
+	if err := rename(from, to); err != nil {
+		return replaceByDelete(from, to, err)
+	}
+	return nil
 }
 
 // replaceByDelete retries a rename that failed with the target present by

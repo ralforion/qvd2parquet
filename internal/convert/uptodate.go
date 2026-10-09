@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
@@ -117,6 +119,9 @@ func (m *Manifest) key(output string) string {
 	return filepath.Base(output)
 }
 
+// manifestSaves numbers the temporary files Save writes through.
+var manifestSaves atomic.Uint64
+
 // Save writes the record back. The caller reports a failure as a note rather
 // than a failed run: every file still converted, and the only cost is that the
 // next run repeats them.
@@ -128,16 +133,39 @@ func (m *Manifest) Save(outDir string) error {
 	// Written through a temporary file and renamed, so an interrupted write
 	// leaves the previous manifest intact rather than a truncated one that
 	// would be discarded on the next read.
-	tmp := ManifestPath(outDir) + fmt.Sprintf(".tmp-%d", os.Getpid())
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, ManifestPath(outDir)); err != nil {
+	//
+	// Each save gets its own name, and anything already at it is removed
+	// first. An S3 bucket mounted as a Windows drive refuses to open an
+	// existing object for writing ("The file exists"), so a temporary left by
+	// an earlier save in the run, or by a killed run whose process ID Windows
+	// has reused, would otherwise fail every save after it.
+	tmp := ManifestPath(outDir) + fmt.Sprintf(".tmp-%d-%d", os.Getpid(), manifestSaves.Add(1))
+	//
+	// The same mounts refuse to rename over an existing file, so the
+	// replacement falls back to deleting the old manifest first, as the
+	// Parquet writer does. A failure at any step removes the temporary: with
+	// a fresh name per save, nothing else would.
+	os.Remove(tmp)
+	if err := writeManifestFile(tmp, append(b, '\n'), 0o644); err != nil {
 		os.Remove(tmp)
 		return err
 	}
-	return nil
+	err = parquetwrite.ReplaceFile(tmp, ManifestPath(outDir))
+	if err == nil {
+		return nil
+	}
+	os.Remove(tmp)
+	if errors.Is(err, parquetwrite.ErrOutputLost) {
+		// The record is already in memory and the next save writes it to
+		// a name that is now free, so the temporary is not worth keeping.
+		return fmt.Errorf("the previous manifest was deleted to make room and the new one could not be renamed into place; the next save writes it again")
+	}
+	return err
 }
+
+// writeManifestFile is os.WriteFile, replaceable so a test can fail a write
+// halfway.
+var writeManifestFile = os.WriteFile
 
 // liveManifest is the manifest as a batch run uses it: entries are recorded
 // and the file is saved while the run is still going, rather than once at the
