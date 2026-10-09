@@ -3,6 +3,8 @@ package convert
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 )
 
 // mutators change an option to something a fingerprint must notice. Scalars
@@ -626,6 +630,59 @@ func TestManifestSavesLeaveNoTemporaries(t *testing.T) {
 			t.Fatalf("save %d: %v", i, err)
 		}
 	}
+	assertOnlyManifest(t, dir)
+}
+
+// TestManifestSaveReplacesOnRefusingShare refuses every rename onto an
+// existing file, as an S3 bucket mounted as a Windows drive does. Each save
+// must still replace the manifest, and the last one written must be on disk.
+func TestManifestSaveReplacesOnRefusingShare(t *testing.T) {
+	defer parquetwrite.SetRenameForTest(func(from, to string) error {
+		if _, err := os.Lstat(to); err == nil {
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: os.ErrExist}
+		}
+		return os.Rename(from, to)
+	})()
+	dir := t.TempDir()
+	m := &Manifest{Format: manifestFormat, Entries: map[string]ManifestEntry{}}
+	for i := 0; i < 3; i++ {
+		m.Entries[fmt.Sprintf("f%d.parquet", i)] = ManifestEntry{}
+		if err := m.Save(dir); err != nil {
+			t.Fatalf("save %d: %v", i, err)
+		}
+	}
+	if got := len(LoadManifest(dir).Entries); got != 3 {
+		t.Fatalf("manifest on disk has %d entries, want the last save's 3", got)
+	}
+	assertOnlyManifest(t, dir)
+}
+
+// TestManifestSaveRemovesFailedTemporary fails the write after part of the
+// file is out. Each save has its own temporary name, so a failed one left
+// behind would never be reused and would pile up run after run.
+func TestManifestSaveRemovesFailedTemporary(t *testing.T) {
+	saved := writeManifestFile
+	defer func() { writeManifestFile = saved }()
+	writeManifestFile = func(name string, data []byte, perm os.FileMode) error {
+		if err := os.WriteFile(name, data[:len(data)/2], perm); err != nil {
+			return err
+		}
+		return errors.New("injected: disk went away")
+	}
+	dir := t.TempDir()
+	m := &Manifest{Format: manifestFormat, Entries: map[string]ManifestEntry{}}
+	for i := 0; i < 3; i++ {
+		if err := m.Save(dir); err == nil {
+			t.Fatalf("save %d succeeded through a failing write", i)
+		}
+	}
+	if names, _ := os.ReadDir(dir); len(names) != 0 {
+		t.Fatalf("failed saves left %d file(s) behind", len(names))
+	}
+}
+
+func assertOnlyManifest(t *testing.T, dir string) {
+	t.Helper()
 	names, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)

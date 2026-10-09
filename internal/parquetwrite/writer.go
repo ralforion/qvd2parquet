@@ -345,6 +345,17 @@ func SetRenameForTest(f func(from, to string) error) (restore func()) {
 	return func() { rename = saved }
 }
 
+// ReplaceFile renames from over to the way Commit does with --force: when the
+// share refuses to overwrite, the target is deleted and the rename retried. A
+// failure after the delete is reported as ErrOutputLost, with from still in
+// place.
+func ReplaceFile(from, to string) error {
+	if err := rename(from, to); err != nil {
+		return replaceByDelete(from, to, err)
+	}
+	return nil
+}
+
 // replaceByDelete retries a rename that failed with the target present by
 // deleting the target first. A share backed by object storage (an S3 bucket
 // mounted as a Windows drive) can refuse to overwrite a file but still allow

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -139,16 +140,32 @@ func (m *Manifest) Save(outDir string) error {
 	// an earlier save in the run, or by a killed run whose process ID Windows
 	// has reused, would otherwise fail every save after it.
 	tmp := ManifestPath(outDir) + fmt.Sprintf(".tmp-%d-%d", os.Getpid(), manifestSaves.Add(1))
+	//
+	// The same mounts refuse to rename over an existing file, so the
+	// replacement falls back to deleting the old manifest first, as the
+	// Parquet writer does. A failure at any step removes the temporary: with
+	// a fresh name per save, nothing else would.
 	os.Remove(tmp)
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, ManifestPath(outDir)); err != nil {
+	if err := writeManifestFile(tmp, append(b, '\n'), 0o644); err != nil {
 		os.Remove(tmp)
 		return err
 	}
-	return nil
+	err = parquetwrite.ReplaceFile(tmp, ManifestPath(outDir))
+	if err == nil {
+		return nil
+	}
+	os.Remove(tmp)
+	if errors.Is(err, parquetwrite.ErrOutputLost) {
+		// The record is already in memory and the next save writes it to
+		// a name that is now free, so the temporary is not worth keeping.
+		return fmt.Errorf("the previous manifest was deleted to make room and the new one could not be renamed into place; the next save writes it again")
+	}
+	return err
 }
+
+// writeManifestFile is os.WriteFile, replaceable so a test can fail a write
+// halfway.
+var writeManifestFile = os.WriteFile
 
 // liveManifest is the manifest as a batch run uses it: entries are recorded
 // and the file is saved while the run is still going, rather than once at the

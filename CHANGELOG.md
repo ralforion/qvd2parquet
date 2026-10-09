@@ -20,8 +20,10 @@ rounded the way Qlik displays them, which changes values already written.
   could fail with "The file exists" on a temporary file left by an earlier save,
   so `--skip-up-to-date` lost its record and the next run converted everything
   again. Each save now writes through its own temporary name and removes
-  anything already there, and the Parquet writer clears a leftover temporary
-  before creating its own.
+  anything already there, replaces the old manifest by deleting it first when
+  the share refuses to rename over it (as `--force` already does for Parquet
+  outputs), and removes its temporary when a step fails. The Parquet writer
+  clears a leftover temporary before creating its own.
 
 ## [3.0.0] - 2026-10-08
 
