@@ -14,6 +14,14 @@ rounded the way Qlik displays them, which changes values already written.
 
 ## [Unreleased]
 
+### Fixed
+
+- `--inspect` with `--field-regex` showed only the comment in the NOTES column
+  of a renamed column, hiding its note. A column pinned by `--schema` or a
+  folder's `qvd2parquet-schema.json` therefore did not say it was pinned, and
+  a schema that applied looked as if it had not. The note is now shown whole,
+  ending with the name and comment the rename gave.
+
 ## [3.0.1] - 2026-10-09
 
 ### Fixed

@@ -319,3 +319,48 @@ func TestInspectReportsSelectionEvenWhenTheSchemaFails(t *testing.T) {
 		}
 	}
 }
+
+// A pin on a renamed column is reported as a pin, with the name and comment
+// the regex gave it after it. Showing the comment instead hid every pin of a folder
+// schema written with the renamed names, which read as a schema not applied.
+func TestInspectShowsPinAndCommentOfRenamedColumn(t *testing.T) {
+	in := buildFixture(t, sapStyleTable())
+	schema := `{"columns": {"DATBI": {"type": "int64"}}}`
+	if err := os.WriteFile(FolderSchemaPath(in), []byte(schema), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	renamer, err := NewFieldRenamer(sapRegex, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.Renamer = renamer
+
+	rep, err := Inspect(context.Background(), in, &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rep.Close()
+
+	var sb strings.Builder
+	if err := rep.Write(&sb); err != nil {
+		t.Fatal(err)
+	}
+	var datbi, kschl string
+	for _, line := range strings.Split(sb.String(), "\n") {
+		switch {
+		case strings.HasPrefix(line, "DATBI "):
+			datbi = line
+		case strings.HasPrefix(line, "KSCHL "):
+			kschl = line
+		}
+	}
+	want := "pinned to int64 by " + FolderSchemaPath(in) + `; written as "DATBI" with comment "Ende Gültigkeit"`
+	if !strings.HasSuffix(strings.TrimSpace(datbi), want) {
+		t.Errorf("DATBI row = %q, want it to end with %q", datbi, want)
+	}
+	// An inferred column keeps its note too.
+	if !strings.Contains(kschl, `written as utf8; written as "KSCHL" with comment "Konditionsart"`) {
+		t.Errorf("KSCHL row = %q, want the inferred note and the comment", kschl)
+	}
+}
