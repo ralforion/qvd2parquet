@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
@@ -117,6 +118,9 @@ func (m *Manifest) key(output string) string {
 	return filepath.Base(output)
 }
 
+// manifestSaves numbers the temporary files Save writes through.
+var manifestSaves atomic.Uint64
+
 // Save writes the record back. The caller reports a failure as a note rather
 // than a failed run: every file still converted, and the only cost is that the
 // next run repeats them.
@@ -128,7 +132,14 @@ func (m *Manifest) Save(outDir string) error {
 	// Written through a temporary file and renamed, so an interrupted write
 	// leaves the previous manifest intact rather than a truncated one that
 	// would be discarded on the next read.
-	tmp := ManifestPath(outDir) + fmt.Sprintf(".tmp-%d", os.Getpid())
+	//
+	// Each save gets its own name, and anything already at it is removed
+	// first. An S3 bucket mounted as a Windows drive refuses to open an
+	// existing object for writing ("The file exists"), so a temporary left by
+	// an earlier save in the run, or by a killed run whose process ID Windows
+	// has reused, would otherwise fail every save after it.
+	tmp := ManifestPath(outDir) + fmt.Sprintf(".tmp-%d-%d", os.Getpid(), manifestSaves.Add(1))
+	os.Remove(tmp)
 	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
 		return err
 	}

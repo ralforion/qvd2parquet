@@ -613,3 +613,28 @@ func TestManifestStaleNamesTheCheckThatFailed(t *testing.T) {
 		t.Errorf("deleted input: %q", got)
 	}
 }
+
+// TestManifestSavesLeaveNoTemporaries saves repeatedly into one folder, as a
+// batch run does. Every save writes through a fresh temporary, because an S3
+// bucket mounted as a Windows drive will not reopen an existing one, and none
+// of them may be left behind.
+func TestManifestSavesLeaveNoTemporaries(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manifest{Format: manifestFormat, Entries: map[string]ManifestEntry{}}
+	for i := 0; i < 3; i++ {
+		if err := m.Save(dir); err != nil {
+			t.Fatalf("save %d: %v", i, err)
+		}
+	}
+	names, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0].Name() != ManifestName {
+		var got []string
+		for _, n := range names {
+			got = append(got, n.Name())
+		}
+		t.Fatalf("folder holds %v, want only %s", got, ManifestName)
+	}
+}

@@ -197,6 +197,12 @@ func Create(finalPath string, schema *arrow.Schema, opts Options, force bool) (*
 	if err := os.MkdirAll(filepath.Dir(tmpPath), 0o755); err != nil {
 		return nil, fmt.Errorf("%w: create output directory: %v", ErrOutput, err)
 	}
+	// A temporary left by a killed run whose process ID Windows has reused is
+	// removed first: an S3 bucket mounted as a drive refuses to open an
+	// existing object for writing, where a local disk would truncate it.
+	if err := removeTemp(tmpPath); err != nil {
+		return nil, err
+	}
 	f, err := os.Create(tmpPath)
 	if err != nil {
 		return nil, fmt.Errorf("%w: create %s: %v", ErrOutput, tmpPath, err)
