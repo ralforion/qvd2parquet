@@ -402,12 +402,20 @@ func ResolveSchema(f *qvd.File, opts *Options, override *SchemaOverride) (*Resol
 		if _, pinned := override.pick(f.Columns[idx].Name, name); !pinned {
 			rs.Unpinned = append(rs.Unpinned, c.Name)
 		}
-		if c.Name == f.Columns[idx].Name {
+		// A comment is stated even when the name stays: a regex that only
+		// adds a comment would otherwise leave no trace of it in the note,
+		// and the note is all inspect shows.
+		var n string
+		switch {
+		case c.Name != f.Columns[idx].Name:
+			n = fmt.Sprintf("; written as %q", c.Name)
+			if c.Comment != "" {
+				n += fmt.Sprintf(" with comment %q", c.Comment)
+			}
+		case c.Comment != "":
+			n = fmt.Sprintf("; comment %q", c.Comment)
+		default:
 			continue
-		}
-		n := fmt.Sprintf("; written as %q", c.Name)
-		if c.Comment != "" {
-			n += fmt.Sprintf(" with comment %q", c.Comment)
 		}
 		rs.Notes[noteOf[idx]] += n
 	}

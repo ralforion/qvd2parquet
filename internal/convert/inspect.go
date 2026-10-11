@@ -236,8 +236,12 @@ func (r *InspectReport) writeSchema(w io.Writer) error {
 		if prof != nil {
 			syms = withThousands(prof.Symbols)
 		}
+		// The note is shown whole even for a renamed column. It already ends
+		// with the name and comment the rename gave; showing the comment in
+		// its place hid every pin on a renamed column, so a folder schema
+		// that applied looked as if it had not.
 		note := noteFor[c.SourceIndex]
-		if c.Comment != "" {
+		if note == "" {
 			note = c.Comment
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
