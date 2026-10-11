@@ -364,3 +364,35 @@ func TestInspectShowsPinAndCommentOfRenamedColumn(t *testing.T) {
 		t.Errorf("KSCHL row = %q, want the inferred note and the comment", kschl)
 	}
 }
+
+// A regex that keeps the name and only adds a comment still shows the
+// comment, after the note. The conversion writes it, so inspect must say so.
+func TestInspectShowsCommentOfUnrenamedColumn(t *testing.T) {
+	in := buildFixture(t, sapStyleTable())
+	renamer, err := NewFieldRenamer(`^(?P<name>PlainField)$`, "", "Net sales")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.Renamer = renamer
+
+	rep, err := Inspect(context.Background(), in, &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rep.Close()
+
+	var sb strings.Builder
+	if err := rep.Write(&sb); err != nil {
+		t.Fatal(err)
+	}
+	var row string
+	for _, line := range strings.Split(sb.String(), "\n") {
+		if strings.HasPrefix(line, "PlainField ") {
+			row = line
+		}
+	}
+	if want := `written as utf8; comment "Net sales"`; !strings.HasSuffix(strings.TrimSpace(row), want) {
+		t.Errorf("PlainField row = %q, want it to end with %q", row, want)
+	}
+}
