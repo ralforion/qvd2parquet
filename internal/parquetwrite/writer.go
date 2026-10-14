@@ -359,7 +359,9 @@ func ReplaceFile(from, to string) error {
 
 // CreateFile creates or truncates a file a run rewrites in place: the log, the
 // console log and the reports. perm is the mode a new file is created with,
-// before the umask, as for os.OpenFile.
+// before the umask, as for os.OpenFile. The file is opened write-only, as os.WriteFile
+// does: nothing reads it back, and a file the run may write but not read is
+// still one it can replace.
 //
 // An S3 bucket mounted as a Windows drive refuses to open an existing object
 // for writing ("Access is denied", or "The file exists"), so a rerun could not
@@ -371,7 +373,7 @@ func ReplaceFile(from, to string) error {
 // /dev/stdout is never touched, and a local disk takes the first create as
 // before.
 func CreateFile(path string, perm os.FileMode) (*os.File, error) {
-	f, err := openFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, perm)
+	f, err := openFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err == nil {
 		return f, nil
 	}
@@ -384,7 +386,7 @@ func CreateFile(path string, perm os.FileMode) (*os.File, error) {
 	if rerr := removeTemp(path); rerr != nil {
 		return nil, fmt.Errorf("%v; deleting the existing file to replace it failed too: %v", err, rerr)
 	}
-	return openFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, perm)
+	return openFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 }
 
 // openFile is os.OpenFile, replaceable so a test can fail a create the way a

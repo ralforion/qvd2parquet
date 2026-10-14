@@ -26,3 +26,35 @@ func TestWriteFileKeepsTheCallersMode(t *testing.T) {
 		t.Fatalf("mode %v, want -rw-r--r--", got)
 	}
 }
+
+// A report the run may write but not read, in a directory it may not change,
+// was replaceable with os.WriteFile's write-only open. Opening it read-write
+// is refused, and the fallback cannot delete it either, so the open has to
+// stay write-only.
+func TestWriteFileNeedsNoReadPermission(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.json")
+	if err := os.WriteFile(path, []byte("previous run\n"), 0o200); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o755)
+	if f, err := os.OpenFile(path, os.O_RDWR, 0); err == nil {
+		f.Close()
+		t.Skip("the file opened for reading despite its mode; running as root?")
+	}
+
+	if err := WriteFile(path, []byte("this run\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	os.Chmod(path, 0o600)
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "this run\n" {
+		t.Fatalf("file holds %q, want the new contents only", got)
+	}
+}
