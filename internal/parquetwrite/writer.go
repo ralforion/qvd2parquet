@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -354,6 +355,55 @@ func ReplaceFile(from, to string) error {
 		return replaceByDelete(from, to, err)
 	}
 	return nil
+}
+
+// CreateFile creates or truncates a file a run rewrites in place: the log, the
+// console log and the reports. perm is the mode a new file is created with,
+// before the umask, as for os.OpenFile. The file is opened write-only, as os.WriteFile
+// does: nothing reads it back, and a file the run may write but not read is
+// still one it can replace.
+//
+// An S3 bucket mounted as a Windows drive refuses to open an existing object
+// for writing ("Access is denied", or "The file exists"), so a rerun could not
+// replace the file the previous run left. When the create is refused that way
+// and a regular file is in the way, it is deleted and the create retried. Any
+// other failure, such as running out of file descriptors, is returned with the
+// file untouched: deleting it would lose the old contents with no new file to
+// show for it. Only a regular file is deleted, so a device such as NUL or
+// /dev/stdout is never touched, and a local disk takes the first create as
+// before.
+func CreateFile(path string, perm os.FileMode) (*os.File, error) {
+	f, err := openFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err == nil {
+		return f, nil
+	}
+	if !errors.Is(err, fs.ErrPermission) && !errors.Is(err, fs.ErrExist) {
+		return nil, err
+	}
+	if fi, lerr := os.Lstat(path); lerr != nil || !fi.Mode().IsRegular() {
+		return nil, err
+	}
+	if rerr := removeTemp(path); rerr != nil {
+		return nil, fmt.Errorf("%v; deleting the existing file to replace it failed too: %v", err, rerr)
+	}
+	return openFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+}
+
+// openFile is os.OpenFile, replaceable so a test can fail a create the way a
+// shortage of file descriptors does.
+var openFile = os.OpenFile
+
+// WriteFile is os.WriteFile through CreateFile.
+func WriteFile(path string, data []byte, perm os.FileMode) error {
+	f, err := CreateFile(path, perm)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // replaceByDelete retries a rename that failed with the target present by
