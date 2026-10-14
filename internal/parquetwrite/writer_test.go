@@ -1,6 +1,7 @@
 package parquetwrite
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -144,7 +145,7 @@ func TestCreateFileReplacesAFileThatRefusesWrites(t *testing.T) {
 		t.Skip("the file opened for writing despite its mode; running as root?")
 	}
 
-	if err := WriteFile(path, []byte("this run\n")); err != nil {
+	if err := WriteFile(path, []byte("this run\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -163,11 +164,37 @@ func TestCreateFileLeavesADirectoryAlone(t *testing.T) {
 	if err := os.Mkdir(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if f, err := CreateFile(path); err == nil {
+	if f, err := CreateFile(path, 0o644); err == nil {
 		f.Close()
 		t.Fatal("CreateFile succeeded on a directory")
 	}
 	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
 		t.Fatalf("the directory was disturbed: %v", err)
+	}
+}
+
+// A create that fails for any reason other than a refusal leaves the old file
+// where it is. Deleting it and then failing the second create too, as running
+// out of file descriptors would, loses the previous run's log for nothing.
+func TestCreateFileKeepsTheFileOnOtherFailures(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.jsonl")
+	if err := os.WriteFile(path, []byte("previous run\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	saved := openFile
+	defer func() { openFile = saved }()
+	openFile = func(string, int, os.FileMode) (*os.File, error) {
+		return nil, &os.PathError{Op: "open", Path: path, Err: errors.New("too many open files")}
+	}
+
+	if err := WriteFile(path, []byte("this run\n"), 0o644); err == nil {
+		t.Fatal("WriteFile succeeded with every open failing")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the previous file is gone: %v", err)
+	}
+	if string(got) != "previous run\n" {
+		t.Fatalf("file holds %q, want the previous contents", got)
 	}
 }

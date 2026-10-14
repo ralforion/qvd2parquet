@@ -48,7 +48,7 @@ func NewLogWriter(path string) (*LogWriter, error) {
 			return nil, fmt.Errorf("create log directory %s: %w", dir, err)
 		}
 	}
-	f, err := parquetwrite.CreateFile(path)
+	f, err := parquetwrite.CreateFile(path, 0o666)
 	if err != nil {
 		return nil, fmt.Errorf("create log %s: %w", path, err)
 	}

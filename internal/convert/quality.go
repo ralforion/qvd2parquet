@@ -352,7 +352,7 @@ func (r *QualityReport) Write(path string) error {
 	if err != nil {
 		return fmt.Errorf("encode quality report: %w", err)
 	}
-	if err := parquetwrite.WriteFile(path, append(b, '\n')); err != nil {
+	if err := parquetwrite.WriteFile(path, append(b, '\n'), 0o644); err != nil {
 		return fmt.Errorf("write quality report %s: %w", path, err)
 	}
 	return nil

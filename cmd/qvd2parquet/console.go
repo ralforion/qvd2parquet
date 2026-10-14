@@ -65,7 +65,7 @@ func (c *consoleLog) attach(path string) error {
 			return fmt.Errorf("create console log directory %s: %w", dir, err)
 		}
 	}
-	f, err := parquetwrite.CreateFile(path)
+	f, err := parquetwrite.CreateFile(path, 0o666)
 	if err != nil {
 		return fmt.Errorf("create console log %s: %w", path, err)
 	}
