@@ -9,8 +9,9 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"os"
 	"strconv"
+
+	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 )
 
 // ErrQualityGate marks a failed post-write validation (CLI exit code 6).
@@ -351,7 +352,7 @@ func (r *QualityReport) Write(path string) error {
 	if err != nil {
 		return fmt.Errorf("encode quality report: %w", err)
 	}
-	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+	if err := parquetwrite.WriteFile(path, append(b, '\n')); err != nil {
 		return fmt.Errorf("write quality report %s: %w", path, err)
 	}
 	return nil

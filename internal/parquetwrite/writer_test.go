@@ -129,3 +129,45 @@ func TestCommitReplacesWhenOverwriteIsRefused(t *testing.T) {
 		t.Errorf("Commit without force changed the existing file to %q", b)
 	}
 }
+
+// A file that cannot be opened for writing but can be deleted is how an S3
+// bucket mounted as a Windows drive treats the log a previous run left. A
+// read-only file in a writable directory refuses the same way, on every
+// platform, so CreateFile has to delete it and start a new one.
+func TestCreateFileReplacesAFileThatRefusesWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.jsonl")
+	if err := os.WriteFile(path, []byte("previous run\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := os.Create(path); err == nil {
+		f.Close()
+		t.Skip("the file opened for writing despite its mode; running as root?")
+	}
+
+	if err := WriteFile(path, []byte("this run\n")); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "this run\n" {
+		t.Fatalf("file holds %q, want the new contents only", got)
+	}
+}
+
+// Only a regular file is deleted to make room: a path that cannot be created
+// for another reason keeps its original error and is left alone.
+func TestCreateFileLeavesADirectoryAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.jsonl")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := CreateFile(path); err == nil {
+		f.Close()
+		t.Fatal("CreateFile succeeded on a directory")
+	}
+	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
+		t.Fatalf("the directory was disturbed: %v", err)
+	}
+}

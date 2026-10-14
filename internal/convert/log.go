@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 )
 
 // LogWriter records one JSON object per line: a "file" record for each input
@@ -46,7 +48,7 @@ func NewLogWriter(path string) (*LogWriter, error) {
 			return nil, fmt.Errorf("create log directory %s: %w", dir, err)
 		}
 	}
-	f, err := os.Create(path)
+	f, err := parquetwrite.CreateFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("create log %s: %w", path, err)
 	}

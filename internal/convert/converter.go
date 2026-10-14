@@ -518,7 +518,7 @@ func WriteSchemaReport(path, inputPath string, f *qvd.File, rs *ResolvedSchema, 
 	if err != nil {
 		return fmt.Errorf("encode schema report: %w", err)
 	}
-	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+	if err := parquetwrite.WriteFile(path, append(b, '\n')); err != nil {
 		return fmt.Errorf("write schema report %s: %w", path, err)
 	}
 	return nil

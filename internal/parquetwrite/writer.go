@@ -356,6 +356,40 @@ func ReplaceFile(from, to string) error {
 	return nil
 }
 
+// CreateFile is os.Create for files a run truncates in place: the log, the
+// console log and the reports. An S3 bucket mounted as a Windows drive refuses
+// to open an existing object for writing ("Access is denied"), so a rerun
+// could not replace the file the previous run left. When creating fails and a
+// regular file is in the way, it is deleted and the create retried. Only a
+// regular file is deleted, so a device such as NUL or /dev/stdout is never
+// touched, and a local disk takes the first create as before.
+func CreateFile(path string) (*os.File, error) {
+	f, err := os.Create(path)
+	if err == nil {
+		return f, nil
+	}
+	if fi, lerr := os.Lstat(path); lerr != nil || !fi.Mode().IsRegular() {
+		return nil, err
+	}
+	if rerr := removeTemp(path); rerr != nil {
+		return nil, fmt.Errorf("%v; deleting the existing file to replace it failed too: %v", err, rerr)
+	}
+	return os.Create(path)
+}
+
+// WriteFile is os.WriteFile through CreateFile.
+func WriteFile(path string, data []byte) error {
+	f, err := CreateFile(path)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
 // replaceByDelete retries a rename that failed with the target present by
 // deleting the target first. A share backed by object storage (an S3 bucket
 // mounted as a Windows drive) can refuse to overwrite a file but still allow

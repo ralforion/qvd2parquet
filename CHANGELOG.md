@@ -14,6 +14,15 @@ rounded the way Qlik displays them, which changes values already written.
 
 ## [Unreleased]
 
+### Fixed
+
+- On an S3 bucket mounted as a Windows drive, a rerun failed at the start with
+  `create log ...: Access is denied` when the `--log` file from the previous
+  run was still there: the mount refuses to open an existing file for writing.
+  `--log`, `--console-log`, `--schema-report` and `--quality-report` now delete
+  a file that refuses to be reopened and create it again. A local disk
+  truncates the file as before.
+
 ## [3.0.2] - 2026-10-11
 
 ### Fixed
