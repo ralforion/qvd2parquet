@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2085,5 +2086,163 @@ func TestBatchReportsRefuseOtherFoldersSchemas(t *testing.T) {
 			refused(t, schema, "--out-dir", filepath.Join(dir, "out"),
 				flag, filepath.Join(links, "r.json"), a, b)
 		})
+	}
+}
+
+// TestDeleteOlderThanKeepsTheCatalogAndSkips is the nightly SAP job with
+// --delete-older-than: an old output is deleted, the run after converts
+// nothing back, and --catalog-out does not fail on an output it cannot read.
+//
+// A second, recent file makes every run write the catalog, which --force
+// replaces rather than merges into. The deleted table has to stay in it from
+// what the manifest kept.
+func TestDeleteOlderThanKeepsTheCatalogAndSkips(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	buildQVD(t, filepath.Join(dir, "orders.qvd"), "ORDERS")
+	buildQVD(t, filepath.Join(dir, "recent.qvd"), "RECENT")
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	outDir := filepath.Join(dir, "out")
+	output := filepath.Join(outDir, "orders.parquet")
+
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(bin, append([]string{"--progress", "0", "--out-dir", outDir, "--force",
+			"--skip-up-to-date", "--catalog-out", catalogPath}, append(args, dir)...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("run: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+	tables := func() map[string]int {
+		t.Helper()
+		got := map[string]int{}
+		for _, r := range readCatalog(t, catalogPath) {
+			got[r.SourceTable]++
+		}
+		return got
+	}
+	run("--delete-older-than", "32")
+	before := tables()
+	if before["ORDERS"] == 0 || before["RECENT"] == 0 {
+		t.Fatalf("first run catalogued %v", before)
+	}
+
+	// Written forty days ago, as far as both the file and the manifest know.
+	m := convert.LoadManifest(outDir)
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	if err := os.Chtimes(output, old, old); err != nil {
+		t.Fatal(err)
+	}
+	e := m.Entries["orders.parquet"]
+	e.OutputModTime = old.UTC().Format(time.RFC3339Nano)
+	m.Entries["orders.parquet"] = e
+	if err := m.Save(outDir); err != nil {
+		t.Fatal(err)
+	}
+
+	out := run("--delete-older-than", "32")
+	if !strings.Contains(out, "1 old output(s) deleted") {
+		t.Errorf("the old output was not deleted:\n%s", out)
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Errorf("%s still exists: %v", output, err)
+	}
+	if got := tables(); !maps.Equal(got, before) {
+		t.Errorf("catalog went from %v to %v", before, got)
+	}
+
+	out = run()
+	if !strings.Contains(out, "output deleted") || !strings.Contains(out, "converted 0/2") {
+		t.Errorf("the deleted output was converted again:\n%s", out)
+	}
+	if got := tables(); !maps.Equal(got, before) {
+		t.Errorf("the run after the deletion took the catalog from %v to %v", before, got)
+	}
+
+	for _, args := range [][]string{
+		{"--out-dir", outDir, "--delete-older-than", "32", dir},
+		{"--delete-older-than", "-1", "--out-dir", outDir, "--skip-up-to-date", dir},
+	} {
+		cmd := exec.Command(bin, args...)
+		combined, err := cmd.CombinedOutput()
+		if err == nil || cmd.ProcessState.ExitCode() != exitUsage {
+			t.Errorf("%v was accepted or did not exit with usage:\n%s", args, combined)
+		}
+	}
+}
+
+// TestDeletedOutputKeepsItsCatalogRowsThroughASymlink is a merging catalog
+// over an --out-dir reached through a symlink. The catalog matches a scanned
+// table to its QVD-side rows by the resolved output path, and once the output
+// is deleted that path can no longer be resolved through the file, so the
+// manifest has to have kept it.
+func TestDeletedOutputKeepsItsCatalogRowsThroughASymlink(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "qvds")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	buildQVD(t, filepath.Join(src, "orders.qvd"), "ORDERS")
+	realOut := filepath.Join(dir, "real")
+	if err := os.Mkdir(realOut, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(dir, "alias")
+	if err := os.Symlink(realOut, outDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	output := filepath.Join(outDir, "orders.parquet")
+
+	run := func() string {
+		t.Helper()
+		cmd := exec.Command(bin, "--progress", "0", "--out-dir", outDir, "--skip-up-to-date",
+			"--delete-older-than", "32", "--catalog-out", catalogPath, src)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("run: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+	run()
+	before := readCatalog(t, catalogPath)
+
+	m := convert.LoadManifest(outDir)
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	if err := os.Chtimes(output, old, old); err != nil {
+		t.Fatal(err)
+	}
+	e := m.Entries["orders.parquet"]
+	e.OutputModTime = old.UTC().Format(time.RFC3339Nano)
+	m.Entries["orders.parquet"] = e
+	if err := m.Save(outDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if out := run(); !strings.Contains(out, "1 old output(s) deleted") {
+		t.Fatalf("the old output was not deleted:\n%s", out)
+	}
+	run()
+	after := readCatalog(t, catalogPath)
+	if len(after) != len(before) {
+		t.Fatalf("catalog went from %d rows to %d", len(before), len(after))
+	}
+	for i, got := range after {
+		want := before[i]
+		if got.Source != want.Source || got.QlikType != want.QlikType ||
+			got.HasSymbols != want.HasSymbols || got.Symbols != want.Symbols ||
+			got.OutputFile != want.OutputFile {
+			t.Errorf("%s.%s lost its QVD side once deleted:\n got %+v\nwant %+v",
+				got.SourceTable, got.ColumnName, got, want)
+		}
 	}
 }

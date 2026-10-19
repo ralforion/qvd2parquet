@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ralforion/qvd2parquet/internal/catalog"
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
@@ -82,6 +84,32 @@ type ManifestEntry struct {
 	// without it was written before row groups were sized for the footer, and
 	// is the only kind whose output can carry one too large to load.
 	FooterBytes int64 `json:"footerBytes,omitempty"`
+	// Deleted is when --delete-older-than marked the output for deletion. The
+	// entry stays so the next run still knows the file was converted, and
+	// skips it rather than writing it again only for the run after to delete
+	// it.
+	Deleted string `json:"deleted,omitempty"`
+	// Columns is what a catalog scan read from the output before it was
+	// deleted. A run with --catalog-out describes a deleted output from these,
+	// since --force replaces the catalog rather than merging into it, and a
+	// table missing from the folder would otherwise go missing from the
+	// catalog too.
+	Columns []ManifestColumn `json:"columns,omitempty"`
+	// OutputPath is the deleted output's path with its symlinks resolved,
+	// taken while the file was there to resolve. The catalog matches a table's
+	// rows by that path, and once the file is gone a symlinked parent can no
+	// longer be resolved through it.
+	OutputPath string `json:"outputPath,omitempty"`
+}
+
+// ManifestColumn is one column of a deleted output, the part of a catalog row
+// a scan reads from the file. The rest is in the entry or the run.
+type ManifestColumn struct {
+	Name        string `json:"name"`
+	Source      string `json:"source,omitempty"`
+	Comment     string `json:"comment,omitempty"`
+	ParquetType string `json:"parquetType"`
+	Nullable    bool   `json:"nullable,omitempty"`
 }
 
 // ManifestPath is where a folder conversion keeps its record.
@@ -258,6 +286,95 @@ func (l *liveManifest) Record(r FileResult) {
 		return
 	}
 	l.m.Record(r.Input, r.Output, fp, r.Stats.Rows, r.Stats.TableName)
+	l.saveIfDue()
+}
+
+// DeletionDue reports whether --delete-older-than should delete an
+// up-to-date output: it is still there, and its recorded write is at least age
+// ago. A zero age is never due.
+func (l *liveManifest) DeletionDue(output string, age time.Duration) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.m == nil || age <= 0 {
+		return false
+	}
+	e, ok := l.m.Entries[l.m.key(output)]
+	if !ok {
+		return false
+	}
+	if _, err := os.Stat(output); err != nil {
+		return false
+	}
+	written, err := time.Parse(time.RFC3339Nano, e.OutputModTime)
+	return err == nil && time.Since(written) >= age
+}
+
+// MarkDeleted records that an output is about to be deleted, along with the
+// columns the catalog needs once it is gone. Only the entry in memory changes.
+// The caller deletes the file after the manifest saying so is on disk, so a
+// failed save leaves the output in place rather than deleted with no record,
+// which the next run would convert straight back.
+func (l *liveManifest) MarkDeleted(output string, rows []catalog.Row) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.m == nil {
+		return
+	}
+	key := l.m.key(output)
+	e, ok := l.m.Entries[key]
+	if !ok {
+		return
+	}
+	cols := make([]ManifestColumn, len(rows))
+	for i, r := range rows {
+		cols[i] = ManifestColumn{Name: r.ColumnName, Source: r.SourceColumn, Comment: r.Comment,
+			ParquetType: r.ParquetType, Nullable: r.Nullable}
+	}
+	e.Deleted, e.Columns, e.OutputPath = stamp(time.Now()), cols, canonicalInputPath(output)
+	l.m.Entries[key] = e
+}
+
+// DeletedRows reports whether an output was deleted by --delete-older-than,
+// and if so the catalog rows that describe it, as a scan of it would have.
+func (l *liveManifest) DeletedRows(input, output string) (rows []catalog.Row, gone bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.m == nil {
+		return nil, false
+	}
+	e, ok := l.m.Entries[l.m.key(output)]
+	if !ok || e.Deleted == "" {
+		return nil, false
+	}
+	if _, err := os.Stat(output); !errors.Is(err, fs.ErrNotExist) {
+		return nil, false
+	}
+	path := e.OutputPath
+	if path == "" {
+		path = output
+	}
+	rows = make([]catalog.Row, len(e.Columns))
+	for i, c := range e.Columns {
+		rows[i] = catalog.Row{
+			Source:       catalog.SourceParquet,
+			SourceFile:   input,
+			SourceTable:  e.Table,
+			SourceRows:   e.Rows,
+			OutputFile:   path,
+			Ordinal:      int32(i + 1),
+			ColumnName:   c.Name,
+			SourceColumn: c.Source,
+			Comment:      c.Comment,
+			ParquetType:  c.ParquetType,
+			Nullable:     c.Nullable,
+		}
+	}
+	return rows, true
+}
+
+// saveIfDue saves the manifest unless the last save was too recent. The caller
+// holds the lock.
+func (l *liveManifest) saveIfDue() {
 	if time.Since(l.lastSave) < l.gap {
 		return
 	}
@@ -339,6 +456,12 @@ func (m *Manifest) Stale(input, output, fingerprint string) string {
 		return fmt.Sprintf("input modified since, %s, was %s", stamp(in.ModTime()), e.InputModTime)
 	}
 	out, err := os.Stat(output)
+	if errors.Is(err, fs.ErrNotExist) && e.Deleted != "" {
+		// Deleted on purpose by --delete-older-than. The input and options
+		// are the ones it was converted from, so converting it again would
+		// only bring back what was removed.
+		return ""
+	}
 	if err != nil {
 		return "output cannot be read: " + err.Error()
 	}

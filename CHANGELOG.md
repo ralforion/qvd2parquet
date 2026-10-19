@@ -14,6 +14,14 @@ rounded the way Qlik displays them, which changes values already written.
 
 ## [Unreleased]
 
+### Added
+
+- `--delete-older-than DAYS` deletes the output of an up-to-date file once it
+  was written more than that many days ago. The `--skip-up-to-date` manifest
+  keeps its entry, so the file is not converted again until its QVD changes or
+  a major version changes the options fingerprint. It needs
+  `--skip-up-to-date`. Existing folders are not reconverted by the upgrade.
+
 ## [3.0.3] - 2026-10-14
 
 ### Fixed

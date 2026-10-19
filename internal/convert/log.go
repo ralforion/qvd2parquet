@@ -86,6 +86,10 @@ type fileRecord struct {
 	Status    string `json:"status"`
 	Error     string `json:"error"`
 	ElapsedMs int64  `json:"elapsedMs"`
+	// OutputDeleted is set on a skipped file whose output --delete-older-than
+	// removed, in this run or an earlier one. Output still names the path the
+	// file converts to.
+	OutputDeleted bool `json:"outputDeleted"`
 
 	// Table is the QVD's own table name, present on a skipped and on a failed
 	// file too, so it is a stable key to group a run by. It is empty only
@@ -154,7 +158,7 @@ func (w *LogWriter) File(r FileResult) {
 	case r.Err != nil:
 		rec.Status, rec.Error, rec.Output = "failed", r.Err.Error(), ""
 	case r.Skipped:
-		rec.Status = "skipped"
+		rec.Status, rec.OutputDeleted = "skipped", r.OutputGone
 	}
 	if r.Stats != nil {
 		rec.Rows = r.Stats.Rows
@@ -196,6 +200,7 @@ type summaryRecord struct {
 	Converted   int    `json:"converted"`
 	Failed      int    `json:"failed"`
 	Skipped     int    `json:"skipped"`
+	Deleted     int    `json:"deleted"`
 	Rows        int64  `json:"rows"`
 	OutputBytes int64  `json:"outputBytes"`
 	ElapsedMs   int64  `json:"elapsedMs"`
@@ -213,6 +218,7 @@ func (w *LogWriter) Summary(b *BatchResult) {
 		Converted:   b.Converted,
 		Failed:      b.Failed,
 		Skipped:     b.Skipped,
+		Deleted:     b.Deleted,
 		Rows:        b.Rows,
 		OutputBytes: b.Bytes,
 		ElapsedMs:   b.Elapsed.Milliseconds(),
