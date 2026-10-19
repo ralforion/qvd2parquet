@@ -14,6 +14,8 @@ rounded the way Qlik displays them, which changes values already written.
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-19
+
 ### Added
 
 - `--delete-older-than DAYS` deletes the output of an up-to-date file once it
@@ -1404,7 +1406,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v3.0.3...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/ralforion/qvd2parquet/compare/v3.0.3...v3.1.0
 [3.0.3]: https://github.com/ralforion/qvd2parquet/compare/v3.0.2...v3.0.3
 [3.0.2]: https://github.com/ralforion/qvd2parquet/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/ralforion/qvd2parquet/compare/v3.0.0...v3.0.1
