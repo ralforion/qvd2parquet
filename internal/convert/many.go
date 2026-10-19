@@ -31,8 +31,13 @@ type FileResult struct {
 	// Skipped is set when an existing output was left alone because --force
 	// was not given.
 	Skipped bool
-	Started time.Time
-	Elapsed time.Duration
+	// OutputGone is set on a skipped file whose output --delete-older-than
+	// removed, in this run or an earlier one. OutputDeleted says it was this
+	// run.
+	OutputGone    bool
+	OutputDeleted bool
+	Started       time.Time
+	Elapsed       time.Duration
 }
 
 // Failed reports whether the file did not convert.
@@ -59,9 +64,11 @@ type BatchResult struct {
 	Converted int
 	Failed    int
 	Skipped   int
-	Rows      int64
-	Bytes     int64
-	Elapsed   time.Duration
+	// Deleted counts the skipped files whose output this run deleted.
+	Deleted int
+	Rows    int64
+	Bytes   int64
+	Elapsed time.Duration
 }
 
 // ExitCode is the worst outcome across the run, so a batch reports the most
@@ -429,6 +436,14 @@ type ManyOptions struct {
 	// ToolVersion identifies the binary in the manifest's fingerprint. Only
 	// its major version is used.
 	ToolVersion string
+	// DeleteOlderThan deletes the output of an up-to-date file once it was
+	// written this long ago, and keeps its manifest entry, so the file is not
+	// converted again until its input changes. Zero deletes nothing. It needs
+	// SkipUpToDate, whose manifest is the only record of what was deleted.
+	//
+	// It is not an Options field on purpose: FingerprintOptions hashes every
+	// one of those, and a new one would reconvert every existing folder.
+	DeleteOlderThan time.Duration
 }
 
 // RunMany converts every input, continuing past a failure so one bad file does
@@ -553,6 +568,12 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		out := many.Tree.Output(in, many.OutDir)
 		stale, reason := live.Stale(in, out)
 		if !stale {
+			gone, deleted, err := live.Prune(out, many.DeleteOlderThan)
+			if err != nil {
+				// The output stays as it was, and is still up to date. The
+				// next run tries again.
+				safeLogf("note: could not delete %s: %v", DisplayPath(out), err)
+			}
 			// A manifest written before entries carried the table name has
 			// none to give, and the file would skip forever without ever
 			// filling it in, so read the header this once and keep it. A
@@ -563,14 +584,18 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 				table = TableNameOf(in)
 				live.NoteTable(out, table)
 			}
-			results[i] = FileResult{Input: in, Output: out, Table: table, Skipped: true, Started: time.Now()}
+			results[i] = FileResult{Input: in, Output: out, Table: table, Skipped: true,
+				OutputGone: gone, OutputDeleted: deleted, Started: time.Now()}
 			// A skipped file writes no catalog rows of its own, which would
 			// leave the catalog describing the subset of the folder that
 			// happened to be stale rather than the folder. Its output exists,
 			// so read the columns back out of it. They carry the comment but
 			// not the QVD-side profile, which is what the source column on
 			// each row is there to say.
-			if opts.Catalog != nil {
+			//
+			// A deleted output has nothing to read. The catalog merges into
+			// the one on disk, so the rows an earlier run wrote for it stay.
+			if opts.Catalog != nil && !gone {
 				rows, err := catalog.ScanFile(out)
 				if err != nil {
 					// Reported as a failure of this file rather than a note.
@@ -593,7 +618,15 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			}
 			// Serialized like every other per-file line: a conversion already
 			// running can be writing progress at the same moment.
-			safeLogf("skip %s (up to date)", DisplayPath(in))
+			switch {
+			case deleted:
+				safeLogf("skip %s (up to date; deleted %s, written over %s ago)",
+					DisplayPath(in), DisplayPath(out), humanDays(many.DeleteOlderThan))
+			case gone:
+				safeLogf("skip %s (up to date; output deleted)", DisplayPath(in))
+			default:
+				safeLogf("skip %s (up to date)", DisplayPath(in))
+			}
 			logResult(results[i])
 			continue
 		}
@@ -655,6 +688,9 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			b.Failed++
 		case r.Skipped:
 			b.Skipped++
+			if r.OutputDeleted {
+				b.Deleted++
+			}
 		default:
 			b.Converted++
 			if r.Stats != nil {
@@ -863,6 +899,9 @@ func (b *BatchResult) Summary() string {
 	if b.Skipped > 0 {
 		fmt.Fprintf(&sb, "; %d skipped", b.Skipped)
 	}
+	if b.Deleted > 0 {
+		fmt.Fprintf(&sb, ", %d old output(s) deleted", b.Deleted)
+	}
 	if b.Failed > 0 {
 		fmt.Fprintf(&sb, "\n\nFAILED (%d):", b.Failed)
 		for _, r := range b.Results {
@@ -873,4 +912,13 @@ func (b *BatchResult) Summary() string {
 		}
 	}
 	return sb.String()
+}
+
+// humanDays renders a --delete-older-than age as the days it was given in.
+func humanDays(d time.Duration) string {
+	days := int64(d / (24 * time.Hour))
+	if days == 1 {
+		return "1 day"
+	}
+	return fmt.Sprintf("%d days", days)
 }

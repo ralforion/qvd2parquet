@@ -1424,3 +1424,104 @@ func TestRunManyKeepTreeWritesReportsInSubfolders(t *testing.T) {
 		})
 	}
 }
+
+// ageOutputs makes every output the manifest names look written days ago,
+// both on disk and in its entry, so it is still up to date.
+func ageOutputs(t *testing.T, outDir string, days int) {
+	t.Helper()
+	m := LoadManifest(outDir)
+	old := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	for key, e := range m.Entries {
+		if err := os.Chtimes(filepath.Join(outDir, filepath.FromSlash(key)), old, old); err != nil {
+			t.Fatal(err)
+		}
+		e.OutputModTime = stamp(old)
+		m.Entries[key] = e
+	}
+	if err := m.Save(outDir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --delete-older-than removes an old output and keeps skipping it, so the
+// folder holds only recent outputs and nothing converts twice. A changed input
+// is new data and converts again.
+func TestRunManyDeletesOldOutputsAndDoesNotReconvertThem(t *testing.T) {
+	src := folderFixture(t, false, false)
+	outDir := filepath.Join(t.TempDir(), "out")
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+	opts.Force = true
+
+	run := func(age time.Duration) *BatchResult {
+		t.Helper()
+		o := opts
+		b, err := RunMany(context.Background(), inputs, &o, &ManyOptions{OutDir: outDir,
+			SkipUpToDate: true, ToolVersion: "3.0.3", DeleteOlderThan: age}, nil)
+		if err != nil {
+			t.Fatalf("RunMany: %v", err)
+		}
+		return b
+	}
+	const age = 32 * 24 * time.Hour
+
+	if b := run(age); b.Converted != 2 {
+		t.Fatalf("first run converted %d, want 2", b.Converted)
+	}
+	// Just written, so nothing is old enough.
+	if b := run(age); b.Skipped != 2 || b.Deleted != 0 {
+		t.Fatalf("fresh outputs: skipped=%d deleted=%d, want 2 and 0", b.Skipped, b.Deleted)
+	}
+
+	ageOutputs(t, outDir, 40)
+	b := run(age)
+	if b.Converted != 0 || b.Skipped != 2 || b.Deleted != 2 {
+		t.Fatalf("old outputs: converted=%d skipped=%d deleted=%d, want 0, 2 and 2",
+			b.Converted, b.Skipped, b.Deleted)
+	}
+	if !strings.Contains(b.Summary(), "2 old output(s) deleted") {
+		t.Errorf("the summary should account for the deletions:\n%s", b.Summary())
+	}
+	for _, r := range b.Results {
+		if _, err := os.Stat(r.Output); !os.IsNotExist(err) {
+			t.Errorf("%s was not deleted: %v", r.Output, err)
+		}
+	}
+	for key, e := range LoadManifest(outDir).Entries {
+		if e.Deleted == "" {
+			t.Errorf("entry %s does not record the deletion", key)
+		}
+	}
+
+	// The next night, with or without the flag, converts nothing back.
+	for _, a := range []time.Duration{age, 0} {
+		b := run(a)
+		if b.Converted != 0 || b.Skipped != 2 || b.Deleted != 0 {
+			t.Errorf("after deletion, age %v: converted=%d skipped=%d deleted=%d, want 0, 2 and 0",
+				a, b.Converted, b.Skipped, b.Deleted)
+		}
+		for _, r := range b.Results {
+			if !r.OutputGone {
+				t.Errorf("%s is not reported as gone", r.Input)
+			}
+		}
+	}
+
+	// A re-extracted input converts, and its entry describes the new output.
+	later := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(inputs[0], later, later); err != nil {
+		t.Fatal(err)
+	}
+	if b := run(age); b.Converted != 1 || b.Skipped != 1 {
+		t.Errorf("after one input changed: converted=%d skipped=%d, want 1 and 1", b.Converted, b.Skipped)
+	}
+	if e := LoadManifest(outDir).Entries[filepath.Base(OutputPathFor(inputs[0], outDir))]; e.Deleted != "" {
+		t.Errorf("the reconverted entry still says deleted: %+v", e)
+	}
+
+	// So do changed options, which is what a major upgrade is.
+	opts.Compression = "zstd"
+	if b := run(age); b.Converted != 2 {
+		t.Errorf("after the options changed: converted=%d, want 2", b.Converted)
+	}
+}

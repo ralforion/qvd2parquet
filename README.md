@@ -115,6 +115,8 @@ qvd2parquet --catalog-scan --catalog-out catalog.parquet <file-or-directory>...
   -include-files 'CE*'       With --out-dir, convert only files matching these patterns
   -exclude-files '*_TMP'     With --out-dir, skip files matching these patterns
   -skip-up-to-date           With --out-dir, leave a file this run already produced
+  -delete-older-than 32      With --skip-up-to-date, delete outputs written more than
+                             32 days ago and keep skipping them
   -log path.jsonl            Write one JSON Lines record per input, then a summary
   -console-log run.txt       Also write the screen output to this file, as it is printed
   -catalog-out cat.parquet   Write a column-grain catalog of the run: one row per
@@ -523,6 +525,41 @@ Worth knowing:
   just decided not to touch, so a folder can be grouped by table on the runs
   where almost everything skips. Its counts stay zero, because they measure
   work this run did.
+
+### Deleting old outputs
+
+When the output folder is only a landing zone, outputs nobody needs any more can
+be deleted without converting them again the next night:
+
+```sh
+qvd2parquet --out-dir ./parquet --force --skip-up-to-date --delete-older-than 32 ./qvds
+```
+
+```text
+qvd2parquet: skip qvds/CE10500_2021.qvd (up to date; deleted parquet/CE10500_2021.parquet, written over 32 days ago)
+qvd2parquet: skip qvds/CE10500_2022.qvd (up to date; output deleted)
+qvd2parquet: ok   qvds/CE10500_2026.qvd -> parquet/CE10500_2026.parquet (2,013,442 rows, 213 columns, 186.3 MiB)
+converted 1/3 file(s) in 1m51s: 2,013,442 rows, 186.3 MiB; 2 skipped, 1 old output(s) deleted
+```
+
+Only an output that is **up to date** is deleted, and only once it was written
+more than that many days ago. The manifest keeps its entry, marked as deleted,
+so later runs skip the file for as long as all of these stay the same:
+
+- the input's size and timestamp. A re-extracted QVD is new data and converts
+  again, and the output then counts its days from that conversion.
+- the options and the tool's major version, the same fingerprint as above. A
+  major upgrade therefore converts the deleted files again, once.
+
+A file stays skipped after it is deleted even on a run without
+`--delete-older-than`, so leaving the flag out of a manual run does not bring
+back a folder's worth of conversions. To get one output back, touch its QVD.
+
+The flag needs `--skip-up-to-date`, because the manifest is the only record of
+what was deleted. A skipped file whose output is gone has `"outputDeleted":
+true` in `--log`, and the summary record counts the outputs this run deleted
+in `deleted`. `--catalog-out` keeps the rows an earlier run wrote for a deleted
+output, since the catalog merges into the one on disk.
 
 ### Parallelism
 

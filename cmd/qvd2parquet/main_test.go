@@ -2087,3 +2087,71 @@ func TestBatchReportsRefuseOtherFoldersSchemas(t *testing.T) {
 		})
 	}
 }
+
+// TestDeleteOlderThanKeepsTheCatalogAndSkips is the nightly SAP job with
+// --delete-older-than: an old output is deleted, the run after converts
+// nothing back, and --catalog-out does not fail on an output it cannot read.
+func TestDeleteOlderThanKeepsTheCatalogAndSkips(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	buildQVD(t, filepath.Join(dir, "orders.qvd"), "ORDERS")
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	outDir := filepath.Join(dir, "out")
+	output := filepath.Join(outDir, "orders.parquet")
+
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(bin, append([]string{"--progress", "0", "--out-dir", outDir, "--force",
+			"--skip-up-to-date", "--catalog-out", catalogPath}, append(args, dir)...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("run: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+	run("--delete-older-than", "32")
+	rows := len(readCatalog(t, catalogPath))
+
+	// Written forty days ago, as far as both the file and the manifest know.
+	m := convert.LoadManifest(outDir)
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	if err := os.Chtimes(output, old, old); err != nil {
+		t.Fatal(err)
+	}
+	e := m.Entries["orders.parquet"]
+	e.OutputModTime = old.UTC().Format(time.RFC3339Nano)
+	m.Entries["orders.parquet"] = e
+	if err := m.Save(outDir); err != nil {
+		t.Fatal(err)
+	}
+
+	out := run("--delete-older-than", "32")
+	if !strings.Contains(out, "1 old output(s) deleted") {
+		t.Errorf("the old output was not deleted:\n%s", out)
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Errorf("%s still exists: %v", output, err)
+	}
+	if got := len(readCatalog(t, catalogPath)); got != rows {
+		t.Errorf("catalog went from %d rows to %d", rows, got)
+	}
+
+	out = run()
+	if !strings.Contains(out, "output deleted") || !strings.Contains(out, "converted 0/1") {
+		t.Errorf("the deleted output was converted again:\n%s", out)
+	}
+
+	for _, args := range [][]string{
+		{"--out-dir", outDir, "--delete-older-than", "32", dir},
+		{"--delete-older-than", "-1", "--out-dir", outDir, "--skip-up-to-date", dir},
+	} {
+		cmd := exec.Command(bin, args...)
+		combined, err := cmd.CombinedOutput()
+		if err == nil || cmd.ProcessState.ExitCode() != exitUsage {
+			t.Errorf("%v was accepted or did not exit with usage:\n%s", args, combined)
+		}
+	}
+}

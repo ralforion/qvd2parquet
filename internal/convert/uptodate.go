@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -82,6 +83,10 @@ type ManifestEntry struct {
 	// without it was written before row groups were sized for the footer, and
 	// is the only kind whose output can carry one too large to load.
 	FooterBytes int64 `json:"footerBytes,omitempty"`
+	// Deleted is when --delete-older-than removed the output. The entry stays
+	// so the next run still knows the file was converted, and skips it rather
+	// than writing it again only for the run after to delete it.
+	Deleted string `json:"deleted,omitempty"`
 }
 
 // ManifestPath is where a folder conversion keeps its record.
@@ -258,6 +263,47 @@ func (l *liveManifest) Record(r FileResult) {
 		return
 	}
 	l.m.Record(r.Input, r.Output, fp, r.Stats.Rows, r.Stats.TableName)
+	l.saveIfDue()
+}
+
+// Prune deletes an up-to-date output whose recorded write is more than age
+// ago, and keeps its entry marked as deleted. It reports whether the output
+// is gone, which includes one an earlier run deleted, and whether this call
+// was the one that deleted it. A zero age deletes nothing, but still reports
+// an output that is already gone, so the caller does not try to read it.
+func (l *liveManifest) Prune(output string, age time.Duration) (gone, deleted bool, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.m == nil {
+		return false, false, nil
+	}
+	key := l.m.key(output)
+	e, ok := l.m.Entries[key]
+	if !ok {
+		return false, false, nil
+	}
+	if _, err := os.Stat(output); errors.Is(err, fs.ErrNotExist) {
+		return e.Deleted != "", false, nil
+	}
+	if age <= 0 {
+		return false, false, nil
+	}
+	written, err := time.Parse(time.RFC3339Nano, e.OutputModTime)
+	if err != nil || time.Since(written) < age {
+		return false, false, nil
+	}
+	if err := os.Remove(output); err != nil {
+		return false, false, err
+	}
+	e.Deleted = stamp(time.Now())
+	l.m.Entries[key] = e
+	l.saveIfDue()
+	return true, true, nil
+}
+
+// saveIfDue saves the manifest unless the last save was too recent. The caller
+// holds the lock.
+func (l *liveManifest) saveIfDue() {
 	if time.Since(l.lastSave) < l.gap {
 		return
 	}
@@ -339,6 +385,12 @@ func (m *Manifest) Stale(input, output, fingerprint string) string {
 		return fmt.Sprintf("input modified since, %s, was %s", stamp(in.ModTime()), e.InputModTime)
 	}
 	out, err := os.Stat(output)
+	if errors.Is(err, fs.ErrNotExist) && e.Deleted != "" {
+		// Deleted on purpose by --delete-older-than. The input and options
+		// are the ones it was converted from, so converting it again would
+		// only bring back what was removed.
+		return ""
+	}
 	if err != nil {
 		return "output cannot be read: " + err.Error()
 	}

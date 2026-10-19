@@ -149,6 +149,7 @@ func run() int {
 		includeFiles  = fs.String("include-files", "", "With --out-dir, convert only the files matching these comma-separated wildcard patterns, e.g. 'CE*'")
 		excludeFiles  = fs.String("exclude-files", "", "With --out-dir, skip the files matching these comma-separated wildcard patterns")
 		skipUpToDate  = fs.Bool("skip-up-to-date", false, "With --out-dir, leave a file alone when this exact run already produced its output")
+		deleteOlder   = fs.Int("delete-older-than", 0, "With --skip-up-to-date, delete an up-to-date output written more than this many days ago, and keep skipping it until its input changes")
 		logPath       = fs.String("log", "", "Write one JSON Lines record per input, then a summary")
 		consolePath   = fs.String("console-log", "", "Also write the screen output to this file, as it is printed")
 		inspect       = fs.Bool("inspect", false, "Read only the header and symbol tables, print the schema, and exit")
@@ -189,6 +190,15 @@ func run() int {
 	case batch && fs.NArg() < 1:
 		fmt.Fprintf(stderr, "%s: --out-dir needs at least one input file or directory\n\n", programName)
 		fs.Usage()
+		return exitUsage
+	case *deleteOlder < 0:
+		fmt.Fprintf(stderr, "%s: --delete-older-than takes a number of days, got %d\n", programName, *deleteOlder)
+		return exitUsage
+	case *deleteOlder > 0 && (!batch || !*skipUpToDate):
+		// The manifest is what remembers a deleted output was converted.
+		// Without it the next run would convert the file straight back.
+		fmt.Fprintf(stderr, "%s: --delete-older-than needs --out-dir and --skip-up-to-date, "+
+			"whose manifest keeps the deleted files from being converted again\n", programName)
 		return exitUsage
 	case *keepTree && !batch:
 		fmt.Fprintf(stderr, "%s: --keep-tree places the outputs of --out-dir, and needs it\n", programName)
@@ -336,7 +346,7 @@ func run() int {
 			Exclude:   splitList(*excludeFiles),
 		}
 		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, sel, *keepTree, *skipUpToDate,
-			*logPath, *catalogOut, *consolePath, logf)
+			time.Duration(*deleteOlder)*24*time.Hour, *logPath, *catalogOut, *consolePath, logf)
 	}
 
 	return runSingle(ctx, inputPath, outputPath, &opts, *logPath, *catalogOut, *consolePath, logf)
@@ -770,7 +780,7 @@ func canonicalPath(path string) string {
 // one bad file does not hide the state of the rest.
 func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	outDir string, fileWorkers int, sel convert.InputSelection, keepTree, skipUpToDate bool,
-	logPath, catalogPath, consolePath string, logf convert.Logf) (code int) {
+	deleteOlderThan time.Duration, logPath, catalogPath, consolePath string, logf convert.Logf) (code int) {
 
 	found := convert.FindInputs(paths, sel)
 	inputs, problems := found.Files, found.Problems
@@ -876,14 +886,15 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	}
 
 	result, err2 := convert.RunMany(ctx, inputs, opts, &convert.ManyOptions{
-		OutDir:       outDir,
-		FileWorkers:  fileWorkers,
-		Recursive:    sel.Recursive,
-		Tree:         tree,
-		Log:          log,
-		Problems:     problems,
-		SkipUpToDate: skipUpToDate,
-		ToolVersion:  version,
+		OutDir:          outDir,
+		FileWorkers:     fileWorkers,
+		Recursive:       sel.Recursive,
+		Tree:            tree,
+		Log:             log,
+		Problems:        problems,
+		SkipUpToDate:    skipUpToDate,
+		ToolVersion:     version,
+		DeleteOlderThan: deleteOlderThan,
 	}, logf)
 	if err2 != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", programName, err2)
