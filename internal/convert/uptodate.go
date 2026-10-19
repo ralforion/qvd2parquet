@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ralforion/qvd2parquet/internal/catalog"
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
@@ -83,10 +84,27 @@ type ManifestEntry struct {
 	// without it was written before row groups were sized for the footer, and
 	// is the only kind whose output can carry one too large to load.
 	FooterBytes int64 `json:"footerBytes,omitempty"`
-	// Deleted is when --delete-older-than removed the output. The entry stays
-	// so the next run still knows the file was converted, and skips it rather
-	// than writing it again only for the run after to delete it.
+	// Deleted is when --delete-older-than marked the output for deletion. The
+	// entry stays so the next run still knows the file was converted, and
+	// skips it rather than writing it again only for the run after to delete
+	// it.
 	Deleted string `json:"deleted,omitempty"`
+	// Columns is what a catalog scan read from the output before it was
+	// deleted. A run with --catalog-out describes a deleted output from these,
+	// since --force replaces the catalog rather than merging into it, and a
+	// table missing from the folder would otherwise go missing from the
+	// catalog too.
+	Columns []ManifestColumn `json:"columns,omitempty"`
+}
+
+// ManifestColumn is one column of a deleted output, the part of a catalog row
+// a scan reads from the file. The rest is in the entry or the run.
+type ManifestColumn struct {
+	Name        string `json:"name"`
+	Source      string `json:"source,omitempty"`
+	Comment     string `json:"comment,omitempty"`
+	ParquetType string `json:"parquetType"`
+	Nullable    bool   `json:"nullable,omitempty"`
 }
 
 // ManifestPath is where a folder conversion keeps its record.
@@ -266,39 +284,83 @@ func (l *liveManifest) Record(r FileResult) {
 	l.saveIfDue()
 }
 
-// Prune deletes an up-to-date output whose recorded write is more than age
-// ago, and keeps its entry marked as deleted. It reports whether the output
-// is gone, which includes one an earlier run deleted, and whether this call
-// was the one that deleted it. A zero age deletes nothing, but still reports
-// an output that is already gone, so the caller does not try to read it.
-func (l *liveManifest) Prune(output string, age time.Duration) (gone, deleted bool, err error) {
+// DeletionDue reports whether --delete-older-than should delete an
+// up-to-date output: it is still there, and its recorded write is at least age
+// ago. A zero age is never due.
+func (l *liveManifest) DeletionDue(output string, age time.Duration) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.m == nil || age <= 0 {
+		return false
+	}
+	e, ok := l.m.Entries[l.m.key(output)]
+	if !ok {
+		return false
+	}
+	if _, err := os.Stat(output); err != nil {
+		return false
+	}
+	written, err := time.Parse(time.RFC3339Nano, e.OutputModTime)
+	return err == nil && time.Since(written) >= age
+}
+
+// MarkDeleted records that an output is about to be deleted, along with the
+// columns the catalog needs once it is gone. Only the entry in memory changes.
+// The caller deletes the file after the manifest saying so is on disk, so a
+// failed save leaves the output in place rather than deleted with no record,
+// which the next run would convert straight back.
+func (l *liveManifest) MarkDeleted(output string, rows []catalog.Row) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.m == nil {
-		return false, false, nil
+		return
 	}
 	key := l.m.key(output)
 	e, ok := l.m.Entries[key]
 	if !ok {
-		return false, false, nil
+		return
 	}
-	if _, err := os.Stat(output); errors.Is(err, fs.ErrNotExist) {
-		return e.Deleted != "", false, nil
+	cols := make([]ManifestColumn, len(rows))
+	for i, r := range rows {
+		cols[i] = ManifestColumn{Name: r.ColumnName, Source: r.SourceColumn, Comment: r.Comment,
+			ParquetType: r.ParquetType, Nullable: r.Nullable}
 	}
-	if age <= 0 {
-		return false, false, nil
-	}
-	written, err := time.Parse(time.RFC3339Nano, e.OutputModTime)
-	if err != nil || time.Since(written) < age {
-		return false, false, nil
-	}
-	if err := os.Remove(output); err != nil {
-		return false, false, err
-	}
-	e.Deleted = stamp(time.Now())
+	e.Deleted, e.Columns = stamp(time.Now()), cols
 	l.m.Entries[key] = e
-	l.saveIfDue()
-	return true, true, nil
+}
+
+// DeletedRows reports whether an output was deleted by --delete-older-than,
+// and if so the catalog rows that describe it, as a scan of it would have.
+func (l *liveManifest) DeletedRows(input, output string) (rows []catalog.Row, gone bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.m == nil {
+		return nil, false
+	}
+	e, ok := l.m.Entries[l.m.key(output)]
+	if !ok || e.Deleted == "" {
+		return nil, false
+	}
+	if _, err := os.Stat(output); !errors.Is(err, fs.ErrNotExist) {
+		return nil, false
+	}
+	rows = make([]catalog.Row, len(e.Columns))
+	for i, c := range e.Columns {
+		rows[i] = catalog.Row{
+			Source:       catalog.SourceParquet,
+			SourceFile:   input,
+			SourceTable:  e.Table,
+			SourceRows:   e.Rows,
+			OutputFile:   output,
+			Ordinal:      int32(i + 1),
+			ColumnName:   c.Name,
+			SourceColumn: c.Source,
+			Comment:      c.Comment,
+			ParquetType:  c.ParquetType,
+			Nullable:     c.Nullable,
+		}
+	}
+	return rows, true
 }
 
 // saveIfDue saves the manifest unless the last save was too recent. The caller

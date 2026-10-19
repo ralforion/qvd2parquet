@@ -536,14 +536,17 @@ qvd2parquet --out-dir ./parquet --force --skip-up-to-date --delete-older-than 32
 ```
 
 ```text
-qvd2parquet: skip qvds/CE10500_2021.qvd (up to date; deleted parquet/CE10500_2021.parquet, written over 32 days ago)
+qvd2parquet: skip qvds/CE10500_2021.qvd (up to date)
 qvd2parquet: skip qvds/CE10500_2022.qvd (up to date; output deleted)
 qvd2parquet: ok   qvds/CE10500_2026.qvd -> parquet/CE10500_2026.parquet (2,013,442 rows, 213 columns, 186.3 MiB)
+qvd2parquet: deleted parquet/CE10500_2021.parquet (written over 32 days ago)
 converted 1/3 file(s) in 1m51s: 2,013,442 rows, 186.3 MiB; 2 skipped, 1 old output(s) deleted
 ```
 
 Only an output that is **up to date** is deleted, and only once it was written
-more than that many days ago. The manifest keeps its entry, marked as deleted,
+more than that many days ago. The deletions happen at the end of the run, after
+the manifest recording them is saved: if the save fails, nothing is deleted,
+rather than leaving deleted files the next run would convert back. The manifest keeps its entry, marked as deleted,
 so later runs skip the file for as long as all of these stay the same:
 
 - the input's size and timestamp. A re-extracted QVD is new data and converts
@@ -558,8 +561,9 @@ back a folder's worth of conversions. To get one output back, touch its QVD.
 The flag needs `--skip-up-to-date`, because the manifest is the only record of
 what was deleted. A skipped file whose output is gone has `"outputDeleted":
 true` in `--log`, and the summary record counts the outputs this run deleted
-in `deleted`. `--catalog-out` keeps the rows an earlier run wrote for a deleted
-output, since the catalog merges into the one on disk.
+in `deleted`. Before an output is deleted its columns are read from the file
+and kept in the manifest, so `--catalog-out` still describes the table, with or
+without `--force`. An output whose columns cannot be read is not deleted.
 
 ### Parallelism
 

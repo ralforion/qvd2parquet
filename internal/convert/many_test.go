@@ -1525,3 +1525,48 @@ func TestRunManyDeletesOldOutputsAndDoesNotReconvertThem(t *testing.T) {
 		t.Errorf("after the options changed: converted=%d, want 2", b.Converted)
 	}
 }
+
+// An output is deleted only once the manifest marking it is saved. Deleted
+// first, a failed save left no record of the deletion, and the next run
+// converted every deleted file back.
+func TestRunManyDeletesNothingWhenTheManifestCannotBeSaved(t *testing.T) {
+	src := folderFixture(t, false, false)
+	outDir := filepath.Join(t.TempDir(), "out")
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+	opts.Force = true
+	run := func() *BatchResult {
+		t.Helper()
+		o := opts
+		b, err := RunMany(context.Background(), inputs, &o, &ManyOptions{OutDir: outDir,
+			SkipUpToDate: true, ToolVersion: "3.0.3", DeleteOlderThan: 32 * 24 * time.Hour}, nil)
+		if err != nil {
+			t.Fatalf("RunMany: %v", err)
+		}
+		return b
+	}
+	run()
+	ageOutputs(t, outDir, 40)
+
+	saved := writeManifestFile
+	writeManifestFile = func(string, []byte, os.FileMode) error { return errors.New("injected: disk went away") }
+	b := run()
+	writeManifestFile = saved
+	if b.Deleted != 0 {
+		t.Errorf("deleted %d output(s) the manifest does not record", b.Deleted)
+	}
+	for _, r := range b.Results {
+		if _, err := os.Stat(r.Output); err != nil {
+			t.Errorf("%s is gone: %v", r.Output, err)
+		}
+	}
+
+	// The next run, with a manifest that saves, deletes them and converts
+	// nothing.
+	if b := run(); b.Converted != 0 || b.Deleted != 2 {
+		t.Errorf("converted=%d deleted=%d, want 0 and 2", b.Converted, b.Deleted)
+	}
+	if b := run(); b.Converted != 0 || b.Skipped != 2 {
+		t.Errorf("after deletion: converted=%d skipped=%d, want 0 and 2", b.Converted, b.Skipped)
+	}
+}

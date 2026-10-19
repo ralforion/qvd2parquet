@@ -540,6 +540,9 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	defer stop(nil)
 
 	results := make([]FileResult, len(inputs))
+	// pending are the skipped files whose output --delete-older-than deletes
+	// once the manifest recording it is saved.
+	var pending []int
 	sem := make(chan struct{}, fileWorkers)
 	var wg sync.WaitGroup
 
@@ -568,12 +571,6 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		out := many.Tree.Output(in, many.OutDir)
 		stale, reason := live.Stale(in, out)
 		if !stale {
-			gone, deleted, err := live.Prune(out, many.DeleteOlderThan)
-			if err != nil {
-				// The output stays as it was, and is still up to date. The
-				// next run tries again.
-				safeLogf("note: could not delete %s: %v", DisplayPath(out), err)
-			}
 			// A manifest written before entries carried the table name has
 			// none to give, and the file would skip forever without ever
 			// filling it in, so read the header this once and keep it. A
@@ -584,8 +581,10 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 				table = TableNameOf(in)
 				live.NoteTable(out, table)
 			}
+			goneRows, gone := live.DeletedRows(in, out)
+			due := !gone && live.DeletionDue(out, many.DeleteOlderThan)
 			results[i] = FileResult{Input: in, Output: out, Table: table, Skipped: true,
-				OutputGone: gone, OutputDeleted: deleted, Started: time.Now()}
+				OutputGone: gone, Started: time.Now()}
 			// A skipped file writes no catalog rows of its own, which would
 			// leave the catalog describing the subset of the folder that
 			// happened to be stale rather than the folder. Its output exists,
@@ -593,11 +592,23 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			// not the QVD-side profile, which is what the source column on
 			// each row is there to say.
 			//
-			// A deleted output has nothing to read. The catalog merges into
-			// the one on disk, so the rows an earlier run wrote for it stay.
-			if opts.Catalog != nil && !gone {
-				rows, err := catalog.ScanFile(out)
-				if err != nil {
+			// An output due for deletion is read the same way whether or not
+			// this run writes a catalog, because a later run that does has
+			// only the manifest to describe it from. One already deleted is
+			// described from there now.
+			var rows []catalog.Row
+			switch {
+			case gone:
+				rows = goneRows
+			case opts.Catalog != nil || due:
+				var err error
+				rows, err = catalog.ScanFile(out)
+				if err != nil && opts.Catalog == nil {
+					// Kept rather than deleted without a description. The
+					// file is still up to date, so nothing else is wrong.
+					safeLogf("note: not deleting %s, its columns could not be read: %v", DisplayPath(out), err)
+					due = false
+				} else if err != nil {
 					// Reported as a failure of this file rather than a note.
 					// The run was asked for a catalog of the folder and cannot
 					// produce one, and a note beside exit 0 would hand a
@@ -614,18 +625,23 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 					rows[j].SourceFile = in
 					rows[j].SourceTable = table
 				}
+			}
+			if opts.Catalog != nil {
 				opts.Catalog.Add(rows)
 			}
 			// Serialized like every other per-file line: a conversion already
 			// running can be writing progress at the same moment.
-			switch {
-			case deleted:
-				safeLogf("skip %s (up to date; deleted %s, written over %s ago)",
-					DisplayPath(in), DisplayPath(out), humanDays(many.DeleteOlderThan))
-			case gone:
+			if gone {
 				safeLogf("skip %s (up to date; output deleted)", DisplayPath(in))
-			default:
+			} else {
 				safeLogf("skip %s (up to date)", DisplayPath(in))
+			}
+			if due {
+				// Its log record waits for the deletion, so it can say
+				// whether the output went.
+				live.MarkDeleted(out, rows)
+				pending = append(pending, i)
+				continue
 			}
 			logResult(results[i])
 			continue
@@ -673,9 +689,30 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	// The last save is unconditional: the saves during the run are throttled,
 	// so the files converted since the most recent one are in the manifest but
 	// not yet on disk.
+	//
+	// Outputs are deleted only once the manifest marking them is on disk. The
+	// other order loses the record to a failed save, and the next run converts
+	// the deleted files straight back.
 	if err := live.Save(); err != nil {
 		logf("note: could not write %s: %v; the next --skip-up-to-date run will convert these files again",
 			ManifestName, err)
+		if len(pending) > 0 {
+			logf("note: deleting none of the %d old output(s), since the manifest does not record it", len(pending))
+		}
+	} else {
+		for _, i := range pending {
+			// A failure leaves the entry marked and the output in place. It
+			// is still up to date, and the next run tries again.
+			if err := os.Remove(results[i].Output); err != nil {
+				logf("note: could not delete %s: %v", DisplayPath(results[i].Output), err)
+				continue
+			}
+			results[i].OutputGone, results[i].OutputDeleted = true, true
+			logf("deleted %s (written over %s ago)", DisplayPath(results[i].Output), humanDays(many.DeleteOlderThan))
+		}
+	}
+	for _, i := range pending {
+		logResult(results[i])
 	}
 
 	results = append(results, problems...)

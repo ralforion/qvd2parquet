@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2091,6 +2092,10 @@ func TestBatchReportsRefuseOtherFoldersSchemas(t *testing.T) {
 // TestDeleteOlderThanKeepsTheCatalogAndSkips is the nightly SAP job with
 // --delete-older-than: an old output is deleted, the run after converts
 // nothing back, and --catalog-out does not fail on an output it cannot read.
+//
+// A second, recent file makes every run write the catalog, which --force
+// replaces rather than merges into. The deleted table has to stay in it from
+// what the manifest kept.
 func TestDeleteOlderThanKeepsTheCatalogAndSkips(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a binary")
@@ -2098,6 +2103,7 @@ func TestDeleteOlderThanKeepsTheCatalogAndSkips(t *testing.T) {
 	bin := buildCLI(t)
 	dir := t.TempDir()
 	buildQVD(t, filepath.Join(dir, "orders.qvd"), "ORDERS")
+	buildQVD(t, filepath.Join(dir, "recent.qvd"), "RECENT")
 	catalogPath := filepath.Join(dir, "catalog.parquet")
 	outDir := filepath.Join(dir, "out")
 	output := filepath.Join(outDir, "orders.parquet")
@@ -2112,8 +2118,19 @@ func TestDeleteOlderThanKeepsTheCatalogAndSkips(t *testing.T) {
 		}
 		return string(out)
 	}
+	tables := func() map[string]int {
+		t.Helper()
+		got := map[string]int{}
+		for _, r := range readCatalog(t, catalogPath) {
+			got[r.SourceTable]++
+		}
+		return got
+	}
 	run("--delete-older-than", "32")
-	rows := len(readCatalog(t, catalogPath))
+	before := tables()
+	if before["ORDERS"] == 0 || before["RECENT"] == 0 {
+		t.Fatalf("first run catalogued %v", before)
+	}
 
 	// Written forty days ago, as far as both the file and the manifest know.
 	m := convert.LoadManifest(outDir)
@@ -2135,13 +2152,16 @@ func TestDeleteOlderThanKeepsTheCatalogAndSkips(t *testing.T) {
 	if _, err := os.Stat(output); !os.IsNotExist(err) {
 		t.Errorf("%s still exists: %v", output, err)
 	}
-	if got := len(readCatalog(t, catalogPath)); got != rows {
-		t.Errorf("catalog went from %d rows to %d", rows, got)
+	if got := tables(); !maps.Equal(got, before) {
+		t.Errorf("catalog went from %v to %v", before, got)
 	}
 
 	out = run()
-	if !strings.Contains(out, "output deleted") || !strings.Contains(out, "converted 0/1") {
+	if !strings.Contains(out, "output deleted") || !strings.Contains(out, "converted 0/2") {
 		t.Errorf("the deleted output was converted again:\n%s", out)
+	}
+	if got := tables(); !maps.Equal(got, before) {
+		t.Errorf("the run after the deletion took the catalog from %v to %v", before, got)
 	}
 
 	for _, args := range [][]string{
