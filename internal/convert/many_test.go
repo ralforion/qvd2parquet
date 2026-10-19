@@ -1570,3 +1570,49 @@ func TestRunManyDeletesNothingWhenTheManifestCannotBeSaved(t *testing.T) {
 		t.Errorf("after deletion: converted=%d skipped=%d, want 0 and 2", b.Converted, b.Skipped)
 	}
 }
+
+// The deletions happen after every conversion, which can be hours after a file
+// was found up to date. An output another process replaced in between is not
+// the one the run marked, and deleting it would lose a fresh file.
+func TestRunManyDoesNotDeleteAnOutputReplacedDuringTheRun(t *testing.T) {
+	src := folderFixture(t, false, false)
+	outDir := filepath.Join(t.TempDir(), "out")
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+	opts.Force = true
+	run := func() *BatchResult {
+		t.Helper()
+		o := opts
+		b, err := RunMany(context.Background(), inputs, &o, &ManyOptions{OutDir: outDir,
+			SkipUpToDate: true, ToolVersion: "3.0.3", DeleteOlderThan: 32 * 24 * time.Hour}, nil)
+		if err != nil {
+			t.Fatalf("RunMany: %v", err)
+		}
+		return b
+	}
+	run()
+	ageOutputs(t, outDir, 40)
+
+	replaced := OutputPathFor(inputs[0], outDir)
+	fresh := []byte("a fresh file another job wrote")
+	saved := beforeOldOutputsDeleted
+	beforeOldOutputsDeleted = func() {
+		if err := os.WriteFile(replaced, fresh, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := run()
+	beforeOldOutputsDeleted = saved
+	if b.Deleted != 1 {
+		t.Errorf("deleted %d output(s), want 1", b.Deleted)
+	}
+	if got, err := os.ReadFile(replaced); err != nil || string(got) != string(fresh) {
+		t.Errorf("the replaced output was deleted or changed: %q, %v", got, err)
+	}
+
+	// The entry no longer describes the file there, so the next run converts
+	// it rather than skipping it as deleted.
+	if b := run(); b.Converted != 1 {
+		t.Errorf("the run after converted %d, want 1", b.Converted)
+	}
+}

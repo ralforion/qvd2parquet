@@ -95,6 +95,11 @@ type ManifestEntry struct {
 	// table missing from the folder would otherwise go missing from the
 	// catalog too.
 	Columns []ManifestColumn `json:"columns,omitempty"`
+	// OutputPath is the deleted output's path with its symlinks resolved,
+	// taken while the file was there to resolve. The catalog matches a table's
+	// rows by that path, and once the file is gone a symlinked parent can no
+	// longer be resolved through it.
+	OutputPath string `json:"outputPath,omitempty"`
 }
 
 // ManifestColumn is one column of a deleted output, the part of a catalog row
@@ -325,7 +330,7 @@ func (l *liveManifest) MarkDeleted(output string, rows []catalog.Row) {
 		cols[i] = ManifestColumn{Name: r.ColumnName, Source: r.SourceColumn, Comment: r.Comment,
 			ParquetType: r.ParquetType, Nullable: r.Nullable}
 	}
-	e.Deleted, e.Columns = stamp(time.Now()), cols
+	e.Deleted, e.Columns, e.OutputPath = stamp(time.Now()), cols, canonicalInputPath(output)
 	l.m.Entries[key] = e
 }
 
@@ -344,6 +349,10 @@ func (l *liveManifest) DeletedRows(input, output string) (rows []catalog.Row, go
 	if _, err := os.Stat(output); !errors.Is(err, fs.ErrNotExist) {
 		return nil, false
 	}
+	path := e.OutputPath
+	if path == "" {
+		path = output
+	}
 	rows = make([]catalog.Row, len(e.Columns))
 	for i, c := range e.Columns {
 		rows[i] = catalog.Row{
@@ -351,7 +360,7 @@ func (l *liveManifest) DeletedRows(input, output string) (rows []catalog.Row, go
 			SourceFile:   input,
 			SourceTable:  e.Table,
 			SourceRows:   e.Rows,
-			OutputFile:   output,
+			OutputFile:   path,
 			Ordinal:      int32(i + 1),
 			ColumnName:   c.Name,
 			SourceColumn: c.Source,

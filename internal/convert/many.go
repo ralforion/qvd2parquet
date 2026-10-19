@@ -700,7 +700,16 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			logf("note: deleting none of the %d old output(s), since the manifest does not record it", len(pending))
 		}
 	} else {
+		beforeOldOutputsDeleted()
 		for _, i := range pending {
+			// Checked again: the run may have spent hours converting since
+			// this file was found up to date, and an output another process
+			// replaced in the meantime is not the one marked. The entry no
+			// longer describes it, so the next run converts it.
+			if stale, reason := live.Stale(results[i].Input, results[i].Output); stale {
+				logf("note: not deleting %s, it changed during the run (%s)", DisplayPath(results[i].Output), reason)
+				continue
+			}
 			// A failure leaves the entry marked and the output in place. It
 			// is still up to date, and the next run tries again.
 			if err := os.Remove(results[i].Output); err != nil {
@@ -740,6 +749,10 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	many.Log.Summary(b)
 	return b, nil
 }
+
+// beforeOldOutputsDeleted runs between the final manifest save and the
+// deletions, replaceable so a test can change an output in that interval.
+var beforeOldOutputsDeleted = func() {}
 
 // CheckOutputCollisions rejects a run in which two inputs would produce the
 // same output file.

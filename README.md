@@ -546,7 +546,9 @@ converted 1/3 file(s) in 1m51s: 2,013,442 rows, 186.3 MiB; 2 skipped, 1 old outp
 Only an output that is **up to date** is deleted, and only once it was written
 more than that many days ago. The deletions happen at the end of the run, after
 the manifest recording them is saved: if the save fails, nothing is deleted,
-rather than leaving deleted files the next run would convert back. The manifest keeps its entry, marked as deleted,
+rather than leaving deleted files the next run would convert back. Each file is
+checked again just before it is deleted, so an output another job replaced
+while the run was converting is left alone, and converts on the next run. The manifest keeps its entry, marked as deleted,
 so later runs skip the file for as long as all of these stay the same:
 
 - the input's size and timestamp. A re-extracted QVD is new data and converts

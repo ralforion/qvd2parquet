@@ -2175,3 +2175,74 @@ func TestDeleteOlderThanKeepsTheCatalogAndSkips(t *testing.T) {
 		}
 	}
 }
+
+// TestDeletedOutputKeepsItsCatalogRowsThroughASymlink is a merging catalog
+// over an --out-dir reached through a symlink. The catalog matches a scanned
+// table to its QVD-side rows by the resolved output path, and once the output
+// is deleted that path can no longer be resolved through the file, so the
+// manifest has to have kept it.
+func TestDeletedOutputKeepsItsCatalogRowsThroughASymlink(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "qvds")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	buildQVD(t, filepath.Join(src, "orders.qvd"), "ORDERS")
+	realOut := filepath.Join(dir, "real")
+	if err := os.Mkdir(realOut, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(dir, "alias")
+	if err := os.Symlink(realOut, outDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	catalogPath := filepath.Join(dir, "catalog.parquet")
+	output := filepath.Join(outDir, "orders.parquet")
+
+	run := func() string {
+		t.Helper()
+		cmd := exec.Command(bin, "--progress", "0", "--out-dir", outDir, "--skip-up-to-date",
+			"--delete-older-than", "32", "--catalog-out", catalogPath, src)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("run: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+	run()
+	before := readCatalog(t, catalogPath)
+
+	m := convert.LoadManifest(outDir)
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	if err := os.Chtimes(output, old, old); err != nil {
+		t.Fatal(err)
+	}
+	e := m.Entries["orders.parquet"]
+	e.OutputModTime = old.UTC().Format(time.RFC3339Nano)
+	m.Entries["orders.parquet"] = e
+	if err := m.Save(outDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if out := run(); !strings.Contains(out, "1 old output(s) deleted") {
+		t.Fatalf("the old output was not deleted:\n%s", out)
+	}
+	run()
+	after := readCatalog(t, catalogPath)
+	if len(after) != len(before) {
+		t.Fatalf("catalog went from %d rows to %d", len(before), len(after))
+	}
+	for i, got := range after {
+		want := before[i]
+		if got.Source != want.Source || got.QlikType != want.QlikType ||
+			got.HasSymbols != want.HasSymbols || got.Symbols != want.Symbols ||
+			got.OutputFile != want.OutputFile {
+			t.Errorf("%s.%s lost its QVD side once deleted:\n got %+v\nwant %+v",
+				got.SourceTable, got.ColumnName, got, want)
+		}
+	}
+}
