@@ -604,6 +604,42 @@ is why four files at a time on a 16-CPU machine get two workers each. Raise
 `--workers` alongside `--file-workers` when the machine has headroom for more:
 `--file-workers 4 --workers 16` gives four each.
 
+### Querying the converted folder
+
+A converted folder needs no further step to be queried: DuckDB reads many
+Parquet files as one table through a glob. With `--keep-tree`, each table's
+files sit in their own subfolder, so one glob per subfolder is one table:
+
+```sh
+qvd2parquet --out-dir out --keep-tree --recursive --skip-up-to-date qvds
+```
+
+```sql
+-- every monthly extract of one table, with the file each row came from
+select parse_filename(filename, true) as extract, count(*) as trips
+from read_parquet('out/taxi/*.parquet', filename = true)
+group by all order by 1;
+
+-- a view, so the glob is written once
+create view taxi as select * from read_parquet('out/taxi/*.parquet');
+```
+
+Add `union_by_name = true` when the extracts do not all have the same columns,
+for example after a field was added to the load script partway through the
+year. Columns are then matched by name, and a column a file lacks reads as
+null instead of failing the query.
+
+Converting once and querying the Parquet beats reading the QVDs at query time:
+each file is decoded a single time, `--skip-up-to-date` keeps the folder
+current by converting only what changed, and every query after that gets
+Parquet's column pruning and row-group skipping. The same folder reads in
+Spark, Trino, Dremio, pyarrow or polars without converting again.
+
+A glob takes every `.parquet` it matches, so keep `--catalog-out` outside the
+folder you query, or narrow the glob: `out/*.parquet` over a folder holding
+`catalog.parquet` unions the catalog's rows into the table. The
+`--skip-up-to-date` manifest is a `.json` file and never matches.
+
 ## The log
 
 `--log` writes JSON Lines: one record per file, then a summary. That format is
