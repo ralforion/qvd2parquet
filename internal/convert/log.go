@@ -86,6 +86,11 @@ type fileRecord struct {
 	Status    string `json:"status"`
 	Error     string `json:"error"`
 	ElapsedMs int64  `json:"elapsedMs"`
+	// Attempt is 2 on the record of a file the batch tried again at its end,
+	// and 1 everywhere else. Such a file has two records, the failed first
+	// attempt and the second, so its outcome is the record with the higher
+	// attempt.
+	Attempt int `json:"attempt"`
 	// OutputDeleted is set on a skipped file whose output --delete-older-than
 	// removed, in this run or an earlier one. Output still names the path the
 	// file converts to.
@@ -152,7 +157,11 @@ func (w *LogWriter) File(r FileResult) {
 		Output:            r.Output,
 		Status:            "ok",
 		ElapsedMs:         r.Elapsed.Milliseconds(),
+		Attempt:           1,
 		Table:             r.TableName(),
+	}
+	if r.Retried() {
+		rec.Attempt = 2
 	}
 	switch {
 	case r.Err != nil:
@@ -201,6 +210,7 @@ type summaryRecord struct {
 	Failed      int    `json:"failed"`
 	Skipped     int    `json:"skipped"`
 	Deleted     int    `json:"deleted"`
+	Retried     int    `json:"retried"`
 	Rows        int64  `json:"rows"`
 	OutputBytes int64  `json:"outputBytes"`
 	ElapsedMs   int64  `json:"elapsedMs"`
@@ -219,6 +229,7 @@ func (w *LogWriter) Summary(b *BatchResult) {
 		Failed:      b.Failed,
 		Skipped:     b.Skipped,
 		Deleted:     b.Deleted,
+		Retried:     b.Retried,
 		Rows:        b.Rows,
 		OutputBytes: b.Bytes,
 		ElapsedMs:   b.Elapsed.Milliseconds(),
