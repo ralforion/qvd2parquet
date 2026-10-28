@@ -404,9 +404,35 @@ func openCatalog(path string, opts *convert.Options, logf convert.Logf) (func() 
 // code to the failure. A conversion that already failed keeps its own code:
 // that is the failure worth reporting, and the catalog's is a consequence.
 func closeCatalogInto(code *int, closeCatalog func() int) {
-	if c := closeCatalog(); c != exitOK && *code == exitOK {
+	c := exitOK
+	if !afterRun(*code, "writing the catalog", func() { c = closeCatalog() }) {
+		return
+	}
+	if c != exitOK && *code == exitOK {
 		*code = c
 	}
+}
+
+// closeLog closes the log as the run ends.
+func closeLog(code *int, log *convert.LogWriter) {
+	afterRun(*code, "closing the log", func() { log.Close() })
+}
+
+// afterRun runs fn, work done as the run ends, and reports whether it ran to
+// the end. After a stall it is limited in time: the catalog and the log can
+// sit on the share that stalled, and the process still has to exit with the
+// code that says so.
+func afterRun(code int, what string, fn func()) bool {
+	if code != exitStalled {
+		fn()
+		return true
+	}
+	return convert.AfterStall(what, notef, fn)
+}
+
+// notef prints a line the way logf does, for code that has none to hand.
+func notef(format string, args ...any) {
+	fmt.Fprintf(stderr, programName+": "+format+"\n", args...)
 }
 
 // runSingle converts one explicit input/output pair. Its log uses the same
@@ -458,21 +484,23 @@ func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.
 			fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 			return exitOutput
 		}
-		defer log.Close()
+		defer closeLog(&code, log)
 	}
 
 	started := time.Now()
 	stats, quality, err := convert.RunWatched(ctx, inputPath, outputPath, opts, stallTimeout, logf)
 	elapsed := time.Since(started)
+	stalled := errors.Is(err, convert.ErrStalled)
 	if log != nil {
 		result := convert.FileResult{
 			Input: inputPath, Output: outputPath, Stats: stats, Quality: quality,
 			Err: err, Started: started, Elapsed: elapsed,
 		}
-		if err != nil {
+		if err != nil && !stalled {
 			// A conversion that got past the header knows the table, and a
 			// failed record is the one worth being able to group. Stats
-			// carries it when the conversion succeeded.
+			// carries it when the conversion succeeded. Not after a stall:
+			// reading the input again would wait on the same stuck call.
 			result.Table = convert.TableNameOf(inputPath)
 		}
 		summary := &convert.BatchResult{Results: []convert.FileResult{result}, Elapsed: elapsed}
@@ -483,9 +511,16 @@ func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.
 			summary.Rows = stats.Rows
 			summary.Bytes = stats.OutputBytes
 		}
-		log.File(result)
-		log.Summary(summary)
-		fmt.Fprintf(stderr, "%s: wrote %s\n", programName, logPath)
+		write := func() {
+			log.File(result)
+			log.Summary(summary)
+		}
+		if !stalled {
+			write()
+			fmt.Fprintf(stderr, "%s: wrote %s\n", programName, logPath)
+		} else if convert.AfterStall("writing "+logPath, notef, write) {
+			fmt.Fprintf(stderr, "%s: wrote %s\n", programName, logPath)
+		}
 	}
 
 	if err != nil {
@@ -887,7 +922,7 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 			fmt.Fprintf(stderr, "%s: %v\n", programName, err)
 			return exitOutput
 		}
-		defer log.Close()
+		defer closeLog(&code, log)
 	}
 
 	result, err2 := convert.RunMany(ctx, inputs, opts, &convert.ManyOptions{

@@ -347,7 +347,7 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 		}
 	}
 
-	if err := w.Commit(); err != nil {
+	if err := w.CommitContext(ctx); err != nil {
 		return nil, report, err
 	}
 	committed = true

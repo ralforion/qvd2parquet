@@ -197,7 +197,7 @@ func TestCancelledRunDoesNotRetry(t *testing.T) {
 	results := []FileResult{{Input: inputs[0], Err: fmt.Errorf("%w: short read", ErrInput)}}
 	cancel()
 	retryFailed(ctx, results, &opts, &ManyOptions{OutDir: t.TempDir()}, watchStalls(ctx, 0, nil, nil),
-		newLiveManifest(nil, "", "", nil, nil),
+		func(FileResult) {},
 		func(FileResult) {}, func(string, ...any) {})
 	if results[0].Retried() || !errors.Is(results[0].Err, ErrInput) {
 		t.Errorf("result = %+v, want the first failure unchanged", results[0])
@@ -293,14 +293,18 @@ func TestRetryThatLosesAnOutputDuringCancellationIsReported(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// Between the attempts the file is repaired, and from then on the share
-	// refuses every rename, which loses the existing output, and Ctrl-C
-	// arrives in the same moment.
+	// refuses every rename. The first refusal sends --force to delete the
+	// existing output and rename again; Ctrl-C arrives during that second
+	// rename, which fails too, and the output is lost.
 	withRetryHook(t, func() {
 		if _, err := qvdtest.Build(broken, sampleTable(30)); err != nil {
 			t.Fatal(err)
 		}
+		renames := 0
 		restore := parquetwrite.SetRenameForTest(func(from, to string) error {
-			cancel()
+			if renames++; renames == 2 {
+				cancel()
+			}
 			return &os.LinkError{Op: "rename", Old: from, New: to, Err: os.ErrPermission}
 		})
 		t.Cleanup(restore)

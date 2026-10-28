@@ -28,6 +28,14 @@ const DefaultStallTimeout = 10 * time.Minute
 // is not itself stuck stops at its next chunk.
 var stallGrace = 10 * time.Second
 
+// SetStallGraceForTest replaces stallGrace and returns a function that
+// restores it. It exists for tests in other packages; nothing else calls it.
+func SetStallGraceForTest(d time.Duration) (restore func()) {
+	saved := stallGrace
+	stallGrace = d
+	return func() { stallGrace = saved }
+}
+
 // stallWatch looks for a read or write that has not returned in time.
 //
 // A call the operating system never completes cannot be interrupted from the
@@ -42,12 +50,20 @@ type stallWatch struct {
 	once    sync.Once
 	fired   chan struct{}
 	call    iowatch.Call
+
+	mu     sync.Mutex
+	gaveUp map[string]bool // shutdown work given up on, by kind
 }
 
-// watchStalls starts the watch, which ends with ctx. onStall runs once, when a
-// call has been in flight for timeout. A zero timeout watches nothing.
-func watchStalls(ctx context.Context, timeout time.Duration, logf Logf, onStall func(iowatch.Call)) *stallWatch {
-	w := &stallWatch{timeout: timeout, fired: make(chan struct{})}
+// watchStalls starts the watch, which ends with life. onStall runs once, when
+// a call has been in flight for timeout. A zero timeout watches nothing.
+//
+// life is the caller's own lifetime, not the run's context. A cancelled run
+// still has to finish, and Ctrl-C is no help with a call stuck in the
+// kernel: the conversion waits on it all the same, so the watch has to go on
+// looking until the caller returns.
+func watchStalls(life context.Context, timeout time.Duration, logf Logf, onStall func(iowatch.Call)) *stallWatch {
+	w := &stallWatch{timeout: timeout, fired: make(chan struct{}), gaveUp: map[string]bool{}}
 	if timeout <= 0 {
 		return w
 	}
@@ -57,7 +73,7 @@ func watchStalls(ctx context.Context, timeout time.Duration, logf Logf, onStall 
 		defer t.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-life.Done():
 				return
 			case <-t.C:
 			}
@@ -98,6 +114,64 @@ func await[T any](w *stallWatch, convert func() T) (T, bool) {
 	case <-time.After(stallGrace):
 		var zero T
 		return zero, false
+	}
+}
+
+// stalled reports whether the watch has fired.
+func (w *stallWatch) stalled() bool {
+	select {
+	case <-w.fired:
+		return true
+	default:
+		return false
+	}
+}
+
+// shutdown runs fn, the writing a run does as it finishes: a log record, the
+// manifest. Before a stall it simply runs. After one it goes through
+// AfterStall, since the log and the manifest can sit on the share that
+// stalled, and once work of a kind has been given up on, the rest of that
+// kind is skipped at once rather than each waiting out the grace period on
+// the same share. It reports whether fn ran to the end.
+func (w *stallWatch) shutdown(kind, what string, logf Logf, fn func()) bool {
+	if w == nil || !w.stalled() {
+		fn()
+		return true
+	}
+	w.mu.Lock()
+	skip := w.gaveUp[kind]
+	w.mu.Unlock()
+	if skip {
+		return false
+	}
+	if AfterStall(what, logf, fn) {
+		return true
+	}
+	w.mu.Lock()
+	w.gaveUp[kind] = true
+	w.mu.Unlock()
+	return false
+}
+
+// AfterStall runs fn as part of shutting down a run that stalled: on its own
+// goroutine, given up on if it has not returned after the grace period. What
+// is left to write after a stall, the log, the manifest, the catalog, may sit
+// on the same stuck share, and the process still has to exit. It reports
+// whether fn ran to the end.
+func AfterStall(what string, logf Logf, fn func()) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(stallGrace):
+		if logf != nil {
+			logf("note: gave up on %s, which had not returned after %s either", what, timeoutString(stallGrace))
+		}
+		return false
 	}
 }
 
@@ -143,7 +217,9 @@ func RunWatched(ctx context.Context, inputPath, outputPath string, opts *Options
 	}
 	ctx, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
-	w := watchStalls(ctx, timeout, logf, func(c iowatch.Call) { stop(&stalledCause{c}) })
+	life, endWatch := context.WithCancel(context.Background())
+	defer endWatch()
+	w := watchStalls(life, timeout, logf, func(c iowatch.Call) { stop(&stalledCause{c}) })
 	type result struct {
 		stats   *Stats
 		quality *QualityReport

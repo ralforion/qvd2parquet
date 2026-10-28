@@ -792,8 +792,17 @@ as it takes to recover. Nothing is retried in that run: the call is still
 stuck, and the next file would most likely wait on the same drive. The next
 run picks up from the manifest.
 
+What is left to write after a stall, the log, the manifest and the catalog,
+can sit on the same share, so each gets 10 seconds; one that has not returned
+by then is given up on with a note, and the rest of the log or the manifest is
+skipped rather than waiting again. Old outputs due for `--delete-older-than`
+are left for the next run. A Ctrl-C pressed while a call is stuck does not
+switch the watch off: the run still stops, with exit 8, once the timeout has
+passed.
+
 The stuck call itself stays where it is, since nothing in the program can end
-it. Windows has to cancel it before the process can exit; `taskkill /F` does
+it. It is cancelled, so if it ever returns it commits nothing: no output is
+renamed into place, and `--force` does not delete an existing one. Windows has to cancel it before the process can exit; `taskkill /F` does
 the same, and is the fallback the message names. Writing the outputs to a
 local disk and copying them to the share as a separate step keeps the
 conversion away from the share altogether.

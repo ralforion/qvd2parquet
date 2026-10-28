@@ -4,6 +4,7 @@
 package parquetwrite
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -323,14 +324,24 @@ func footerLength(f *os.File) (int64, error) {
 }
 
 // Commit renames the finished temporary file onto the final output path.
-func (w *Writer) Commit() error {
+func (w *Writer) Commit() error { return w.CommitContext(context.Background()) }
+
+// CommitContext is Commit for a run that can be stopped. A stopped run renames
+// nothing, and above all does not delete the existing output to make room:
+// a rename the run gave up on as stalled can still return, much later, to a
+// conversion nobody is waiting for, and replacing the output then would
+// destroy it on behalf of a run that already reported it untouched.
+func (w *Writer) CommitContext(ctx context.Context) error {
 	if !w.closed {
 		return errors.New("parquetwrite: Commit called before Close")
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%s not renamed to %s: %w", w.tmpPath, w.finalPath, err)
 	}
 	end := iowatch.Begin("rename", w.tmpPath)
 	err := rename(w.tmpPath, w.finalPath)
 	end()
-	if err != nil && w.force {
+	if err != nil && w.force && ctx.Err() == nil {
 		err = replaceByDelete(w.tmpPath, w.finalPath, err)
 	}
 	if errors.Is(err, ErrOutputLost) {

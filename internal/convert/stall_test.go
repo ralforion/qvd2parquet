@@ -246,3 +246,79 @@ func TestRetryThatStallsStopsTheRun(t *testing.T) {
 		t.Errorf("exit code %d, want 8", code)
 	}
 }
+
+// Ctrl-C does not end the watch. The run is cancelled, but the conversion
+// still waits on the stuck call, and only the watch can give up on it.
+func TestCancelledRunStillStopsOnAStall(t *testing.T) {
+	src := folderFixture(t, false, false)
+	outDir := filepath.Join(t.TempDir(), "out")
+	holdConversion(t, "a.qvd", filepath.Join(outDir, "a.parquet.tmp-1"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(50*time.Millisecond, cancel) // Ctrl-C, while a.qvd is stuck
+
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+	done := make(chan *BatchResult, 1)
+	go func() {
+		b, err := RunMany(ctx, inputs, &opts, &ManyOptions{OutDir: outDir, StallTimeout: 300 * time.Millisecond}, nil)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- b
+	}()
+	select {
+	case b := <-done:
+		if code := b.ExitCode(testExitCode); code != 8 {
+			t.Errorf("exit code %d, want 8:\n%s", code, b.Summary())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the cancelled run hung on the stuck call")
+	}
+}
+
+// After a stall, the manifest is written with a time limit: it sits in the
+// output directory, which can be the share that stalled.
+func TestManifestSaveAfterAStallIsGivenUpOn(t *testing.T) {
+	src := folderFixture(t, false, false)
+	outDir := filepath.Join(t.TempDir(), "out")
+	holdConversion(t, "a.qvd", filepath.Join(outDir, "a.parquet.tmp-1"))
+	release, returned := make(chan struct{}), make(chan struct{})
+	prevSave := saveManifestFile
+	saveManifestFile = func(m *Manifest, dir string) error {
+		defer close(returned)
+		<-release
+		return nil
+	}
+	t.Cleanup(func() {
+		// The save given up on is still running: restore only once it has
+		// returned, or the restore races with it.
+		close(release)
+		<-returned
+		saveManifestFile = prevSave
+	})
+
+	var lines syncLines
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+	done := make(chan *BatchResult, 1)
+	go func() {
+		b, err := RunMany(context.Background(), inputs, &opts, &ManyOptions{OutDir: outDir,
+			StallTimeout: 300 * time.Millisecond, SkipUpToDate: true, ToolVersion: "3.1.0"}, lines.logf)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- b
+	}()
+	select {
+	case b := <-done:
+		if code := b.ExitCode(testExitCode); code != 8 {
+			t.Errorf("exit code %d, want 8", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run hung writing the manifest after the stall")
+	}
+	if out := lines.String(); !strings.Contains(out, "gave up on writing "+ManifestName) {
+		t.Errorf("the console must say the manifest was given up on:\n%s", out)
+	}
+}
