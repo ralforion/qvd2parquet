@@ -183,3 +183,66 @@ func TestTimeoutString(t *testing.T) {
 		}
 	}
 }
+
+// A retry runs under the same watch: a retry that waits on a stuck share
+// stops the run like a first attempt does, rather than hanging it.
+func TestRetryThatStallsStopsTheRun(t *testing.T) {
+	src := folderFixture(t, false, true)
+	broken := filepath.Join(src, "broken.qvd")
+	outDir := filepath.Join(t.TempDir(), "out")
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	attempts := 0
+	prev, prevGrace := runHook, stallGrace
+	stallGrace = 100 * time.Millisecond
+	runHook = func(in string) func() {
+		if in != broken {
+			return func() {}
+		}
+		attempts++
+		if attempts == 1 {
+			return func() {} // the first attempt fails on its own: not a QVD
+		}
+		end := iowatch.Begin("write", filepath.Join(outDir, "broken.parquet.tmp-1"))
+		<-release
+		end()
+		return func() { close(finished) }
+	}
+	t.Cleanup(func() {
+		close(release)
+		select {
+		case <-finished:
+		case <-time.After(10 * time.Second):
+			t.Error("the held retry did not finish after being released")
+		}
+		runHook, stallGrace = prev, prevGrace
+	})
+	withRetryHook(t, func() {})
+
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+	start := time.Now()
+	b, err := RunMany(context.Background(), inputs, &opts,
+		&ManyOptions{OutDir: outDir, StallTimeout: 300 * time.Millisecond}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("the run took %s; a stalled retry must not hold it", took)
+	}
+	var r FileResult
+	for _, x := range b.Results {
+		if x.Input == broken {
+			r = x
+		}
+	}
+	if !r.Retried() || !errors.Is(r.Err, ErrStalled) {
+		t.Errorf("broken.qvd: retried=%v err=%v, want a stalled retry", r.Retried(), r.Err)
+	}
+	if b.Converted != 2 {
+		t.Errorf("converted = %d, want the other two", b.Converted)
+	}
+	if code := b.ExitCode(testExitCode); code != 8 {
+		t.Errorf("exit code %d, want 8", code)
+	}
+}

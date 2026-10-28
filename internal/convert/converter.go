@@ -60,6 +60,15 @@ func (s Stats) RowsPerSecond() float64 {
 // Logf receives human-readable progress lines. It may be nil.
 type Logf func(format string, args ...any)
 
+// readFailure marks an error that came from reading the input's header or
+// symbol tables, so a batch knows a second read might succeed where the first
+// did not. Its message is the wrapped error's, unchanged. The record reads and
+// decoding say the same with ErrInput.
+type readFailure struct{ err error }
+
+func (e readFailure) Error() string { return e.err.Error() }
+func (e readFailure) Unwrap() error { return e.err }
+
 // runHook runs as a conversion starts, and what it returns as it ends. A test
 // replaces it to hold a conversion inside a call that does not return, which
 // is the one thing a real file cannot be made to do on demand.
@@ -81,7 +90,7 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 
 	f, err := qvd.Open(inputPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, readFailure{err}
 	}
 	defer f.Close()
 
@@ -129,7 +138,7 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 	// than against a later reading of the file.
 	f.VerifyReads = opts.Quality >= QualityReread
 	if err := f.ReadSymbols(qvd.UnknownSymbolError); err != nil {
-		return nil, nil, err
+		return nil, nil, readFailure{err}
 	}
 	var symbolsRead int64
 	for _, p := range f.Profiles {

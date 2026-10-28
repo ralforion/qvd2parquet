@@ -33,8 +33,9 @@ rounded the way Qlik displays them, which changes values already written.
   process was still writing, such as one a copy job had not finished, failed
   with errors that look like damage (`unexpected EOF`, `unknown symbol tag`,
   `decoded symbol id ... but symbol table has ...`) and now converts on the
-  second attempt. Schema policy, output, quality gate and cancellation failures
-  are not retried. The summary lists the files that converted only on retry
+  second attempt. Only failures known to come from reading the input are
+  retried; schema policy, output, report, schema override, quality gate and
+  cancellation failures are not. The summary lists the files that converted only on retry
   with the first error, the log writes a record per attempt with a new
   `attempt` field, and the summary record has a `retried` count. No option
   changed, so existing folders are not reconverted by the upgrade.

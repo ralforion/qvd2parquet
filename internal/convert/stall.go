@@ -101,6 +101,20 @@ func await[T any](w *stallWatch, convert func() T) (T, bool) {
 	}
 }
 
+// convertFile runs one conversion of a batch under the watch, and reports it
+// as stalled if the watch gives up on it.
+func (w *stallWatch) convertFile(in, out string, logf Logf, convert func() FileResult) FileResult {
+	started := time.Now()
+	r, ok := await(w, convert)
+	if ok {
+		return r
+	}
+	r = FileResult{Input: in, Output: out, Started: started, Elapsed: time.Since(started),
+		Err: w.abandoned(in, out)}
+	logf("FAIL %s: %s", DisplayPath(in), r.Err)
+	return r
+}
+
 // abandoned is the error of a conversion given up on after the stall: the one
 // that made the stuck call, or one that did not wind down in time after it.
 func (w *stallWatch) abandoned(input, output string) error {

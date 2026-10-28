@@ -331,9 +331,11 @@ is not one (`unknown symbol tag 0x40`), or a record that points past its symbol
 table (`decoded symbol id 7166, but symbol table has ...`). By the end of the
 batch the copy has usually finished, and the file converts.
 
-Only read and decode failures are retried. A schema policy error, an output
-that could not be written, a failed quality gate, or a cancelled run would fail
-the same way again, and is reported as it is. The retries run one at a time,
+Only failures known to come from reading the input are retried: its header,
+its symbol tables, or its records. Anything else, such as a schema policy
+error, an output or a report that could not be written, a schema override that
+does not apply, a failed quality gate, or a cancelled run, would fail the same
+way again, and is reported as it is. The retries run one at a time,
 after every other file, and each waits until 10 seconds have passed since its
 first attempt ended. In a long batch that time has long passed; in a short one
 the run says it is waiting.

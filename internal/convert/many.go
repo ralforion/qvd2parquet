@@ -690,17 +690,9 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 				results[i] = FileResult{Input: in, Output: many.Tree.Output(in, many.OutDir),
 					Err: stoppedErr(ctx, fmt.Errorf("%w before this file was converted", ErrCanceled))}
 			} else {
-				started := time.Now()
-				r, ok := await(watch, func() FileResult {
+				results[i] = watch.convertFile(in, many.Tree.Output(in, many.OutDir), safeLogf, func() FileResult {
 					return convertOne(ctx, in, opts, many, perFile, fileWorkers > 1, safeLogf)
 				})
-				if !ok {
-					out := many.Tree.Output(in, many.OutDir)
-					r = FileResult{Input: in, Output: out, Started: started, Elapsed: time.Since(started),
-						Err: watch.abandoned(in, out)}
-					safeLogf("FAIL %s: %s", DisplayPath(in), r.Err)
-				}
-				results[i] = r
 			}
 			if errors.Is(results[i].Err, parquetwrite.ErrOutputLost) {
 				safeLogf("stopping the batch: %s lost its existing output, and the next file would likely lose its own",
@@ -721,7 +713,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	}
 	wg.Wait()
 
-	retryFailed(ctx, results, opts, many, live, logResult, safeLogf)
+	retryFailed(ctx, results, opts, many, watch, live, logResult, safeLogf)
 
 	// The last save is unconditional: the saves during the run are throttled,
 	// so the files converted since the most recent one are in the manifest but
@@ -812,7 +804,7 @@ var retryWait = 10 * time.Second
 // first one failed. Something else was writing to the folder, and whoever
 // reads the log should be able to tell.
 func retryFailed(ctx context.Context, results []FileResult, opts *Options, many *ManyOptions,
-	live *liveManifest, logResult func(FileResult), logf Logf) {
+	watch *stallWatch, live *liveManifest, logResult func(FileResult), logf Logf) {
 
 	var again []int
 	for i, r := range results {
@@ -843,8 +835,15 @@ func retryFailed(ctx context.Context, results []FileResult, opts *Options, many 
 			return
 		}
 		logf("retry %s (first attempt: %s)", DisplayPath(first.Input), trimPathPrefix(first.Err.Error(), first.Input))
-		r := convertOne(ctx, first.Input, opts, many, perFile, false, logf)
-		if r.Err != nil && ctx.Err() != nil {
+		// Under the watch like the first attempt: a retry is as able to wait
+		// on a stuck share as anything else.
+		r := watch.convertFile(first.Input, first.Output, logf, func() FileResult {
+			return convertOne(ctx, first.Input, opts, many, perFile, false, logf)
+		})
+		if ctx.Err() != nil && cancelled(r.Err) {
+			// Stopped, not failed: the first failure stands. Any other error
+			// is what the retry did, an output it lost among them, and is
+			// recorded even though the run is stopping.
 			return
 		}
 		r.FirstErr = first.Err
@@ -864,27 +863,38 @@ func retryFailed(ctx context.Context, results []FileResult, opts *Options, many 
 var beforeRetry = func() {}
 
 // retryable reports whether a failure is worth a second attempt: a read or
-// decode failure, which is what a file changing underneath the reader
-// produces. A failure of the run's own making, a schema policy, an output
-// that could not be written, a quality gate, or a cancellation, would only
-// fail the same way again.
+// decode failure of the input, which is what a file changing underneath the
+// reader produces. Only failures known to be one are retried. Anything else,
+// a schema policy, an output or a report that could not be written, a schema
+// override that does not apply, a quality gate, or a cancellation, would fail
+// the same way again, and repeating a whole conversion to find that out is
+// not free.
 func retryable(err error) bool {
+	var rf readFailure
 	switch {
 	case err == nil:
 		return false
 	case errors.Is(err, qvd.ErrUnstableRead):
+		// Before the exclusions: the reread gate reports it as a gate failure.
 		return true
 	case errors.Is(err, ErrStalled),
-		errors.Is(err, ErrCanceled),
-		errors.Is(err, context.Canceled),
-		errors.Is(err, context.DeadlineExceeded),
+		cancelled(err),
 		errors.Is(err, parquetwrite.ErrOutput),
 		errors.Is(err, parquetwrite.ErrOutputLost),
 		errors.Is(err, ErrSchemaPolicy),
 		errors.Is(err, ErrQualityGate):
 		return false
+	case errors.As(err, &rf), errors.Is(err, ErrInput):
+		return true
 	}
-	return true
+	return false
+}
+
+// cancelled reports whether err is a cancellation rather than a failure.
+func cancelled(err error) bool {
+	return errors.Is(err, ErrCanceled) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 // beforeOldOutputsDeleted runs between the final manifest save and the
