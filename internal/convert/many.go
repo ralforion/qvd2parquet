@@ -820,7 +820,10 @@ func retryFailed(ctx context.Context, results []FileResult, opts *Options, many 
 		}
 		logf("retry %s (first attempt: %s)", DisplayPath(first.Input), trimPathPrefix(first.Err.Error(), first.Input))
 		r := convertOne(ctx, first.Input, opts, many, perFile, false, logf)
-		if r.Err != nil && ctx.Err() != nil {
+		if ctx.Err() != nil && cancelled(r.Err) {
+			// Stopped, not failed: the first failure stands. Any other error
+			// is what the retry did, an output it lost among them, and is
+			// recorded even though the run is stopping.
 			return
 		}
 		r.FirstErr = first.Err
@@ -840,26 +843,37 @@ func retryFailed(ctx context.Context, results []FileResult, opts *Options, many 
 var beforeRetry = func() {}
 
 // retryable reports whether a failure is worth a second attempt: a read or
-// decode failure, which is what a file changing underneath the reader
-// produces. A failure of the run's own making, a schema policy, an output
-// that could not be written, a quality gate, or a cancellation, would only
-// fail the same way again.
+// decode failure of the input, which is what a file changing underneath the
+// reader produces. Only failures known to be one are retried. Anything else,
+// a schema policy, an output or a report that could not be written, a schema
+// override that does not apply, a quality gate, or a cancellation, would fail
+// the same way again, and repeating a whole conversion to find that out is
+// not free.
 func retryable(err error) bool {
+	var rf readFailure
 	switch {
 	case err == nil:
 		return false
 	case errors.Is(err, qvd.ErrUnstableRead):
+		// Before the exclusions: the reread gate reports it as a gate failure.
 		return true
-	case errors.Is(err, ErrCanceled),
-		errors.Is(err, context.Canceled),
-		errors.Is(err, context.DeadlineExceeded),
+	case cancelled(err),
 		errors.Is(err, parquetwrite.ErrOutput),
 		errors.Is(err, parquetwrite.ErrOutputLost),
 		errors.Is(err, ErrSchemaPolicy),
 		errors.Is(err, ErrQualityGate):
 		return false
+	case errors.As(err, &rf), errors.Is(err, ErrInput):
+		return true
 	}
-	return true
+	return false
+}
+
+// cancelled reports whether err is a cancellation rather than a failure.
+func cancelled(err error) bool {
+	return errors.Is(err, ErrCanceled) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 // beforeOldOutputsDeleted runs between the final manifest save and the
