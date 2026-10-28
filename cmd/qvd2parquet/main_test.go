@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/ralforion/qvd2parquet/internal/catalog"
 	"github.com/ralforion/qvd2parquet/internal/convert"
+	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
 	"github.com/ralforion/qvd2parquet/internal/qvdtest"
 )
@@ -2244,5 +2246,18 @@ func TestDeletedOutputKeepsItsCatalogRowsThroughASymlink(t *testing.T) {
 			t.Errorf("%s.%s lost its QVD side once deleted:\n got %+v\nwant %+v",
 				got.SourceTable, got.ColumnName, got, want)
 		}
+	}
+}
+
+// A stall exits 8 whatever else its error carries: a scheduled job has to be
+// able to tell a run that stopped on a stuck disk from one that failed.
+func TestExitCodeForStall(t *testing.T) {
+	stalled := fmt.Errorf("%w: write to x did not return in 10m", convert.ErrStalled)
+	if got := exitCodeFor(stalled); got != exitStalled {
+		t.Errorf("exit code %d, want %d", got, exitStalled)
+	}
+	both := fmt.Errorf("%w: %w", parquetwrite.ErrOutput, stalled)
+	if got := exitCodeFor(both); got != exitStalled {
+		t.Errorf("a stalled write that also carries ErrOutput exits %d, want %d", got, exitStalled)
 	}
 }

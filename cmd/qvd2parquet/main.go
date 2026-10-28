@@ -31,6 +31,7 @@ const (
 	exitOutput      = 5
 	exitQuality     = 6
 	exitCanceled    = 7
+	exitStalled     = 8
 )
 
 // Program identity. version is overridden at build time with
@@ -150,6 +151,7 @@ func run() int {
 		excludeFiles  = fs.String("exclude-files", "", "With --out-dir, skip the files matching these comma-separated wildcard patterns")
 		skipUpToDate  = fs.Bool("skip-up-to-date", false, "With --out-dir, leave a file alone when this exact run already produced its output")
 		deleteOlder   = fs.Int("delete-older-than", 0, "With --skip-up-to-date, delete an up-to-date output written more than this many days ago, and keep skipping it until its input changes")
+		stallTimeout  = fs.Duration("stall-timeout", convert.DefaultStallTimeout, "Stop the run when one read or write on an input or output has not returned after this long, exit 8; 0 never stops")
 		logPath       = fs.String("log", "", "Write one JSON Lines record per input, then a summary")
 		consolePath   = fs.String("console-log", "", "Also write the screen output to this file, as it is printed")
 		inspect       = fs.Bool("inspect", false, "Read only the header and symbol tables, print the schema, and exit")
@@ -190,6 +192,9 @@ func run() int {
 	case batch && fs.NArg() < 1:
 		fmt.Fprintf(stderr, "%s: --out-dir needs at least one input file or directory\n\n", programName)
 		fs.Usage()
+		return exitUsage
+	case *stallTimeout < 0:
+		fmt.Fprintf(stderr, "%s: --stall-timeout cannot be negative, got %s\n", programName, *stallTimeout)
 		return exitUsage
 	case *deleteOlder < 0:
 		fmt.Fprintf(stderr, "%s: --delete-older-than takes a number of days, got %d\n", programName, *deleteOlder)
@@ -346,10 +351,10 @@ func run() int {
 			Exclude:   splitList(*excludeFiles),
 		}
 		return runBatch(ctx, fs.Args(), &opts, *outDir, *fileWorkers, sel, *keepTree, *skipUpToDate,
-			time.Duration(*deleteOlder)*24*time.Hour, *logPath, *catalogOut, *consolePath, logf)
+			time.Duration(*deleteOlder)*24*time.Hour, *stallTimeout, *logPath, *catalogOut, *consolePath, logf)
 	}
 
-	return runSingle(ctx, inputPath, outputPath, &opts, *logPath, *catalogOut, *consolePath, logf)
+	return runSingle(ctx, inputPath, outputPath, &opts, *stallTimeout, *logPath, *catalogOut, *consolePath, logf)
 }
 
 // openCatalog creates the run's catalog writer and returns a function that
@@ -408,7 +413,7 @@ func closeCatalogInto(code *int, closeCatalog func() int) {
 // file-plus-summary records as runBatch so automation can query either mode
 // without knowing how many files the command converted.
 func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.Options,
-	logPath, catalogPath, consolePath string, logf convert.Logf) (code int) {
+	stallTimeout time.Duration, logPath, catalogPath, consolePath string, logf convert.Logf) (code int) {
 
 	// Every path guard runs before either writer is created. Both the log and
 	// the catalog are written by truncating, so a writer opened ahead of a
@@ -457,7 +462,7 @@ func runSingle(ctx context.Context, inputPath, outputPath string, opts *convert.
 	}
 
 	started := time.Now()
-	stats, quality, err := convert.Run(ctx, inputPath, outputPath, opts, logf)
+	stats, quality, err := convert.RunWatched(ctx, inputPath, outputPath, opts, stallTimeout, logf)
 	elapsed := time.Since(started)
 	if log != nil {
 		result := convert.FileResult{
@@ -780,7 +785,7 @@ func canonicalPath(path string) string {
 // one bad file does not hide the state of the rest.
 func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 	outDir string, fileWorkers int, sel convert.InputSelection, keepTree, skipUpToDate bool,
-	deleteOlderThan time.Duration, logPath, catalogPath, consolePath string, logf convert.Logf) (code int) {
+	deleteOlderThan, stallTimeout time.Duration, logPath, catalogPath, consolePath string, logf convert.Logf) (code int) {
 
 	found := convert.FindInputs(paths, sel)
 	inputs, problems := found.Files, found.Problems
@@ -895,6 +900,7 @@ func runBatch(ctx context.Context, paths []string, opts *convert.Options,
 		SkipUpToDate:    skipUpToDate,
 		ToolVersion:     version,
 		DeleteOlderThan: deleteOlderThan,
+		StallTimeout:    stallTimeout,
 	}, logf)
 	if err2 != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", programName, err2)
@@ -1094,6 +1100,9 @@ func usageErr(err error) int {
 // exitCodeFor maps an error onto the documented exit codes.
 func exitCodeFor(err error) int {
 	switch {
+	// First: a stall ends the run whatever else the error carries.
+	case errors.Is(err, convert.ErrStalled):
+		return exitStalled
 	case errors.Is(err, convert.ErrQualityGate):
 		return exitQuality
 	case errors.Is(err, parquetwrite.ErrOutput):

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ralforion/qvd2parquet/internal/catalog"
+	"github.com/ralforion/qvd2parquet/internal/iowatch"
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
@@ -105,6 +106,10 @@ func rank(code int) int {
 	switch code {
 	case 0:
 		return 0
+	case 8: // stalled: the run stopped on a call that never returned, and the
+		// rest were never attempted; outranks a cancellation, which is the
+		// user's own doing
+		return 8
 	case 7: // cancelled: the summary is incomplete, which outranks any
 		// individual file's verdict, since the rest were never attempted
 		return 7
@@ -455,6 +460,12 @@ type ManyOptions struct {
 	// It is not an Options field on purpose: FingerprintOptions hashes every
 	// one of those, and a new one would reconvert every existing folder.
 	DeleteOlderThan time.Duration
+	// StallTimeout stops the run when a single read or write on an input or
+	// an output has not returned after this long. The file is reported as
+	// stalled, the files after it as not converted, and the stuck call is
+	// left behind, since nothing can end it. Zero watches nothing. Not an
+	// Options field, for the reason DeleteOlderThan is not.
+	StallTimeout time.Duration
 }
 
 // RunMany converts every input, continuing past a failure so one bad file does
@@ -549,6 +560,9 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	// output too.
 	ctx, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
+	// A stall stops the batch the same way: the next file would most likely
+	// wait on the same disk or share.
+	watch := watchStalls(ctx, many.StallTimeout, safeLogf, func(c iowatch.Call) { stop(&stalledCause{c}) })
 
 	results := make([]FileResult, len(inputs))
 	// pending are the skipped files whose output --delete-older-than deletes
@@ -676,7 +690,17 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 				results[i] = FileResult{Input: in, Output: many.Tree.Output(in, many.OutDir),
 					Err: stoppedErr(ctx, fmt.Errorf("%w before this file was converted", ErrCanceled))}
 			} else {
-				results[i] = convertOne(ctx, in, opts, many, perFile, fileWorkers > 1, safeLogf)
+				started := time.Now()
+				r, ok := await(watch, func() FileResult {
+					return convertOne(ctx, in, opts, many, perFile, fileWorkers > 1, safeLogf)
+				})
+				if !ok {
+					out := many.Tree.Output(in, many.OutDir)
+					r = FileResult{Input: in, Output: out, Started: started, Elapsed: time.Since(started),
+						Err: watch.abandoned(in, out)}
+					safeLogf("FAIL %s: %s", DisplayPath(in), r.Err)
+				}
+				results[i] = r
 			}
 			if errors.Is(results[i].Err, parquetwrite.ErrOutputLost) {
 				safeLogf("stopping the batch: %s lost its existing output, and the next file would likely lose its own",
@@ -850,7 +874,8 @@ func retryable(err error) bool {
 		return false
 	case errors.Is(err, qvd.ErrUnstableRead):
 		return true
-	case errors.Is(err, ErrCanceled),
+	case errors.Is(err, ErrStalled),
+		errors.Is(err, ErrCanceled),
 		errors.Is(err, context.Canceled),
 		errors.Is(err, context.DeadlineExceeded),
 		errors.Is(err, parquetwrite.ErrOutput),
@@ -988,9 +1013,17 @@ func (s *batchStopped) Error() string {
 // error naming the file that stopped it, rather than as a cancellation: nobody
 // pressed Ctrl-C, and exit 7 would say someone did.
 func stoppedErr(ctx context.Context, err error) error {
+	if !errors.Is(err, ErrCanceled) && !errors.Is(err, context.Canceled) {
+		return err
+	}
 	var s *batchStopped
-	if (errors.Is(err, ErrCanceled) || errors.Is(err, context.Canceled)) && errors.As(context.Cause(ctx), &s) {
+	if errors.As(context.Cause(ctx), &s) {
 		return fmt.Errorf("%w: not converted: %v", parquetwrite.ErrOutput, s)
+	}
+	// Nobody pressed Ctrl-C after a stall either, and exit 7 would say so.
+	var st *stalledCause
+	if errors.As(context.Cause(ctx), &st) {
+		return fmt.Errorf("%w: not converted: %v", ErrStalled, st)
 	}
 	return err
 }

@@ -404,6 +404,8 @@ func TestBatchExitCodeRanksFailures(t *testing.T) {
 
 func testExitCode(err error) int {
 	switch {
+	case errors.Is(err, ErrStalled):
+		return 8
 	case errors.Is(err, ErrQualityGate):
 		return 6
 	case errors.Is(err, parquetwrite.ErrOutput):

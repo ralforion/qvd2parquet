@@ -60,10 +60,19 @@ func (s Stats) RowsPerSecond() float64 {
 // Logf receives human-readable progress lines. It may be nil.
 type Logf func(format string, args ...any)
 
+// runHook runs as a conversion starts, and what it returns as it ends. A test
+// replaces it to hold a conversion inside a call that does not return, which
+// is the one thing a real file cannot be made to do on demand.
+var runHook = func(inputPath string) (done func()) { return func() {} }
+
 // Run performs the full QVD to Parquet conversion.
 func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf Logf) (*Stats, *QualityReport, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
+	}
+	defer runHook(inputPath)()
+	if ctx.Err() != nil {
+		return nil, nil, fmt.Errorf("%w before this file was converted", ErrCanceled)
 	}
 	if err := opts.Validate(); err != nil {
 		return nil, nil, err

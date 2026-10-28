@@ -152,6 +152,8 @@ qvd2parquet --catalog-scan --catalog-out catalog.parquet <file-or-directory>...
   -quality-tolerance 1e-9    Relative tolerance for floating-point quality checks
   -quality-abs-tolerance 0   Absolute tolerance for floating-point quality checks
   -progress 1000000          Log every N rows, 0 disables progress
+  -stall-timeout 10m         Stop the run when one read or write has not returned
+                             after this long, exit 8; 0 never stops
   -inspect                   Read only the header and symbol tables, print the schema, and exit
   -force                     Overwrite an existing output file
   -strict                    Enable strict validation defaults
@@ -759,11 +761,40 @@ title bar, Properties, uncheck QuickEdit Mode), or use Windows Terminal, where
 selecting text does not stall the writer, or keep the prose off the console
 altogether with one of the forms above.
 
-If it really is stuck, the three signs come together: the process using no CPU,
-the output's `.parquet.tmp-*` file not growing, and the console not in
-selection mode. Start it with `GOTRACEBACK=all` set and press `Ctrl-Break`; the
-Go runtime dumps every goroutine's stack, which says where it is parked, and
-the run ends with the dump. On Linux and macOS that dump comes from `Ctrl-\`.
+If it really is stuck, the signs come together: the process using no CPU, the
+output's `.parquet.tmp-*` file not growing, and the console not in selection
+mode. The usual cause is a read or write the operating system never completes,
+most often on a network share or a drive backed by object storage: Resource
+Monitor's *Associated Handles* for `qvd2parquet.exe` then shows the file it is
+waiting on. Ctrl-C cannot end that. The first one asks the run to stop at its
+next step, which it never reaches, and the second hands the process to
+Windows, which cannot end it until the call is cancelled. `Ctrl-Break` is the
+same as Ctrl-C on Windows: Go treats it as an interrupt, not as the request for
+a stack dump it is on Linux and macOS (`Ctrl-\` there).
+
+`--stall-timeout` (default 10 minutes) is what ends such a run. Every read and
+write on an input or an output is timed on its own, so a conversion that keeps
+making progress is never stopped however long it takes, and a phase that only
+computes never counts. When one call has not returned in time:
+
+```text
+qvd2parquet: stalled: write to Y:\upload\SAP\daily\ADRC.parquet.tmp-521340 has not returned
+in 10m (started 09:33:12); stopping the run. The call is waiting in the operating system and
+cannot be interrupted; if this process does not exit, end it with taskkill /F /PID 521340
+```
+
+The file is reported as stalled, the files after it as not converted, the log
+and the `--skip-up-to-date` manifest are written, and the run exits **8**, so
+a scheduled job gets control back instead of waiting on the share for as long
+as it takes to recover. Nothing is retried in that run: the call is still
+stuck, and the next file would most likely wait on the same drive. The next
+run picks up from the manifest.
+
+The stuck call itself stays where it is, since nothing in the program can end
+it. Windows has to cancel it before the process can exit; `taskkill /F` does
+the same, and is the fallback the message names. Writing the outputs to a
+local disk and copying them to the share as a separate step keeps the
+conversion away from the share altogether.
 
 The log path has to differ from every file the run writes or reads: the inputs,
 the outputs, `--schema`, and the schema and quality reports. In batch mode that
@@ -1295,6 +1326,7 @@ Two details are worth knowing:
 | 5 | output/write error |
 | 6 | quality gate failure |
 | 7 | cancelled by Ctrl-C or SIGTERM |
+| 8 | stalled: a read or write did not return within `--stall-timeout` |
 
 ## Type resolution
 

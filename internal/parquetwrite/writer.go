@@ -20,6 +20,8 @@ import (
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/compress"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
+
+	"github.com/ralforion/qvd2parquet/internal/iowatch"
 )
 
 // ErrOutput marks an output/write failure (CLI exit code 5).
@@ -204,7 +206,9 @@ func Create(finalPath string, schema *arrow.Schema, opts Options, force bool) (*
 	if err := removeTemp(tmpPath); err != nil {
 		return nil, err
 	}
+	end := iowatch.Begin("create", tmpPath)
 	f, err := os.Create(tmpPath)
+	end()
 	if err != nil {
 		return nil, fmt.Errorf("%w: create %s: %v", ErrOutput, tmpPath, err)
 	}
@@ -216,7 +220,7 @@ func Create(finalPath string, schema *arrow.Schema, opts Options, force bool) (*
 
 	// The writer closes a sink that is an io.Closer. Hiding Close keeps the
 	// handle open, so Close below can sync it without reopening the file.
-	fw, err := pqarrow.NewFileWriter(schema, writeOnly{f}, wp, ap)
+	fw, err := pqarrow.NewFileWriter(schema, writeOnly{iowatch.File{File: f}}, wp, ap)
 	if err != nil {
 		f.Close()
 		removeTemp(tmpPath)
@@ -264,13 +268,19 @@ func (w *Writer) Close() error {
 		w.file.Close()
 		return fmt.Errorf("%w: close Parquet writer: %v", ErrOutput, err)
 	}
-	if err := w.file.Sync(); err != nil {
+	end := iowatch.Begin("sync", w.tmpPath)
+	err := w.file.Sync()
+	end()
+	if err != nil {
 		w.file.Close()
 		return fmt.Errorf("%w: sync %s: %v", ErrOutput, w.tmpPath, err)
 	}
 	// Best-effort: the length only feeds a warning.
 	w.footer, _ = footerLength(w.file)
-	if err := w.file.Close(); err != nil {
+	end = iowatch.Begin("close", w.tmpPath)
+	err = w.file.Close()
+	end()
+	if err != nil {
 		return fmt.Errorf("%w: close %s: %v", ErrOutput, w.tmpPath, err)
 	}
 	return nil
@@ -317,7 +327,9 @@ func (w *Writer) Commit() error {
 	if !w.closed {
 		return errors.New("parquetwrite: Commit called before Close")
 	}
+	end := iowatch.Begin("rename", w.tmpPath)
 	err := rename(w.tmpPath, w.finalPath)
+	end()
 	if err != nil && w.force {
 		err = replaceByDelete(w.tmpPath, w.finalPath, err)
 	}
@@ -420,7 +432,10 @@ func replaceByDelete(tmpPath, finalPath string, renameErr error) error {
 	if err := removeTemp(finalPath); err != nil {
 		return fmt.Errorf("%v; deleting the existing file to replace it failed too: %v", renameErr, err)
 	}
-	if err := rename(tmpPath, finalPath); err != nil {
+	end := iowatch.Begin("rename", tmpPath)
+	err := rename(tmpPath, finalPath)
+	end()
+	if err != nil {
 		return fmt.Errorf("%w: %s; the new output is kept at %s; rename it to %s by hand (first rename: %v; after deleting: %v)",
 			ErrOutputLost, finalPath, tmpPath, filepath.Base(finalPath), renameErr, err)
 	}
@@ -458,7 +473,10 @@ func (w *Writer) Abort() error {
 func removeTemp(path string) error {
 	var err error
 	for attempt := 0; attempt < 5; attempt++ {
-		if err = os.Remove(path); err == nil || errors.Is(err, os.ErrNotExist) {
+		end := iowatch.Begin("delete", path)
+		err = os.Remove(path)
+		end()
+		if err == nil || errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		time.Sleep(time.Duration(attempt+1) * 40 * time.Millisecond)

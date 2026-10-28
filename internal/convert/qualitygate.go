@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sync"
 	"time"
 
@@ -14,6 +13,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
+
+	"github.com/ralforion/qvd2parquet/internal/iowatch"
 )
 
 // RunQualityGate validates the written Parquet file against the metrics
@@ -174,13 +175,13 @@ func compareSchemas(want, got *arrow.Schema) error {
 // for the reason decode workers do: Windows serializes concurrent ReadAt on a
 // shared one.
 func readParquetMetrics(ctx context.Context, path string, rs *ResolvedSchema, opts *Options, logf Logf) (*Metrics, int64, *arrow.Schema, error) {
-	f, err := os.Open(path)
+	f, err := watchedOpen(path)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("open Parquet output %s: %w", path, err)
 	}
 	defer f.Close()
 
-	rdr, err := file.NewParquetReader(f)
+	rdr, err := file.NewParquetReader(iowatch.File{File: f})
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("open Parquet output %s: %w", path, err)
 	}
@@ -277,13 +278,13 @@ func readParquetMetrics(ctx context.Context, path string, rs *ResolvedSchema, op
 func readRowGroups(ctx context.Context, path string, groups []int, rs *ResolvedSchema,
 	opts *Options, hash bool, report func(int64)) (*Metrics, int64, error) {
 
-	f, err := os.Open(path)
+	f, err := watchedOpen(path)
 	if err != nil {
 		return nil, 0, fmt.Errorf("open Parquet output %s: %w", path, err)
 	}
 	defer f.Close()
 
-	rdr, err := file.NewParquetReader(f)
+	rdr, err := file.NewParquetReader(iowatch.File{File: f})
 	if err != nil {
 		return nil, 0, fmt.Errorf("open Parquet output %s: %w", path, err)
 	}

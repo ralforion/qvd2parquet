@@ -13,6 +13,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/ralforion/qvd2parquet/internal/iowatch"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
 
@@ -333,7 +334,7 @@ type worker struct {
 // mode into a no-op that reports success. Handle exhaustion in a long batch is
 // exactly where that would happen, and exactly where the check is wanted.
 var openVerifyReader = func(qf *qvd.File) (io.ReaderAt, func(), error) {
-	f, err := os.Open(qf.Path)
+	f, err := watchedOpen(qf.Path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: open %s to verify reads: %v", ErrInput, qf.Path, err)
 	}
@@ -349,7 +350,14 @@ var openVerifyReader = func(qf *qvd.File) (io.ReaderAt, func(), error) {
 		return nil, nil, fmt.Errorf("%w: verify reads of %s: the file was replaced during conversion",
 			ErrInput, qf.Path)
 	}
-	return f, func() { f.Close() }, nil
+	return iowatch.File{File: f}, func() { f.Close() }, nil
+}
+
+// watchedOpen is os.Open, recorded with iowatch: an open on a stalled share
+// can block like any read.
+func watchedOpen(path string) (*os.File, error) {
+	defer iowatch.Begin("open", path)()
+	return os.Open(path)
 }
 
 // openWorkerFile opens a private handle on the QVD for one decode worker. It
@@ -362,7 +370,7 @@ var openVerifyReader = func(qf *qvd.File) (io.ReaderAt, func(), error) {
 // its own pointer, which is why this reopens the path -- duplicating the
 // handle would share the pointer the lock exists to protect.
 func openWorkerFile(qf *qvd.File) *os.File {
-	f, err := os.Open(qf.Path)
+	f, err := watchedOpen(qf.Path)
 	if err != nil {
 		return nil
 	}
@@ -466,7 +474,7 @@ func (w *worker) decodeChunk(ch DecodeChunk) (DecodeResult, error) {
 	// being believed. That is loud and safe, which is why this path is not
 	// wrapped the way the sequential header and symbol reads are: a wrapper
 	// here would never regain control to refuse it.
-	n, err := w.file.ReadAt(buf, ch.ByteOffset)
+	n, err := iowatch.File{File: w.file}.ReadAt(buf, ch.ByteOffset)
 	if err != nil && !(errors.Is(err, io.EOF) && n == size) {
 		return DecodeResult{}, fmt.Errorf("%w: read rows %d..%d at offset %d: read %d of %d bytes: %v",
 			ErrInput, ch.StartRow, ch.StartRow+int64(ch.RowCount), ch.ByteOffset, n, size, err)
