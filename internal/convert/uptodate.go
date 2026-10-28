@@ -398,11 +398,15 @@ func (l *liveManifest) Save() error {
 	return l.save()
 }
 
+// saveManifestFile is Manifest.Save, replaceable so a test can make the write
+// hang the way one to a stalled share does.
+var saveManifestFile = (*Manifest).Save
+
 // save writes the manifest and sets the gap before the next one. The caller
 // holds the lock.
 func (l *liveManifest) save() error {
 	started := time.Now()
-	err := l.m.Save(l.outDir)
+	err := saveManifestFile(l.m, l.outDir)
 	l.lastSave = time.Now()
 	l.gap = min(max(manifestSaveDutyCycle*l.lastSave.Sub(started), manifestSaveFloor), manifestSaveCeiling)
 	return err

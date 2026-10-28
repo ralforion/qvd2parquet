@@ -10,6 +10,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/ralforion/qvd2parquet/internal/iowatch"
 )
 
 // File is an opened QVD ready for symbol and record access.
@@ -43,11 +45,11 @@ type File struct {
 
 // Open reads and validates the header of the QVD at path.
 func Open(path string) (*File, error) {
-	f, err := os.Open(path)
+	f, err := watchedOpen(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	raw, end, err := readHeaderVerified(path, f, os.Open)
+	raw, end, err := readHeaderVerified(path, f, watchedOpen)
 	if err != nil {
 		f.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -92,7 +94,7 @@ func Open(path string) (*File, error) {
 func readHeaderVerified(path string, first *os.File,
 	open func(string) (*os.File, error)) ([]byte, int64, error) {
 
-	raw, end, err := ReadHeaderBytes(first)
+	raw, end, err := ReadHeaderBytes(iowatch.File{File: first})
 
 	second, oerr := open(path)
 	if oerr != nil {
@@ -112,7 +114,7 @@ func readHeaderVerified(path string, first *os.File,
 		return nil, 0, errors.New("the file at this path was replaced while it was being read")
 	}
 
-	raw2, _, err2 := ReadHeaderBytes(second)
+	raw2, _, err2 := ReadHeaderBytes(iowatch.File{File: second})
 
 	switch {
 	case err != nil && err2 != nil:
@@ -170,7 +172,7 @@ var openVerifyReader = (*File).openVerifyHandle
 // input is replaced mid-run, which would make every comparison fail for a
 // reason that has nothing to do with how the bytes were read.
 func (qf *File) openVerifyHandle() (io.ReaderAt, func() error, error) {
-	v, err := os.Open(qf.Path)
+	v, err := watchedOpen(qf.Path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open %s to verify reads: %w", qf.Path, err)
 	}
@@ -182,7 +184,14 @@ func (qf *File) openVerifyHandle() (io.ReaderAt, func() error, error) {
 		}
 		return nil, nil, fmt.Errorf("verify reads of %s: the file was replaced while it was being read", qf.Path)
 	}
-	return v, v.Close, nil
+	return iowatch.File{File: v}, v.Close, nil
+}
+
+// watchedOpen is os.Open, recorded with iowatch: an open on a stalled share
+// can block like any read.
+func watchedOpen(path string) (*os.File, error) {
+	defer iowatch.Begin("open", path)()
+	return os.Open(path)
 }
 
 // digestMatches reads length bytes at off and reports whether they hash to
@@ -386,7 +395,7 @@ func (qf *File) ReadSymbols(policy UnknownSymbolPolicy) error {
 		}
 		// Read exactly the declared table length so a decoding bug in one
 		// column cannot desynchronize the following ones.
-		sec := io.LimitReader(checkedReader{qf.f}, c.Length)
+		sec := io.LimitReader(checkedReader{iowatch.File{File: qf.f}}, c.Length)
 		var r io.Reader = sec
 		var sum hash.Hash
 		if qf.VerifyReads {

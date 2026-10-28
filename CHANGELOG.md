@@ -16,6 +16,24 @@ rounded the way Qlik displays them, which changes values already written.
 
 ### Added
 
+- `--stall-timeout` (default 10 minutes) stops a run when a single read or
+  write on an input or an output has not returned after that long, such as a
+  write to a stalled network share or S3-backed drive. Ctrl-C cannot end such
+  a call, so the run used to wait for as long as the share took to recover.
+  Now the console names the stuck call and the PID to `taskkill` should the
+  process not exit, the file is reported as stalled and the files after it as
+  not converted, the log and the manifest are written, and the run exits with
+  the new code **8**. Each call is timed on its own, so a long conversion that
+  keeps making progress is never stopped. After a stall the log, the manifest
+  and the catalog get 10 seconds each, a write already under way included, a
+  stuck call that returns and then fails still counts as the stall, old
+  outputs are not deleted, the
+  watch keeps running through a Ctrl-C, and a stuck conversion that returns
+  later commits nothing and never deletes an existing output under `--force`.
+  `0` turns it off. It is not part of
+  the `--skip-up-to-date` fingerprint, so existing folders are not reconverted
+  by the upgrade.
+
 - A batch tries every file whose read or decode failed once more at its end,
   one at a time, at least 10 seconds after the first attempt. A file another
   process was still writing, such as one a copy job had not finished, failed
@@ -27,6 +45,12 @@ rounded the way Qlik displays them, which changes values already written.
   with the first error, the log writes a record per attempt with a new
   `attempt` field, and the summary record has a `retried` count. No option
   changed, so existing folders are not reconverted by the upgrade.
+
+### Fixed
+
+- The README said `Ctrl-Break` with `GOTRACEBACK=all` dumps every goroutine's
+  stack on Windows. Go treats `Ctrl-Break` as an interrupt there, the same as
+  Ctrl-C; the section now says so and points to `--stall-timeout`.
 
 ## [3.1.0] - 2026-10-19
 

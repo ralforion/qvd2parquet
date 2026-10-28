@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ralforion/qvd2parquet/internal/catalog"
+	"github.com/ralforion/qvd2parquet/internal/iowatch"
 	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 	"github.com/ralforion/qvd2parquet/internal/qvd"
 )
@@ -105,6 +106,10 @@ func rank(code int) int {
 	switch code {
 	case 0:
 		return 0
+	case 8: // stalled: the run stopped on a call that never returned, and the
+		// rest were never attempted; outranks a cancellation, which is the
+		// user's own doing
+		return 8
 	case 7: // cancelled: the summary is incomplete, which outranks any
 		// individual file's verdict, since the rest were never attempted
 		return 7
@@ -455,6 +460,12 @@ type ManyOptions struct {
 	// It is not an Options field on purpose: FingerprintOptions hashes every
 	// one of those, and a new one would reconvert every existing folder.
 	DeleteOlderThan time.Duration
+	// StallTimeout stops the run when a single read or write on an input or
+	// an output has not returned after this long. The file is reported as
+	// stalled, the files after it as not converted, and the stuck call is
+	// left behind, since nothing can end it. Zero watches nothing. Not an
+	// Options field, for the reason DeleteOlderThan is not.
+	StallTimeout time.Duration
 }
 
 // RunMany converts every input, continuing past a failure so one bad file does
@@ -528,7 +539,17 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	// manifest names the outputs so the next --skip-up-to-date run resumes
 	// rather than converting the whole folder again.
 	live := newLiveManifest(manifest, many.OutDir, fingerprint, opts.FolderSchemas, safeLogf)
-	logResult := func(r FileResult) { many.Log.File(r) } // a nil log writes nothing
+	// Both go through the watch, which after a stall stops waiting on a log
+	// or a manifest that sits on the stuck share. It does not exist yet for
+	// the problems logged below, which come before anything could stall.
+	var watch *stallWatch
+	logResult := func(r FileResult) { // a nil log writes nothing
+		watch.shutdown("log", "the log record of "+DisplayPath(r.Input), safeLogf, func() { many.Log.File(r) })
+	}
+	record := func(r FileResult) {
+		watch.shutdown("manifest", "recording "+DisplayPath(r.Input)+" in the manifest", safeLogf,
+			func() { live.Record(r) })
+	}
 
 	start := time.Now()
 
@@ -549,6 +570,11 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	// output too.
 	ctx, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
+	// A stall stops the batch the same way: the next file would most likely
+	// wait on the same disk or share.
+	life, endWatch := context.WithCancel(context.Background())
+	defer endWatch()
+	watch = watchStalls(life, many.StallTimeout, safeLogf, func(c iowatch.Call) { stop(&stalledCause{c}) })
 
 	results := make([]FileResult, len(inputs))
 	// pending are the skipped files whose output --delete-older-than deletes
@@ -676,7 +702,9 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 				results[i] = FileResult{Input: in, Output: many.Tree.Output(in, many.OutDir),
 					Err: stoppedErr(ctx, fmt.Errorf("%w before this file was converted", ErrCanceled))}
 			} else {
-				results[i] = convertOne(ctx, in, opts, many, perFile, fileWorkers > 1, safeLogf)
+				results[i] = watch.convertFile(in, many.Tree.Output(in, many.OutDir), safeLogf, func() FileResult {
+					return convertOne(ctx, in, opts, many, perFile, fileWorkers > 1, safeLogf)
+				})
 			}
 			if errors.Is(results[i].Err, parquetwrite.ErrOutputLost) {
 				safeLogf("stopping the batch: %s lost its existing output, and the next file would likely lose its own",
@@ -692,12 +720,12 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 			// window, as wide as it takes to rewrite a large manifest, in
 			// which the output exists and neither record of it does.
 			logResult(results[i])
-			live.Record(results[i])
+			record(results[i])
 		}(i, in)
 	}
 	wg.Wait()
 
-	retryFailed(ctx, results, opts, many, live, logResult, safeLogf)
+	retryFailed(ctx, results, opts, many, watch, record, logResult, safeLogf)
 
 	// The last save is unconditional: the saves during the run are throttled,
 	// so the files converted since the most recent one are in the manifest but
@@ -706,13 +734,25 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	// Outputs are deleted only once the manifest marking them is on disk. The
 	// other order loses the record to a failed save, and the next run converts
 	// the deleted files straight back.
-	if err := live.Save(); err != nil {
+	var saveErr error
+	saved := watch.shutdown("manifest", "writing "+ManifestName, logf, func() { saveErr = live.Save() })
+	switch {
+	case !saved:
+		if len(pending) > 0 {
+			logf("note: deleting none of the %d old output(s), since the manifest may not record it", len(pending))
+		}
+	case saveErr != nil:
 		logf("note: could not write %s: %v; the next --skip-up-to-date run will convert these files again",
-			ManifestName, err)
+			ManifestName, saveErr)
 		if len(pending) > 0 {
 			logf("note: deleting none of the %d old output(s), since the manifest does not record it", len(pending))
 		}
-	} else {
+	case watch.stalled() && len(pending) > 0:
+		// Deleting is not needed to finish, and the outputs can sit on the
+		// share that stalled. The manifest marks them, so the next run
+		// deletes them instead.
+		logf("note: deleting none of the %d old output(s) after the stall; the next run does", len(pending))
+	default:
 		beforeOldOutputsDeleted()
 		for _, i := range pending {
 			// Checked again: the run may have spent hours converting since
@@ -762,7 +802,7 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 		}
 	}
 	// Every file record is on disk already; the summary closes the log.
-	many.Log.Summary(b)
+	watch.shutdown("log", "the log summary", logf, func() { many.Log.Summary(b) })
 	return b, nil
 }
 
@@ -788,7 +828,7 @@ var retryWait = 10 * time.Second
 // first one failed. Something else was writing to the folder, and whoever
 // reads the log should be able to tell.
 func retryFailed(ctx context.Context, results []FileResult, opts *Options, many *ManyOptions,
-	live *liveManifest, logResult func(FileResult), logf Logf) {
+	watch *stallWatch, record, logResult func(FileResult), logf Logf) {
 
 	var again []int
 	for i, r := range results {
@@ -819,17 +859,24 @@ func retryFailed(ctx context.Context, results []FileResult, opts *Options, many 
 			return
 		}
 		logf("retry %s (first attempt: %s)", DisplayPath(first.Input), trimPathPrefix(first.Err.Error(), first.Input))
-		r := convertOne(ctx, first.Input, opts, many, perFile, false, logf)
-		if ctx.Err() != nil && cancelled(r.Err) {
+		// Under the watch like the first attempt: a retry is as able to wait
+		// on a stuck share as anything else.
+		r := watch.convertFile(first.Input, first.Output, logf, func() FileResult {
+			return convertOne(ctx, first.Input, opts, many, perFile, false, logf)
+		})
+		if ctx.Err() != nil && cancelled(r.Err) && !errors.Is(r.Err, ErrStalled) {
 			// Stopped, not failed: the first failure stands. Any other error
 			// is what the retry did, an output it lost among them, and is
-			// recorded even though the run is stopping.
+			// recorded even though the run is stopping. So is a stall, which
+			// can carry the cancellation too: a Ctrl-C that came while the
+			// retry was stuck does not make the stall any less what stopped
+			// the run.
 			return
 		}
 		r.FirstErr = first.Err
 		results[i] = r
 		logResult(r)
-		live.Record(r)
+		record(r)
 		if errors.Is(r.Err, parquetwrite.ErrOutputLost) {
 			logf("stopping the retries: %s lost its existing output, and the next file would likely lose its own",
 				DisplayPath(r.Input))
@@ -857,7 +904,8 @@ func retryable(err error) bool {
 	case errors.Is(err, qvd.ErrUnstableRead):
 		// Before the exclusions: the reread gate reports it as a gate failure.
 		return true
-	case cancelled(err),
+	case errors.Is(err, ErrStalled),
+		cancelled(err),
 		errors.Is(err, parquetwrite.ErrOutput),
 		errors.Is(err, parquetwrite.ErrOutputLost),
 		errors.Is(err, ErrSchemaPolicy),
@@ -1002,9 +1050,17 @@ func (s *batchStopped) Error() string {
 // error naming the file that stopped it, rather than as a cancellation: nobody
 // pressed Ctrl-C, and exit 7 would say someone did.
 func stoppedErr(ctx context.Context, err error) error {
+	if !errors.Is(err, ErrCanceled) && !errors.Is(err, context.Canceled) {
+		return err
+	}
 	var s *batchStopped
-	if (errors.Is(err, ErrCanceled) || errors.Is(err, context.Canceled)) && errors.As(context.Cause(ctx), &s) {
+	if errors.As(context.Cause(ctx), &s) {
 		return fmt.Errorf("%w: not converted: %v", parquetwrite.ErrOutput, s)
+	}
+	// Nobody pressed Ctrl-C after a stall either, and exit 7 would say so.
+	var st *stalledCause
+	if errors.As(context.Cause(ctx), &st) {
+		return fmt.Errorf("%w: not converted: %v", ErrStalled, st)
 	}
 	return err
 }

@@ -1,6 +1,7 @@
 package parquetwrite
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -128,6 +129,59 @@ func TestCommitReplacesWhenOverwriteIsRefused(t *testing.T) {
 	w.Abort()
 	if b, _ := os.ReadFile(path); string(b) != "old output" {
 		t.Errorf("Commit without force changed the existing file to %q", b)
+	}
+}
+
+// A stopped run never deletes the existing output to make room. A rename the
+// run gave up on as stalled can return long after, refused, to a conversion
+// nobody waits for; --force replacing the output then would destroy it for a
+// run that has already reported it untouched.
+func TestCommitOfAStoppedRunLeavesTheOutputAlone(t *testing.T) {
+	schema := arrow.NewSchema([]arrow.Field{{Name: "A", Type: arrow.PrimitiveTypes.Int64}}, nil)
+	for _, c := range []struct {
+		name string
+		// cancelDuringRename stops the run while the rename is in flight,
+		// as a stall does; otherwise it is stopped before Commit.
+		cancelDuringRename bool
+	}{{"stopped while renaming", true}, {"stopped before committing", false}} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			renames := 0
+			defer SetRenameForTest(func(from, to string) error {
+				renames++
+				if c.cancelDuringRename {
+					cancel()
+				}
+				return &os.LinkError{Op: "rename", Old: from, New: to, Err: os.ErrPermission}
+			})()
+
+			path := filepath.Join(t.TempDir(), "out.parquet")
+			if err := os.WriteFile(path, []byte("old output"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			w, err := Create(path, schema, Options{Compression: compress.Codecs.Zstd, RowGroupRows: 10}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !c.cancelDuringRename {
+				cancel()
+			}
+			err = w.CommitContext(ctx)
+			if err == nil || errors.Is(err, ErrOutputLost) {
+				t.Errorf("CommitContext = %v, want a plain failure", err)
+			}
+			if b, _ := os.ReadFile(path); string(b) != "old output" {
+				t.Errorf("the existing output became %q; a stopped run must leave it alone", b)
+			}
+			if !c.cancelDuringRename && renames != 0 {
+				t.Errorf("a run stopped before committing renamed %d time(s)", renames)
+			}
+			w.Abort()
+		})
 	}
 }
 

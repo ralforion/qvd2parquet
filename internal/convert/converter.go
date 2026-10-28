@@ -69,10 +69,19 @@ type readFailure struct{ err error }
 func (e readFailure) Error() string { return e.err.Error() }
 func (e readFailure) Unwrap() error { return e.err }
 
+// runHook runs as a conversion starts, and what it returns as it ends. A test
+// replaces it to hold a conversion inside a call that does not return, which
+// is the one thing a real file cannot be made to do on demand.
+var runHook = func(inputPath string) (done func()) { return func() {} }
+
 // Run performs the full QVD to Parquet conversion.
 func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf Logf) (*Stats, *QualityReport, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
+	}
+	defer runHook(inputPath)()
+	if ctx.Err() != nil {
+		return nil, nil, fmt.Errorf("%w before this file was converted", ErrCanceled)
 	}
 	if err := opts.Validate(); err != nil {
 		return nil, nil, err
@@ -338,7 +347,7 @@ func Run(ctx context.Context, inputPath, outputPath string, opts *Options, logf 
 		}
 	}
 
-	if err := w.Commit(); err != nil {
+	if err := w.CommitContext(ctx); err != nil {
 		return nil, report, err
 	}
 	committed = true
