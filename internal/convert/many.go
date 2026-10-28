@@ -36,12 +36,20 @@ type FileResult struct {
 	// run.
 	OutputGone    bool
 	OutputDeleted bool
-	Started       time.Time
-	Elapsed       time.Duration
+	// FirstErr is why the first attempt failed, on a file the batch tried
+	// again at its end. It is set whether or not the second attempt worked,
+	// and Err is the second attempt's own outcome.
+	FirstErr error
+	Started  time.Time
+	Elapsed  time.Duration
 }
 
 // Failed reports whether the file did not convert.
 func (r FileResult) Failed() bool { return r.Err != nil }
+
+// Retried reports whether the batch converted the file a second time after
+// its first attempt failed.
+func (r FileResult) Retried() bool { return r.FirstErr != nil }
 
 // TableName is the QVD's own table name, or empty when nothing managed to
 // read it.
@@ -66,6 +74,9 @@ type BatchResult struct {
 	Skipped   int
 	// Deleted counts the skipped files whose output this run deleted.
 	Deleted int
+	// Retried counts the files attempted a second time, whichever way the
+	// second attempt went.
+	Retried int
 	Rows    int64
 	Bytes   int64
 	Elapsed time.Duration
@@ -686,6 +697,8 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	}
 	wg.Wait()
 
+	retryFailed(ctx, results, opts, many, live, logResult, safeLogf)
+
 	// The last save is unconditional: the saves during the run are throttled,
 	// so the files converted since the most recent one are in the manifest but
 	// not yet on disk.
@@ -729,6 +742,9 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 
 	b := &BatchResult{Results: results, Elapsed: time.Since(start)}
 	for _, r := range results {
+		if r.Retried() {
+			b.Retried++
+		}
 		switch {
 		case r.Err != nil:
 			b.Failed++
@@ -748,6 +764,116 @@ func RunMany(ctx context.Context, inputs []string, opts *Options, many *ManyOpti
 	// Every file record is on disk already; the summary closes the log.
 	many.Log.Summary(b)
 	return b, nil
+}
+
+// retryWait is how long a failed file rests before its second attempt,
+// counted from the end of the first. A batch of any length has spent longer
+// than this on the files after it, so the wait only ever delays a short one,
+// and it is kept short because a short batch is usually someone watching.
+var retryWait = 10 * time.Second
+
+// retryFailed converts once more, one at a time, every file whose first
+// attempt failed in a way a second read can fix.
+//
+// The case it exists for is a file another process is still writing: a copy
+// job running at the same time as the batch. The bytes read then belong to no
+// version of the file, and the failure takes whatever shape the bytes happen
+// to give, a read that ends early, a symbol tag that is not one, a record
+// pointing past its symbol table. Retried at the end of the batch, the copy
+// has usually finished, and the file converts.
+//
+// Both attempts stay on the record. The log has a line for each, so a run
+// that needed a retry does not look like one that did not, and the summary
+// lists the files that converted only the second time with the reason the
+// first one failed. Something else was writing to the folder, and whoever
+// reads the log should be able to tell.
+func retryFailed(ctx context.Context, results []FileResult, opts *Options, many *ManyOptions,
+	live *liveManifest, logResult func(FileResult), logf Logf) {
+
+	var again []int
+	for i, r := range results {
+		if retryable(r.Err) {
+			again = append(again, i)
+		}
+	}
+	if len(again) == 0 || ctx.Err() != nil {
+		return
+	}
+	logf("retrying %d file(s) whose first attempt failed to read", len(again))
+	beforeRetry()
+	// One at a time with every decode worker: the retries are few, and the
+	// batch is otherwise finished.
+	_, perFile := splitWorkerBudget(1, opts.Workers, 1)
+	for _, i := range again {
+		first := results[i]
+		if wait := time.Until(first.Started.Add(first.Elapsed + retryWait)); wait > 0 {
+			logf("waiting %s before retrying %s", wait.Round(time.Second), DisplayPath(first.Input))
+			select {
+			case <-ctx.Done():
+			case <-time.After(wait):
+			}
+		}
+		if ctx.Err() != nil {
+			// The first failure stands. It happened, and a cancellation
+			// reported in its place would hide it.
+			return
+		}
+		logf("retry %s (first attempt: %s)", DisplayPath(first.Input), trimPathPrefix(first.Err.Error(), first.Input))
+		r := convertOne(ctx, first.Input, opts, many, perFile, false, logf)
+		if ctx.Err() != nil && cancelled(r.Err) {
+			// Stopped, not failed: the first failure stands. Any other error
+			// is what the retry did, an output it lost among them, and is
+			// recorded even though the run is stopping.
+			return
+		}
+		r.FirstErr = first.Err
+		results[i] = r
+		logResult(r)
+		live.Record(r)
+		if errors.Is(r.Err, parquetwrite.ErrOutputLost) {
+			logf("stopping the retries: %s lost its existing output, and the next file would likely lose its own",
+				DisplayPath(r.Input))
+			return
+		}
+	}
+}
+
+// beforeRetry runs once before the retries start, replaceable so a test can
+// repair a file between its two attempts, as a finished copy job would.
+var beforeRetry = func() {}
+
+// retryable reports whether a failure is worth a second attempt: a read or
+// decode failure of the input, which is what a file changing underneath the
+// reader produces. Only failures known to be one are retried. Anything else,
+// a schema policy, an output or a report that could not be written, a schema
+// override that does not apply, a quality gate, or a cancellation, would fail
+// the same way again, and repeating a whole conversion to find that out is
+// not free.
+func retryable(err error) bool {
+	var rf readFailure
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, qvd.ErrUnstableRead):
+		// Before the exclusions: the reread gate reports it as a gate failure.
+		return true
+	case cancelled(err),
+		errors.Is(err, parquetwrite.ErrOutput),
+		errors.Is(err, parquetwrite.ErrOutputLost),
+		errors.Is(err, ErrSchemaPolicy),
+		errors.Is(err, ErrQualityGate):
+		return false
+	case errors.As(err, &rf), errors.Is(err, ErrInput):
+		return true
+	}
+	return false
+}
+
+// cancelled reports whether err is a cancellation rather than a failure.
+func cancelled(err error) bool {
+	return errors.Is(err, ErrCanceled) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 // beforeOldOutputsDeleted runs between the final manifest save and the
@@ -952,16 +1078,42 @@ func (b *BatchResult) Summary() string {
 	if b.Deleted > 0 {
 		fmt.Fprintf(&sb, ", %d old output(s) deleted", b.Deleted)
 	}
+	if b.Retried > 0 {
+		fmt.Fprintf(&sb, "; %d retried", b.Retried)
+	}
+	if n := b.Retried - b.retriedAndFailed(); n > 0 {
+		fmt.Fprintf(&sb, "\n\nCONVERTED ON RETRY (%d), the first attempt failed:", n)
+		for _, r := range b.Results {
+			if r.Retried() && r.Err == nil {
+				fmt.Fprintf(&sb, "\n  %-28s %s",
+					DisplayPath(r.Input), trimPathPrefix(r.FirstErr.Error(), r.Input))
+			}
+		}
+	}
 	if b.Failed > 0 {
 		fmt.Fprintf(&sb, "\n\nFAILED (%d):", b.Failed)
 		for _, r := range b.Results {
 			if r.Err != nil {
-				fmt.Fprintf(&sb, "\n  %-28s %s",
-					DisplayPath(r.Input), trimPathPrefix(r.Err.Error(), r.Input))
+				again := ""
+				if r.Retried() {
+					again = " (failed on retry too)"
+				}
+				fmt.Fprintf(&sb, "\n  %-28s %s%s",
+					DisplayPath(r.Input), trimPathPrefix(r.Err.Error(), r.Input), again)
 			}
 		}
 	}
 	return sb.String()
+}
+
+func (b *BatchResult) retriedAndFailed() int {
+	n := 0
+	for _, r := range b.Results {
+		if r.Retried() && r.Err != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // humanDays renders a --delete-older-than age as the days it was given in.

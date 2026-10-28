@@ -14,6 +14,20 @@ rounded the way Qlik displays them, which changes values already written.
 
 ## [Unreleased]
 
+### Added
+
+- A batch tries every file whose read or decode failed once more at its end,
+  one at a time, at least 10 seconds after the first attempt. A file another
+  process was still writing, such as one a copy job had not finished, failed
+  with errors that look like damage (`unexpected EOF`, `unknown symbol tag`,
+  `decoded symbol id ... but symbol table has ...`) and now converts on the
+  second attempt. Only failures known to come from reading the input are
+  retried; schema policy, output, report, schema override, quality gate and
+  cancellation failures are not. The summary lists the files that converted only on retry
+  with the first error, the log writes a record per attempt with a new
+  `attempt` field, and the summary record has a `retried` count. No option
+  changed, so existing folders are not reconverted by the upgrade.
+
 ## [3.1.0] - 2026-10-19
 
 ### Added

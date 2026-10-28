@@ -687,8 +687,8 @@ func TestLogWriterRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
-	if len(lines) != 4 { // 3 files + summary
-		t.Fatalf("got %d log lines, want 4:\n%s", len(lines), raw)
+	if len(lines) != 5 { // 3 files, the broken one's retry, and the summary
+		t.Fatalf("got %d log lines, want 5:\n%s", len(lines), raw)
 	}
 
 	var files, failed int
@@ -710,8 +710,8 @@ func TestLogWriterRecords(t *testing.T) {
 			t.Errorf("a converted record should report its quality verdict: %v", rec)
 		}
 	}
-	if files != 3 || failed != 1 {
-		t.Errorf("log has %d file records with %d failures, want 3 and 1", files, failed)
+	if files != 4 || failed != 2 {
+		t.Errorf("log has %d file records with %d failures, want 4 and 2", files, failed)
 	}
 
 	var summary map[string]any
@@ -776,8 +776,9 @@ func TestLogRecordsCarryTheTableName(t *testing.T) {
 			blank++
 		}
 	}
-	if named != 2 || blank != 1 {
-		t.Errorf("got %d named and %d blank table records, want 2 and 1", named, blank)
+	// The broken file has two records, its first attempt and its retry.
+	if named != 2 || blank != 2 {
+		t.Errorf("got %d named and %d blank table records, want 2 and 2", named, blank)
 	}
 }
 

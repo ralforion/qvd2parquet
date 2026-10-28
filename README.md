@@ -303,10 +303,14 @@ qvd2parquet: ok   qvds/products.qvd -> parquet/products.parquet (77 rows, 9 colu
 qvd2parquet: ok   qvds/sales.qvd -> parquet/sales.parquet (1,000 rows, 7 columns, 7.7 KiB)
 qvd2parquet: FAIL qvds/truncated.qvd: no XML header terminator (0x00) found: not a QVD file?
 qvd2parquet: ok   qvds/stock.qvd -> parquet/stock.parquet (120 rows, 19 columns, 7.3 KiB)
-converted 3/4 file(s) in 34ms: 1,197 rows, 19.6 KiB
+qvd2parquet: retrying 1 file(s) whose first attempt failed to read
+qvd2parquet: waiting 10s before retrying qvds/truncated.qvd
+qvd2parquet: retry qvds/truncated.qvd (first attempt: no XML header terminator (0x00) found: not a QVD file?)
+qvd2parquet: FAIL qvds/truncated.qvd: no XML header terminator (0x00) found: not a QVD file?
+converted 3/4 file(s) in 10.034s: 1,197 rows, 19.6 KiB; 1 retried
 
 FAILED (1):
-  qvds/truncated.qvd           no XML header terminator (0x00) found: not a QVD file?
+  qvds/truncated.qvd           no XML header terminator (0x00) found: not a QVD file? (failed on retry too)
 ```
 
 **A failing file does not stop the run.** Every input is attempted — including
@@ -315,6 +319,37 @@ aborting the inputs beside it. Failures are listed at the end, and the exit
 code reports the most actionable one — a schema
 policy error you can fix outranks a generic read error. Add `--recursive` to
 descend into subdirectories.
+
+**A file that fails to read is tried once more at the end of the batch.** The
+case this is for is a file another process is still writing, such as a copy
+job that starts at the same time as the conversion. The bytes read then belong
+to no single version of the file, and the failure looks like a damaged QVD: a
+read that ends early (`symbol 0 of 1823167: unexpected EOF`), a symbol tag that
+is not one (`unknown symbol tag 0x40`), or a record that points past its symbol
+table (`decoded symbol id 7166, but symbol table has ...`). By the end of the
+batch the copy has usually finished, and the file converts.
+
+Only failures known to come from reading the input are retried: its header,
+its symbol tables, or its records. Anything else, such as a schema policy
+error, an output or a report that could not be written, a schema override that
+does not apply, a failed quality gate, or a cancelled run, would fail the same
+way again, and is reported as it is. The retries run one at a time,
+after every other file, and each waits until 10 seconds have passed since its
+first attempt ended. In a long batch that time has long passed; in a short one
+the run says it is waiting.
+
+Neither attempt is hidden. A file that converted on retry is listed under
+`CONVERTED ON RETRY` with the reason the first attempt failed, the log has a
+record for each attempt, and the exit code reflects only the second. A clean
+retry means something else was writing to the folder while the batch ran,
+which is worth knowing even when nothing was lost.
+
+```text
+converted 2/2 file(s) in 10.033s: 2,000 rows, 16.0 KiB; 1 retried
+
+CONVERTED ON RETRY (1), the first attempt failed:
+  qvds/truncated.qvd           no XML header terminator (0x00) found: not a QVD file?
+```
 
 Two inputs whose names would produce the same output file are refused **before
 anything is written**, since `--force` would otherwise silently overwrite the
@@ -660,6 +695,17 @@ input order, since files convert concurrently; every record carries `time` and
 that did not finish, which is worth knowing rather than a defect: a query that
 wants the totals should select the summary record rather than assume the last
 line is one.
+
+A file the batch retried has two records: the failed first attempt with
+`"attempt": 1`, and the retry with `"attempt": 2`. Every other record has
+`"attempt": 1`, and the summary counts the retried files in `retried`. The
+outcome of each file is its record with the highest attempt:
+
+```sql
+select * from read_json_auto('run.jsonl')
+where type = 'file'
+qualify row_number() over (partition by input order by attempt desc) = 1;
+```
 
 The path is yours to name. It is created if its directory does not exist, so
 `--log logs/run-$(date +%F).jsonl` works in a scheduled job, and a run that
