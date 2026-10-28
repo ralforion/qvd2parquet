@@ -127,14 +127,17 @@ func (w *stallWatch) stalled() bool {
 	}
 }
 
-// shutdown runs fn, the writing a run does as it finishes: a log record, the
-// manifest. Before a stall it simply runs. After one it goes through
-// AfterStall, since the log and the manifest can sit on the share that
-// stalled, and once work of a kind has been given up on, the rest of that
-// kind is skipped at once rather than each waiting out the grace period on
-// the same share. It reports whether fn ran to the end.
+// shutdown runs fn, the bookkeeping a run does around its files: a log
+// record, the manifest. It waits for fn the way await waits for a
+// conversion: for as long as it takes, unless the watch fires, and then for
+// the grace period more. That covers work that was already under way when
+// another file stalled, as much as work started after: the log and the
+// manifest can sit on the share that stalled, and a save stuck there would
+// otherwise hold the batch forever. Once work of a kind has been given up
+// on, the rest of that kind is skipped at once rather than each waiting out
+// the grace period on the same share. It reports whether fn ran to the end.
 func (w *stallWatch) shutdown(kind, what string, logf Logf, fn func()) bool {
-	if w == nil || !w.stalled() {
+	if w == nil {
 		fn()
 		return true
 	}
@@ -144,9 +147,10 @@ func (w *stallWatch) shutdown(kind, what string, logf Logf, fn func()) bool {
 	if skip {
 		return false
 	}
-	if AfterStall(what, logf, fn) {
+	if _, ok := await(w, func() struct{} { fn(); return struct{}{} }); ok {
 		return true
 	}
+	logf("note: gave up on %s, which had not returned after %s either", what, timeoutString(stallGrace))
 	w.mu.Lock()
 	w.gaveUp[kind] = true
 	w.mu.Unlock()
@@ -181,6 +185,7 @@ func (w *stallWatch) convertFile(in, out string, logf Logf, convert func() FileR
 	started := time.Now()
 	r, ok := await(w, convert)
 	if ok {
+		r.Err = w.keepStall(in, out, r.Err)
 		return r
 	}
 	r = FileResult{Input: in, Output: out, Started: started, Elapsed: time.Since(started),
@@ -192,11 +197,32 @@ func (w *stallWatch) convertFile(in, out string, logf Logf, convert func() FileR
 // abandoned is the error of a conversion given up on after the stall: the one
 // that made the stuck call, or one that did not wind down in time after it.
 func (w *stallWatch) abandoned(input, output string) error {
-	if w.call.Path == input || strings.HasPrefix(w.call.Path, output) {
+	if w.owns(input, output) {
 		return fmt.Errorf("%w: %s did not return in %s (started %s); the run stopped here",
 			ErrStalled, w.call, timeoutString(w.timeout), w.call.Start.Format("15:04:05"))
 	}
 	return fmt.Errorf("%w: not finished when the run stopped after %s did not return", ErrStalled, w.call)
+}
+
+// owns reports whether the call that stalled was on this file: a read of its
+// input, or a write, sync or rename of its output or the temporary file
+// beside it.
+func (w *stallWatch) owns(input, output string) bool {
+	return w.stalled() && (w.call.Path == input || strings.HasPrefix(w.call.Path, output))
+}
+
+// keepStall keeps the stall in the error of the file whose call stalled, when
+// that call returned during the grace period and the conversion then failed
+// some other way. The later error is real, and kept, but it is not what
+// stopped the run: a rename that hung for ten minutes and was then refused is
+// a stall first, and reporting it as an output error would exit 5 and skip
+// the time limits the caller puts on its own shutdown after a stall.
+func (w *stallWatch) keepStall(input, output string, err error) error {
+	if err == nil || errors.Is(err, ErrStalled) || !w.owns(input, output) {
+		return err
+	}
+	return fmt.Errorf("%w: %s did not return in %s (started %s), and then failed: %w",
+		ErrStalled, w.call, timeoutString(w.timeout), w.call.Start.Format("15:04:05"), err)
 }
 
 // stalledCause is why a run was cancelled after a stall.
@@ -232,7 +258,7 @@ func RunWatched(ctx context.Context, inputPath, outputPath string, opts *Options
 	if !ok {
 		return nil, nil, w.abandoned(inputPath, outputPath)
 	}
-	return r.stats, r.quality, r.err
+	return r.stats, r.quality, w.keepStall(inputPath, outputPath, r.err)
 }
 
 // timeoutString renders a timeout the way it was most likely given: 10m, not

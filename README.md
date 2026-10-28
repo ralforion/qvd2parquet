@@ -793,9 +793,12 @@ stuck, and the next file would most likely wait on the same drive. The next
 run picks up from the manifest.
 
 What is left to write after a stall, the log, the manifest and the catalog,
-can sit on the same share, so each gets 10 seconds; one that has not returned
-by then is given up on with a note, and the rest of the log or the manifest is
-skipped rather than waiting again. Old outputs due for `--delete-older-than`
+can sit on the same share, so each gets 10 seconds, including a write that was
+already under way when the stall was found; one that has not returned by then
+is given up on with a note, and the rest of the log or the manifest is skipped
+rather than waiting again. If the stuck call does return in those seconds and
+the file then fails some other way, it is still reported as stalled, with the
+later error after it. Old outputs due for `--delete-older-than`
 are left for the next run. A Ctrl-C pressed while a call is stuck does not
 switch the watch off: the run still stops, with exit 8, once the timeout has
 passed.

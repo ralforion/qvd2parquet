@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ralforion/qvd2parquet/internal/iowatch"
+	"github.com/ralforion/qvd2parquet/internal/parquetwrite"
 )
 
 // holdConversion makes the conversion of the input named base wait inside a
@@ -321,4 +323,96 @@ func TestManifestSaveAfterAStallIsGivenUpOn(t *testing.T) {
 	if out := lines.String(); !strings.Contains(out, "gave up on writing "+ManifestName) {
 		t.Errorf("the console must say the manifest was given up on:\n%s", out)
 	}
+}
+
+// A manifest save already stuck when another file stalls is given up on too.
+// With two files converting at once, b.qvd finishes and blocks saving the
+// manifest, then a.qvd stalls; the batch must not wait on b's save forever.
+func TestBookkeepingStuckBeforeTheStallIsGivenUpOn(t *testing.T) {
+	src := folderFixture(t, false, false)
+	outDir := filepath.Join(t.TempDir(), "out")
+	holdConversion(t, "a.qvd", filepath.Join(outDir, "a.parquet.tmp-1"))
+	entered, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var first sync.Once
+	prevSave := saveManifestFile
+	saveManifestFile = func(m *Manifest, dir string) error {
+		isFirst := false
+		first.Do(func() { isFirst = true; close(entered) })
+		<-release
+		if isFirst {
+			close(returned)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		// b's save is still running, given up on: restore only once it has
+		// returned, or the restore races with it. Nothing saves after it,
+		// since the manifest is given up on from then on.
+		close(release)
+		<-entered
+		<-returned
+		saveManifestFile = prevSave
+	})
+
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+	done := make(chan *BatchResult, 1)
+	go func() {
+		b, err := RunMany(context.Background(), inputs, &opts, &ManyOptions{OutDir: outDir, FileWorkers: 2,
+			StallTimeout: 300 * time.Millisecond, SkipUpToDate: true, ToolVersion: "3.1.0"}, nil)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- b
+	}()
+	select {
+	case b := <-done:
+		if code := b.ExitCode(testExitCode); code != 8 {
+			t.Errorf("exit code %d, want 8:\n%s", code, b.Summary())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the batch hung on a manifest save that was stuck before the stall")
+	}
+}
+
+// A stuck call that returns during the grace period and then fails leaves the
+// file stalled, with the later error kept. A rename that hung past the
+// timeout and was then refused exited 5, as a plain output error.
+func TestStallSurvivesACallThatReturnsDuringGrace(t *testing.T) {
+	defer parquetwrite.SetRenameForTest(func(from, to string) error {
+		time.Sleep(time.Second) // past the timeout, inside the grace period
+		return &os.LinkError{Op: "rename", Old: from, New: to, Err: os.ErrPermission}
+	})()
+	prevGrace := stallGrace
+	stallGrace = 5 * time.Second
+	t.Cleanup(func() { stallGrace = prevGrace })
+
+	check := func(t *testing.T, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrStalled) || !errors.Is(err, parquetwrite.ErrOutput) ||
+			!strings.Contains(err.Error(), "rename of ") {
+			t.Errorf("err = %v, want the stalled rename with the refusal after it", err)
+		}
+		if code := testExitCode(err); code != 8 {
+			t.Errorf("exit code %d, want 8", code)
+		}
+	}
+	t.Run("single file", func(t *testing.T) {
+		src := folderFixture(t, false, false)
+		opts := testOptions()
+		_, _, err := RunWatched(context.Background(), filepath.Join(src, "a.qvd"),
+			filepath.Join(t.TempDir(), "a.parquet"), &opts, 300*time.Millisecond, nil)
+		check(t, err)
+	})
+	t.Run("batch", func(t *testing.T) {
+		src := folderFixture(t, false, false)
+		inputs := FindInputs([]string{src}, InputSelection{}).Files[:1]
+		opts := testOptions()
+		b, err := RunMany(context.Background(), inputs, &opts,
+			&ManyOptions{OutDir: filepath.Join(t.TempDir(), "out"), StallTimeout: 300 * time.Millisecond}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(t, b.Results[0].Err)
+	})
 }

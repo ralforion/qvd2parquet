@@ -25,7 +25,9 @@ rounded the way Qlik displays them, which changes values already written.
   not converted, the log and the manifest are written, and the run exits with
   the new code **8**. Each call is timed on its own, so a long conversion that
   keeps making progress is never stopped. After a stall the log, the manifest
-  and the catalog get 10 seconds each, old outputs are not deleted, the
+  and the catalog get 10 seconds each, a write already under way included, a
+  stuck call that returns and then fails still counts as the stall, old
+  outputs are not deleted, the
   watch keeps running through a Ctrl-C, and a stuck conversion that returns
   later commits nothing and never deletes an existing output under `--force`.
   `0` turns it off. It is not part of
