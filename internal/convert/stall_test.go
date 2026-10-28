@@ -416,3 +416,51 @@ func TestStallSurvivesACallThatReturnsDuringGrace(t *testing.T) {
 		check(t, b.Results[0].Err)
 	})
 }
+
+// A retry stuck when Ctrl-C arrives, whose call returns during the grace
+// period, is reported as stalled. Its error carries the cancellation as well
+// as the stall, and the retry pass used to drop it as a mere cancellation,
+// leaving the first read error and exit 4.
+func TestCancelledStalledRetryIsStillReported(t *testing.T) {
+	src := folderFixture(t, false, true)
+	broken := filepath.Join(src, "broken.qvd")
+	outDir := filepath.Join(t.TempDir(), "out")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	attempts := 0
+	prev, prevGrace := runHook, stallGrace
+	stallGrace = 5 * time.Second
+	runHook = func(in string) func() {
+		if in != broken {
+			return func() {}
+		}
+		if attempts++; attempts == 1 {
+			return func() {} // the first attempt fails on its own: not a QVD
+		}
+		end := iowatch.Begin("write", filepath.Join(outDir, "broken.parquet.tmp-1"))
+		cancel()                // Ctrl-C while the retry is stuck
+		time.Sleep(time.Second) // past the timeout, inside the grace period
+		end()
+		return func() {}
+	}
+	t.Cleanup(func() { runHook, stallGrace = prev, prevGrace })
+
+	inputs := FindInputs([]string{src}, InputSelection{}).Files
+	opts := testOptions()
+	b, err := RunMany(ctx, inputs, &opts, &ManyOptions{OutDir: outDir, StallTimeout: 300 * time.Millisecond}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r FileResult
+	for _, x := range b.Results {
+		if x.Input == broken {
+			r = x
+		}
+	}
+	if !r.Retried() || !errors.Is(r.Err, ErrStalled) {
+		t.Errorf("broken.qvd: retried=%v err=%v, want the stalled retry", r.Retried(), r.Err)
+	}
+	if code := b.ExitCode(testExitCode); code != 8 {
+		t.Errorf("exit code %d, want 8", code)
+	}
+}

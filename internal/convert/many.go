@@ -864,10 +864,13 @@ func retryFailed(ctx context.Context, results []FileResult, opts *Options, many 
 		r := watch.convertFile(first.Input, first.Output, logf, func() FileResult {
 			return convertOne(ctx, first.Input, opts, many, perFile, false, logf)
 		})
-		if ctx.Err() != nil && cancelled(r.Err) {
+		if ctx.Err() != nil && cancelled(r.Err) && !errors.Is(r.Err, ErrStalled) {
 			// Stopped, not failed: the first failure stands. Any other error
 			// is what the retry did, an output it lost among them, and is
-			// recorded even though the run is stopping.
+			// recorded even though the run is stopping. So is a stall, which
+			// can carry the cancellation too: a Ctrl-C that came while the
+			// retry was stuck does not make the stall any less what stopped
+			// the run.
 			return
 		}
 		r.FirstErr = first.Err
