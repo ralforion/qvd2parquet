@@ -4,7 +4,7 @@
 <a href="https://github.com/ralforion/qvd2parquet/releases/latest"><img src="https://img.shields.io/github/v/release/ralforion/qvd2parquet?color=purple&label=release" alt="Latest release"></a>
 <a href="https://github.com/ralforion/qvd2parquet/actions/workflows/ci.yml"><img src="https://github.com/ralforion/qvd2parquet/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
 <a href="https://pkg.go.dev/github.com/ralforion/qvd2parquet"><img src="https://pkg.go.dev/badge/github.com/ralforion/qvd2parquet.svg" alt="Go reference"></a>
-<a href="https://go.dev/dl/"><img src="https://img.shields.io/badge/go-1.25+-00ADD8?logo=go&logoColor=white" alt="Go 1.25+"></a>
+<a href="https://go.dev/dl/"><img src="https://img.shields.io/badge/go-1.26+-00ADD8?logo=go&logoColor=white" alt="Go 1.26+"></a>
 <a href="https://github.com/ralforion/qvd2parquet/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-orange.svg" alt="License: Apache 2.0"></a>
 <img src="https://img.shields.io/badge/platform-linux%20%7C%20windows%20%7C%20macos-lightgrey" alt="Linux, Windows, macOS">
 </p>
@@ -68,9 +68,9 @@ a downloaded binary; clear it with
 
 ### From source
 
-Requires Go 1.25 or newer. That floor comes from `github.com/apache/arrow-go/v18`;
+Requires Go 1.26 or newer. That floor comes from `github.com/apache/arrow-go/v18`;
 the `go` directive in `go.mod` is a minimum, not a pin, so the module also
-builds with 1.26 and 1.27. CI tests against both the 1.25 floor and the newest
+builds with 1.27. CI tests against both the 1.26 floor and the newest
 release, and release binaries are built with the newest toolchain.
 
 ```sh

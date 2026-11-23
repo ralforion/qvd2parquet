@@ -15,29 +15,29 @@ dependency; CI fails when it is out of date.
 
 | Module | Version |
 | --- | --- |
-| `github.com/andybalholm/brotli` | v1.2.3 |
-| `github.com/apache/arrow-go/v18` | v18.8.0 |
-| `github.com/apache/thrift` | v0.24.0 |
+| `github.com/andybalholm/brotli` | v1.2.8 |
+| `github.com/apache/arrow-go/v18` | v18.9.0 |
+| `github.com/apache/thrift` | v0.25.0 |
 | `github.com/cespare/xxhash/v2` | v2.3.0 |
-| `github.com/goccy/go-json` | v0.10.6 |
+| `github.com/goccy/go-json` | v0.12.0 |
 | `github.com/google/flatbuffers` | v25.12.19+incompatible |
 | `github.com/google/uuid` | v1.6.0 |
-| `github.com/klauspost/compress` | v1.19.2 |
-| `github.com/klauspost/cpuid/v2` | v2.4.0 |
-| `github.com/pierrec/lz4/v4` | v4.1.29 |
+| `github.com/klauspost/compress` | v1.20.3 |
+| `github.com/klauspost/cpuid/v2` | v2.4.2 |
+| `github.com/pierrec/lz4/v4` | v4.1.33 |
 | `github.com/zeebo/xxh3` | v1.1.0 |
 | `golang.org/x/exp` | v0.0.0-20260112195511-716be5621a96 |
-| `golang.org/x/net` | v0.58.0 |
-| `golang.org/x/sync` | v0.22.0 |
-| `golang.org/x/sys` | v0.47.0 |
-| `golang.org/x/text` | v0.41.0 |
-| `google.golang.org/genproto/googleapis/rpc` | v0.0.0-20260526163538-3dc84a4a5aaa |
-| `google.golang.org/grpc` | v1.83.2 |
+| `golang.org/x/net` | v0.61.0 |
+| `golang.org/x/sync` | v0.25.0 |
+| `golang.org/x/sys` | v0.49.0 |
+| `golang.org/x/text` | v0.43.0 |
+| `google.golang.org/genproto/googleapis/rpc` | v0.0.0-20260817212433-ac3dfec99bb1 |
+| `google.golang.org/grpc` | v1.85.0 |
 | `google.golang.org/protobuf` | v1.36.12 |
 
 ## github.com/andybalholm/brotli
 
-- `github.com/andybalholm/brotli` v1.2.3
+- `github.com/andybalholm/brotli` v1.2.8
 
 ```text
 --- LICENSE ---
@@ -66,7 +66,7 @@ THE SOFTWARE.
 
 ## github.com/apache/arrow-go/v18
 
-- `github.com/apache/arrow-go/v18` v18.8.0
+- `github.com/apache/arrow-go/v18` v18.9.0
 
 ```text
 --- LICENSE.txt ---
@@ -341,7 +341,7 @@ The Apache Software Foundation (http://www.apache.org/).
 
 ## github.com/apache/thrift
 
-- `github.com/apache/thrift` v0.24.0
+- `github.com/apache/thrift` v0.25.0
 
 ```text
 --- LICENSE ---
@@ -558,13 +558,6 @@ code for the these subcomponents is subject to the terms and
 conditions of the following licenses.
 
 --------------------------------------------------
-Portions of the following files are licensed under the MIT License:
-
-  lib/erl/src/Makefile.am
-
-Please see doc/otp-base-license.txt for the full terms of this license.
-
---------------------------------------------------
 For the aclocal/ax_boost_base.m4 and contrib/fb303/aclocal/ax_boost_base.m4 components:
 
 #   Copyright (c) 2007 Thomas Porschberg <thomas@randspringer.de>
@@ -706,7 +699,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## github.com/goccy/go-json
 
-- `github.com/goccy/go-json` v0.10.6
+- `github.com/goccy/go-json` v0.12.0
 
 ```text
 --- LICENSE ---
@@ -740,7 +733,7 @@ SOFTWARE.
 The following modules share this licence text.
 
 - `github.com/google/flatbuffers` v25.12.19+incompatible
-- `google.golang.org/genproto/googleapis/rpc` v0.0.0-20260526163538-3dc84a4a5aaa
+- `google.golang.org/genproto/googleapis/rpc` v0.0.0-20260817212433-ac3dfec99bb1
 
 ```text
 --- LICENSE ---
@@ -989,7 +982,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## github.com/klauspost/compress
 
-- `github.com/klauspost/compress` v1.19.2
+- `github.com/klauspost/compress` v1.20.3
 
 ```text
 --- LICENSE ---
@@ -1419,7 +1412,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## github.com/klauspost/cpuid/v2
 
-- `github.com/klauspost/cpuid/v2` v2.4.0
+- `github.com/klauspost/cpuid/v2` v2.4.2
 
 ```text
 --- LICENSE ---
@@ -1451,7 +1444,7 @@ SOFTWARE.
 
 ## github.com/pierrec/lz4/v4
 
-- `github.com/pierrec/lz4/v4` v4.1.29
+- `github.com/pierrec/lz4/v4` v4.1.33
 
 ```text
 --- LICENSE ---
@@ -1530,10 +1523,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 The following modules share this licence text.
 
 - `golang.org/x/exp` v0.0.0-20260112195511-716be5621a96
-- `golang.org/x/net` v0.58.0
-- `golang.org/x/sync` v0.22.0
-- `golang.org/x/sys` v0.47.0
-- `golang.org/x/text` v0.41.0
+- `golang.org/x/net` v0.61.0
+- `golang.org/x/sync` v0.25.0
+- `golang.org/x/sys` v0.49.0
+- `golang.org/x/text` v0.43.0
 
 ```text
 --- LICENSE ---
@@ -1595,7 +1588,7 @@ shall terminate as of the date such litigation is filed.
 
 ## google.golang.org/grpc
 
-- `google.golang.org/grpc` v1.83.2
+- `google.golang.org/grpc` v1.85.0
 
 ```text
 --- LICENSE ---

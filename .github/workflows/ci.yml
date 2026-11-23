@@ -14,9 +14,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        # 1.25 is the go.mod floor; 1.27 is the newest release. Testing both
+        # 1.26 is the go.mod floor; 1.27 is the newest release. Testing both
         # keeps the low floor honest and catches new-toolchain regressions.
-        go: ['1.25', '1.27']
+        go: ['1.26', '1.27']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
