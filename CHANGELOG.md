@@ -14,6 +14,29 @@ rounded the way Qlik displays them, which changes values already written.
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-11-23
+
+### Security
+
+- apache/arrow-go 18.8.0 to 18.9.0, which brings klauspost/compress 1.20.3
+  with the fix for GO-2026-6865, a panic in the compression code that the
+  default `--compression zstd` calls on every write. The same update takes
+  andybalholm/brotli 1.2.8 and golang.org/x/net 0.61.0, and the release
+  binaries are built with Go 1.27.4. The advisories those fix are in brotli
+  decoding, HTTP/2, HTML and the `net/http` server: code the binary contains
+  but never runs, so they matter only to a vulnerability scanner reading it.
+  `THIRD-PARTY-NOTICES.md` is regenerated for the bumped modules.
+
+### Changed
+
+- Building from source needs Go 1.26 or newer, the floor apache/arrow-go
+  18.9.0 sets. Release binaries are not affected.
+
+  Values, types and row order are unchanged, and outputs written by 3.2.0
+  still count as up to date under `--skip-up-to-date`, so an upgrade
+  reconverts nothing. A file written by 3.2.1 names
+  `parquet-go version 18.9.0` as its writer in the footer.
+
 ## [3.2.0] - 2026-10-28
 
 ### Added
@@ -1446,7 +1469,8 @@ First release.
   [pyqvd](https://pyqvd.readthedocs.io/stable/guide/qvd-file-format.html)
   description of the format.
 
-[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/ralforion/qvd2parquet/compare/v3.2.1...HEAD
+[3.2.1]: https://github.com/ralforion/qvd2parquet/compare/v3.2.0...v3.2.1
 [3.2.0]: https://github.com/ralforion/qvd2parquet/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/ralforion/qvd2parquet/compare/v3.0.3...v3.1.0
 [3.0.3]: https://github.com/ralforion/qvd2parquet/compare/v3.0.2...v3.0.3
